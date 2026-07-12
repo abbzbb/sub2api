@@ -182,6 +182,23 @@ func TestValidateEasyPayCustomMethods(t *testing.T) {
 			supportedTypes: "alipay,wxpay,LDC",
 			wantErr:        "supported EasyPay custom type LDC may only contain lowercase letters",
 		},
+		{
+			// #4086: easypay upstream types often use dotted codes such as usdt.trc20.
+			name: "allows dotted upstream type usdt.trc20",
+			config: map[string]string{
+				"customMethods": `[{"type":"usdt_trc20","upstreamType":"usdt.trc20","displayName":"USDT TRC20"}]`,
+			},
+			supportedTypes: "alipay,wxpay,usdt_trc20",
+			wantErr:        "",
+		},
+		{
+			name: "allows dotted custom type code",
+			config: map[string]string{
+				"customMethods": `[{"type":"usdt.trc20","upstreamType":"usdt.trc20","displayName":"USDT TRC20"}]`,
+			},
+			supportedTypes: "alipay,wxpay,usdt.trc20",
+			wantErr:        "",
+		},
 	}
 
 	for _, tc := range tests {

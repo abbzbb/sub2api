@@ -223,7 +223,8 @@ func validateProviderRequest(providerKey, name, supportedTypes string) error {
 	return nil
 }
 
-var easyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+// Allow dots so upstream types like "usdt.trc20" work (#4086).
+var easyPayCustomMethodCodePattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
 type easyPayCustomMethodConfig struct {
 	Type         string `json:"type"`
@@ -251,10 +252,10 @@ func validateEasyPayCustomMethods(config map[string]string, supportedTypes strin
 			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods upstreamType is required")
 		}
 		if !easyPayCustomMethodCodePattern.MatchString(method.Type) {
-			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods type may only contain lowercase letters, digits, underscores, and hyphens")
+			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods type may only contain lowercase letters, digits, dots, underscores, and hyphens")
 		}
 		if !easyPayCustomMethodCodePattern.MatchString(method.UpstreamType) {
-			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods upstreamType may only contain lowercase letters, digits, underscores, and hyphens")
+			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods upstreamType may only contain lowercase letters, digits, dots, underscores, and hyphens")
 		}
 		if easyPayCustomMethodTypeConflictsWithBuiltin(method.Type) {
 			return infraerrors.BadRequest("VALIDATION_ERROR", "customMethods type cannot start with alipay or wxpay")
@@ -271,7 +272,7 @@ func validateEasyPayCustomMethods(config map[string]string, supportedTypes strin
 			continue
 		}
 		if !easyPayCustomMethodCodePattern.MatchString(supportedType) {
-			return infraerrors.BadRequest("VALIDATION_ERROR", fmt.Sprintf("supported EasyPay custom type %s may only contain lowercase letters, digits, underscores, and hyphens", supportedType))
+			return infraerrors.BadRequest("VALIDATION_ERROR", fmt.Sprintf("supported EasyPay custom type %s may only contain lowercase letters, digits, dots, underscores, and hyphens", supportedType))
 		}
 		if _, exists := customTypes[supportedType]; !exists {
 			return infraerrors.BadRequest("VALIDATION_ERROR", fmt.Sprintf("supported EasyPay custom type %s has no customMethods mapping", supportedType))

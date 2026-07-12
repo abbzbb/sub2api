@@ -255,7 +255,8 @@ async function renderQR() {
 }
 
 async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder> {
-  if (!isWxpay.value) return order
+  // #4038: 支付宝等非微信渠道 webhook 丢失时，仅靠 poll 会一直卡在扫码页。
+  // 与微信一致，对 PENDING 订单主动 verify（限频），由上游二次确认后落库为已支付。
   const outTradeNo = String(order.out_trade_no || '').trim()
   if (!outTradeNo) return order
   const normalizedStatus = String(order.status || '').trim().toUpperCase()

@@ -792,16 +792,24 @@ func validateCodexSparkInput(reqBody map[string]any, model string) error {
 }
 
 func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
+	// Drop Codex image_gen namespace when a hosted image_generation tool is also
+	// present, matching upstream rejection of the pair (issue #4022).
+	modified := false
+	if hasHostedOpenAIImageGenerationTool(reqBody) {
+		if stripOpenAIImageGenerationNamespaceTools(reqBody) {
+			modified = true
+		}
+	}
+
 	rawTools, ok := reqBody["tools"]
 	if !ok || rawTools == nil {
-		return false
+		return modified
 	}
 	tools, ok := rawTools.([]any)
 	if !ok {
-		return false
+		return modified
 	}
 
-	modified := false
 	for _, rawTool := range tools {
 		toolMap, ok := rawTool.(map[string]any)
 		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
@@ -831,6 +839,40 @@ func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
 	return modified
 }
 
+func hasHostedOpenAIImageGenerationTool(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	tools, _ := reqBody["tools"].([]any)
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isOpenAIImageGenerationType(firstNonEmptyString(toolMap["type"])) {
+			return true
+		}
+	}
+	input, _ := reqBody["input"].([]any)
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
+			continue
+		}
+		nested, _ := item["tools"].([]any)
+		for _, rawTool := range nested {
+			toolMap, ok := rawTool.(map[string]any)
+			if !ok {
+				continue
+			}
+			if isOpenAIImageGenerationType(firstNonEmptyString(toolMap["type"])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false
@@ -838,6 +880,11 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 	if isCodexSparkModel(firstNonEmptyString(reqBody["model"])) {
 		return false
 	}
+
+	// Hosted image_generation cannot coexist with Codex image_gen.imagegen
+	// (upstream: "Function 'image_gen.imagegen' conflicts with a hosted tool").
+	// Always drop the namespace declaration before ensuring the hosted tool.
+	modified := stripOpenAIImageGenerationNamespaceTools(reqBody)
 
 	tool := map[string]any{
 		"type":          "image_generation",
@@ -861,12 +908,96 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 			continue
 		}
 		if strings.TrimSpace(firstNonEmptyString(toolMap["type"])) == "image_generation" {
-			return false
+			return modified
 		}
 	}
 
 	reqBody["tools"] = append(tools, tool)
 	return true
+}
+
+// stripOpenAIImageGenerationNamespaceTools removes only Codex image_gen namespace
+// tools (and matching tool_choice), leaving hosted image_generation intact.
+// Used when converting/bridging to hosted tools so both do not conflict.
+func stripOpenAIImageGenerationNamespaceTools(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	modified := stripOpenAIImageGenerationNamespaceToolList(reqBody, "tools")
+	if stripOpenAIImageGenerationNamespaceToolsFromInput(reqBody) {
+		modified = true
+	}
+	if openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"]) {
+		// Only clear tool_choice when it points at the namespace form, not a
+		// hosted image_generation choice the bridge may want to keep.
+		if choice, ok := reqBody["tool_choice"].(map[string]any); ok {
+			choiceType := strings.TrimSpace(firstNonEmptyString(choice["type"]))
+			if choiceType == "namespace" ||
+				isOpenAIImageGenNamespaceName(firstNonEmptyString(choice["name"])) ||
+				isOpenAIImageGenNamespaceName(firstNonEmptyString(choice["namespace"])) {
+				delete(reqBody, "tool_choice")
+				modified = true
+			}
+		}
+	}
+	return modified
+}
+
+func stripOpenAIImageGenerationNamespaceToolList(container map[string]any, key string) bool {
+	rawTools, ok := container[key]
+	if !ok || rawTools == nil {
+		return false
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+	filtered := make([]any, 0, len(tools))
+	removed := false
+	for _, rawTool := range tools {
+		if toolMap, ok := rawTool.(map[string]any); ok && isImageGenNamespaceToolMap(toolMap) {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, rawTool)
+	}
+	if !removed {
+		return false
+	}
+	if len(filtered) == 0 {
+		delete(container, key)
+	} else {
+		container[key] = filtered
+	}
+	return true
+}
+
+func stripOpenAIImageGenerationNamespaceToolsFromInput(reqBody map[string]any) bool {
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	filteredInput := make([]any, 0, len(input))
+	modified := false
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
+			filteredInput = append(filteredInput, rawItem)
+			continue
+		}
+		if !stripOpenAIImageGenerationNamespaceToolList(item, "tools") {
+			filteredInput = append(filteredInput, rawItem)
+			continue
+		}
+		modified = true
+		if _, hasTools := item["tools"]; hasTools {
+			filteredInput = append(filteredInput, rawItem)
+		}
+	}
+	if modified {
+		reqBody["input"] = filteredInput
+	}
+	return modified
 }
 
 func ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody map[string]any) bool {
@@ -1402,6 +1533,14 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			// 来自客户端回放，需要删除。
 			// 注意：function_call_output 等 output 类的 id 无此约束，不动。
 			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "fc") {
+				ensureCopy()
+				delete(newItem, "id")
+			}
+		} else if typ == "message" {
+			// OAuth 上游要求 message.id 以 "msg" 开头；Codex Desktop 回放的
+			// item_* 会触发 400 invalid_value（#3981）。合法 msg* 保留，
+			// 非法 id 删除而非改写，避免伪造上游对象标识。
+			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "msg") {
 				ensureCopy()
 				delete(newItem, "id")
 			}

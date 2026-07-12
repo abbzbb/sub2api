@@ -242,6 +242,79 @@ func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T
 	}
 }
 
+func TestRunCheckForModel_Anthropic_SkipsLeadingThinkingBlock(t *testing.T) {
+	// #4025: content[0] 为 thinking 时旧 textPath 抽到空串 → challenge mismatch (expected N, got "")。
+	swapMonitorHTTPClient(t)
+	var lastPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		msgs, _ := body["messages"].([]any)
+		if len(msgs) > 0 {
+			if m, ok := msgs[0].(map[string]any); ok {
+				lastPrompt, _ = m["content"].(string)
+			}
+		}
+		answer := answerFromChallengePrompt(lastPrompt)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": "hmm"},
+				{"type": "text", "text": answer},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, srv.URL, "sk-ant", "claude-x", nil)
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("anthropic check should skip leading thinking and pass challenge, got status=%s message=%q prompt=%q",
+			res.Status, res.Message, lastPrompt)
+	}
+}
+
+func TestExtractAnthropicText_SkipsNonTextBlocks(t *testing.T) {
+	body := []byte(`{
+		"content": [
+			{"type": "thinking", "thinking": "step 1"},
+			{"type": "redacted_thinking", "data": "xxx"},
+			{"type": "text", "text": "42"},
+			{"type": "text", "text": " ok"}
+		]
+	}`)
+	got := extractAnthropicText(body)
+	if got != "42 ok" {
+		t.Fatalf("expected concatenated text blocks, got %q", got)
+	}
+}
+
+func TestMergeHeaders_CodexIdentityHeadersAllowed(t *testing.T) {
+	// #3983: Codex 身份头必须能经 ExtraHeaders 合入检测请求。
+	base := map[string]string{"Authorization": "Bearer sk"}
+	opts := &CheckOptions{
+		ExtraHeaders: map[string]string{
+			"Originator": "codex_cli_rs",
+			"User-Agent": codexCLIUserAgent,
+			"Version":    codexCLIVersion,
+		},
+	}
+	merged := mergeHeaders(base, opts)
+	if merged["Originator"] != "codex_cli_rs" {
+		t.Errorf("Originator should pass through, got %q", merged["Originator"])
+	}
+	if merged["User-Agent"] != codexCLIUserAgent {
+		t.Errorf("User-Agent should pass through, got %q", merged["User-Agent"])
+	}
+	if merged["Version"] != codexCLIVersion {
+		t.Errorf("Version should pass through, got %q", merged["Version"])
+	}
+	if IsForbiddenHeaderName("Originator") || IsForbiddenHeaderName("User-Agent") {
+		t.Error("Codex identity headers must not be forbidden")
+	}
+}
+
 func TestRunCheckForModel_OpenAIResponsesReplaceMissingInstructionsFailsLocally(t *testing.T) {
 	h := &openAICaptureHandler{}
 	endpoint := setupFakeOpenAI(t, h)

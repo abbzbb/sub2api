@@ -173,6 +173,8 @@ export interface CustomMenuItem {
   page_slug?: string
   visibility: 'user' | 'admin'
   sort_order: number
+  /** When false, hide iframe "Open in new tab" FAB. Omitted/undefined => true. */
+  show_open_in_new_tab?: boolean
 }
 
 export interface CustomEndpoint {

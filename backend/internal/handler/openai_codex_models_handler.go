@@ -30,9 +30,12 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		return
 	}
 
-	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, "", "")
+	// Codex models manifest requires a ChatGPT OAuth access token. In mixed
+	// OAuth + API Key groups the generic selector can pick an API Key account
+	// and then FetchCodexModelsManifest fails with 502 TOKEN_MISSING (#3995).
+	account, err := h.gatewayService.SelectOpenAIOAuthAccountForModel(c.Request.Context(), apiKey.GroupID, "", "")
 	if err != nil {
-		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "No available OpenAI accounts")
+		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "No available OpenAI OAuth accounts for Codex models manifest")
 		return
 	}
 

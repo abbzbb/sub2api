@@ -583,6 +583,137 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_AllowsG
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
+// Regression for #4098: Grok gateway scheduling must not reject models solely
+// because they are absent from the built-in default alias table.
+func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokAllowsModelsOutsideDefaultMapping(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10114)
+	accounts := []Account{
+		{
+			ID:          36042,
+			Platform:    PlatformGrok,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	for _, model := range []string{"grok-4.5", "grok-4.3", "grok-brand-new-model"} {
+		selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+			ctx,
+			&groupID,
+			"",
+			"",
+			model,
+			nil,
+			OpenAIUpstreamTransportAny,
+			OpenAIEndpointCapabilityChatCompletions,
+			false,
+			false,
+			PlatformGrok,
+		)
+		require.NoError(t, err, "model %s", model)
+		require.NotNil(t, selection, "model %s", model)
+		require.NotNil(t, selection.Account, "model %s", model)
+		require.Equal(t, int64(36042), selection.Account.ID, "model %s", model)
+	}
+}
+
+func TestSelectOpenAIOAuthAccountForModel_SkipsAPIKeyAccounts(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10115)
+	accounts := []Account{
+		{
+			ID:          37001,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			Credentials: map[string]any{"api_key": "sk-test"},
+		},
+		{
+			ID:          37002,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			Credentials: map[string]any{"access_token": "oauth-token"},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	// Generic selector may prefer the higher-priority API key account.
+	generic, err := svc.SelectAccountForModel(ctx, &groupID, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, generic)
+	require.Equal(t, int64(37001), generic.ID)
+
+	// Codex models path must only accept OAuth accounts with access tokens.
+	oauthOnly, err := svc.SelectOpenAIOAuthAccountForModel(ctx, &groupID, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, oauthOnly)
+	require.Equal(t, int64(37002), oauthOnly.ID)
+	require.True(t, oauthOnly.IsOpenAIOAuth())
+	require.NotEmpty(t, oauthOnly.GetOpenAIAccessToken())
+}
+
+func TestSelectOpenAIOAuthAccountForModel_NoOAuthReturnsError(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10116)
+	accounts := []Account{
+		{
+			ID:          37011,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			Credentials: map[string]any{"api_key": "sk-test"},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	account, err := svc.SelectOpenAIOAuthAccountForModel(ctx, &groupID, "", "")
+	require.Error(t, err)
+	require.Nil(t, account)
+	require.Contains(t, err.Error(), "no available OpenAI accounts")
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPreviousResponseRouting(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -2037,9 +2168,11 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    1,
+			// Global account priority is high (worse); group binding is low (better).
+			// Group-binding priority must win so operators' group list order takes effect (#4061).
+			Priority: 100000,
 			AccountGroups: []AccountGroup{
-				{AccountID: 21631, GroupID: groupID, Priority: 100},
+				{AccountID: 21631, GroupID: groupID, Priority: 1},
 			},
 			GroupIDs: []int64{groupID},
 		},
@@ -2050,9 +2183,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    100000,
+			Priority:    1,
 			AccountGroups: []AccountGroup{
-				{AccountID: 21632, GroupID: groupID, Priority: 1},
+				{AccountID: 21632, GroupID: groupID, Priority: 100},
 			},
 			GroupIDs: []int64{groupID},
 		},
@@ -2072,11 +2205,25 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(21631), selection.Account.ID)
+	require.Equal(t, int64(21631), selection.Account.ID, "group-binding priority 1 must beat group-binding priority 100")
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestOpenAIAccountSchedulingPriorityForGroup(t *testing.T) {
+	groupID := int64(42)
+	account := &Account{
+		Priority: 50,
+		AccountGroups: []AccountGroup{
+			{GroupID: groupID, Priority: 3},
+			{GroupID: 99, Priority: 1},
+		},
+	}
+	require.Equal(t, 3, openAIAccountSchedulingPriorityForGroup(account, &groupID))
+	require.Equal(t, 1, openAIAccountSchedulingPriorityForGroup(account, nil))
+	require.Equal(t, 50, openAIAccountSchedulingPriorityForGroup(&Account{Priority: 50}, &groupID))
 }
 
 func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_ThresholdBoundary(t *testing.T) {

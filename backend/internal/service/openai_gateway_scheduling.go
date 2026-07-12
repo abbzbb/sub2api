@@ -149,6 +149,46 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 	return s.selectAccountForModelWithExclusions(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, 0, "")
 }
 
+// SelectOpenAIOAuthAccountForModel selects a schedulable OpenAI OAuth account that
+// still has a Codex backend access token. Used by Codex models-manifest proxies
+// so mixed OAuth + API Key groups never hand an API-key account to a path that
+// requires OAuth credentials (#3995).
+func (s *OpenAIGatewayService) SelectOpenAIOAuthAccountForModel(ctx context.Context, groupID *int64, sessionHash string, requestedModel string) (*Account, error) {
+	return s.SelectOpenAIOAuthAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, nil)
+}
+
+// SelectOpenAIOAuthAccountForModelWithExclusions is the exclusion-aware variant of
+// SelectOpenAIOAuthAccountForModel. It retries selection while skipping accounts
+// that lack a usable Codex OAuth access token.
+func (s *OpenAIGatewayService) SelectOpenAIOAuthAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
+	effectiveExcluded := cloneExcludedAccountIDs(excludedIDs)
+	if effectiveExcluded == nil {
+		effectiveExcluded = make(map[int64]struct{})
+	}
+
+	// Bound retries by candidate pool size to avoid infinite loops when the
+	// repository returns the same non-OAuth account repeatedly.
+	const maxAttempts = 32
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, PlatformOpenAI, sessionHash, requestedModel, effectiveExcluded, false, 0, "")
+		if err != nil {
+			return nil, err
+		}
+		if account == nil {
+			return nil, noAvailableOpenAISelectionError(requestedModel, false)
+		}
+		if account.IsOpenAIOAuth() && strings.TrimSpace(account.GetOpenAIAccessToken()) != "" {
+			return account, nil
+		}
+		if _, seen := effectiveExcluded[account.ID]; seen {
+			return nil, noAvailableOpenAISelectionError(requestedModel, false)
+		}
+		effectiveExcluded[account.ID] = struct{}{}
+	}
+	return nil, noAvailableOpenAISelectionError(requestedModel, false)
+}
+
 // noAvailableOpenAISelectionError builds the standard "no account available" error
 // while preserving the compact-specific error when applicable.
 func normalizeOpenAICompatiblePlatform(platform string) string {

@@ -284,6 +284,8 @@ func (s *BillingService) initFallbackPricing() {
 	s.fallbackPrices["gpt-5.5-pro"] = s.fallbackPrices["gpt-5.4"]
 
 	// OpenAI GPT-5.6 官方价格（USD/token）。缓存写入为输入价的 1.25 倍。
+	// 长上下文倍率按官方规则仅对标准档生效；priority/fast 已是独立高价档，
+	// 不应再与 >272K 整次会话倍率叠加（issue #4016 / #4030）。
 	s.fallbackPrices["gpt-5.6-sol"] = &ModelPricing{
 		InputPricePerToken:                 5e-6,
 		InputPricePerTokenPriority:         10e-6,
@@ -293,9 +295,10 @@ func (s *BillingService) initFallbackPricing() {
 		CacheCreationPricePerTokenPriority: 12.5e-6,
 		CacheReadPricePerToken:             0.5e-6,
 		CacheReadPricePerTokenPriority:     1e-6,
-		LongContextInputThreshold:          openAIGPT54LongContextInputThreshold,
-		LongContextInputMultiplier:         openAIGPT54LongContextInputMultiplier,
-		LongContextOutputMultiplier:        openAIGPT54LongContextOutputMultiplier,
+		// GPT-5.6 系列：Codex/官方反代侧确认 >272K 不叠加双倍；仅保留缓存写入价。
+		LongContextInputThreshold:  0,
+		LongContextInputMultiplier: 1,
+		LongContextOutputMultiplier: 1,
 	}
 	s.fallbackPrices["gpt-5.6-terra"] = &ModelPricing{
 		InputPricePerToken:                 2.5e-6,
@@ -306,9 +309,9 @@ func (s *BillingService) initFallbackPricing() {
 		CacheCreationPricePerTokenPriority: 6.25e-6,
 		CacheReadPricePerToken:             0.25e-6,
 		CacheReadPricePerTokenPriority:     0.5e-6,
-		LongContextInputThreshold:          openAIGPT54LongContextInputThreshold,
-		LongContextInputMultiplier:         openAIGPT54LongContextInputMultiplier,
-		LongContextOutputMultiplier:        openAIGPT54LongContextOutputMultiplier,
+		LongContextInputThreshold:          0,
+		LongContextInputMultiplier:         1,
+		LongContextOutputMultiplier:        1,
 	}
 	s.fallbackPrices["gpt-5.6-luna"] = &ModelPricing{
 		InputPricePerToken:                 1e-6,
@@ -319,10 +322,12 @@ func (s *BillingService) initFallbackPricing() {
 		CacheCreationPricePerTokenPriority: 2.5e-6,
 		CacheReadPricePerToken:             0.1e-6,
 		CacheReadPricePerTokenPriority:     0.2e-6,
-		LongContextInputThreshold:          openAIGPT54LongContextInputThreshold,
-		LongContextInputMultiplier:         openAIGPT54LongContextInputMultiplier,
-		LongContextOutputMultiplier:        openAIGPT54LongContextOutputMultiplier,
+		LongContextInputThreshold:          0,
+		LongContextInputMultiplier:         1,
+		LongContextOutputMultiplier:        1,
 	}
+	// gpt-5.6 主别名与 sol 同价。
+	s.fallbackPrices["gpt-5.6"] = s.fallbackPrices["gpt-5.6-sol"]
 
 	s.fallbackPrices["gpt-5.4-mini"] = &ModelPricing{
 		InputPricePerToken:     7.5e-7,
@@ -1109,11 +1114,18 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 	if !isGPT56 && !usesLegacyLongContextPricing {
 		return pricing
 	}
-	needsLongContextPolicy := (isGPT56 || usesLegacyLongContextPricing) &&
+	// GPT-5.6: fill missing cache-write prices; do NOT inject 272K long-context
+	// multipliers (official/Codex reverse proxy does not double-bill >272K).
+	// Legacy GPT-5.4/5.5 still receive the 272K whole-session multipliers.
+	needsLongContextPolicy := usesLegacyLongContextPricing &&
 		(pricing.LongContextInputThreshold <= 0 || pricing.LongContextInputMultiplier <= 0 || pricing.LongContextOutputMultiplier <= 0)
 	needsCacheCreationPolicy := isGPT56 && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
-	if !needsLongContextPolicy && !needsCacheCreationPolicy {
+	// GPT-5.6 rows that still carry legacy long-context multipliers from channel
+	// or litellm sources must be cleared so >272K does not inflate bills.
+	needsGPT56LongContextClear := isGPT56 &&
+		(pricing.LongContextInputThreshold > 0 || pricing.LongContextInputMultiplier > 1 || pricing.LongContextOutputMultiplier > 1)
+	if !needsLongContextPolicy && !needsCacheCreationPolicy && !needsGPT56LongContextClear {
 		return pricing
 	}
 	cloned := *pricing
@@ -1121,11 +1133,15 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 		if cloned.CacheCreationPricePerToken <= 0 {
 			cloned.CacheCreationPricePerToken = cloned.InputPricePerToken * 1.25
 		}
-		if cloned.CacheCreationPricePerTokenPriority <= 0 {
+		if cloned.CacheCreationPricePerTokenPriority <= 0 && cloned.InputPricePerTokenPriority > 0 {
 			cloned.CacheCreationPricePerTokenPriority = cloned.InputPricePerTokenPriority * 1.25
 		}
 	}
-	if isGPT56 || usesLegacyLongContextPricing {
+	if isGPT56 {
+		cloned.LongContextInputThreshold = 0
+		cloned.LongContextInputMultiplier = 1
+		cloned.LongContextOutputMultiplier = 1
+	} else if usesLegacyLongContextPricing {
 		if cloned.LongContextInputThreshold <= 0 {
 			cloned.LongContextInputThreshold = openAIGPT54LongContextInputThreshold
 		}

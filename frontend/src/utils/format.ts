@@ -196,6 +196,8 @@ export function formatReasoningEffort(effort: string | null | undefined): string
       return 'XHigh'
     case 'max':
       return 'Max'
+    case 'ultra':
+      return 'Ultra'
     case 'none':
     case 'minimal':
       return '-'

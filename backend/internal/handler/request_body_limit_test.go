@@ -2,6 +2,8 @@ package handler
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,4 +44,13 @@ func TestRequestBodyLimitTooLarge(t *testing.T) {
 
 	require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
 	require.Contains(t, recorder.Body.String(), buildBodyTooLargeMessage(limit))
+}
+
+func TestBuildBodyReadErrorMessage(t *testing.T) {
+	require.Equal(t, "Incomplete request body", buildBodyReadErrorMessage(io.ErrUnexpectedEOF))
+	require.Equal(t, "Incomplete request body", buildBodyReadErrorMessage(io.EOF))
+	require.Equal(t, "Client disconnected while reading request body", buildBodyReadErrorMessage(context.Canceled))
+	require.Equal(t, "Request body too large, limit is 1MB", buildBodyReadErrorMessage(&http.MaxBytesError{Limit: 1024 * 1024}))
+	require.Equal(t, "Failed to decode request body Content-Encoding", buildBodyReadErrorMessage(errors.New(`decode Content-Encoding "gzip": unexpected EOF`)))
+	require.Equal(t, "Failed to read request body", buildBodyReadErrorMessage(errors.New("something else")))
 }

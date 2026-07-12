@@ -114,13 +114,42 @@ func TestFilterCodexInput_OutputTypeKeepsItemID(t *testing.T) {
 	require.Equal(t, "o1", out["id"], "output item id should be preserved")
 }
 
-// TestFilterCodexInput_NonToolCallItemKeepsID ensures non-tool-call items
-// (e.g. message) still keep their id when PreserveReferences is true.
-func TestFilterCodexInput_NonToolCallItemKeepsID(t *testing.T) {
+// TestFilterCodexInput_MessageStripsNonMsgID_WhenPreservingReferences covers
+// #3981: OAuth rejects message.id that does not begin with "msg".
+func TestFilterCodexInput_MessageStripsNonMsgID_WhenPreservingReferences(t *testing.T) {
 	input := []any{
 		map[string]any{
 			"type": "message",
 			"id":   "item_msg_001",
+			"role": "user",
+		},
+		map[string]any{
+			"type": "message",
+			"id":   "item_3bc5a3fa8ccde25f1c0000d4",
+			"role": "assistant",
+		},
+	}
+
+	filtered := filterCodexInputWithOptions(input, codexInputFilterOptions{
+		PreserveReferences: true,
+	})
+
+	require.Len(t, filtered, 2)
+	for i, item := range filtered {
+		msg, ok := item.(map[string]any)
+		require.True(t, ok, "item %d", i)
+		_, hasID := msg["id"]
+		require.False(t, hasID, "message item_* id should be stripped at index %d", i)
+	}
+}
+
+// TestFilterCodexInput_MessageKeepsMsgID_WhenPreservingReferences ensures
+// valid msg* message ids are preserved for OAuth replay.
+func TestFilterCodexInput_MessageKeepsMsgID_WhenPreservingReferences(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"type": "message",
+			"id":   "msg_validID123",
 			"role": "user",
 		},
 	}
@@ -132,5 +161,5 @@ func TestFilterCodexInput_NonToolCallItemKeepsID(t *testing.T) {
 	require.Len(t, filtered, 1)
 	msg, ok := filtered[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "item_msg_001", msg["id"], "non-tool-call items keep their id in preserve mode")
+	require.Equal(t, "msg_validID123", msg["id"], "valid msg* id must be preserved")
 }

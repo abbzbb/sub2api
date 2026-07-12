@@ -99,6 +99,35 @@ func TestIsModelSupported_NonOpenAIPlatformsUnchanged(t *testing.T) {
 	require.True(t, anthropic.IsModelSupported("deepseek-v4"))
 }
 
+// Grok default model_mapping is an alias/display table and must not act as a
+// scheduling allowlist; otherwise gateway selection 503s while admin test-connection
+// (direct account path) still succeeds (#4098).
+func TestIsModelSupported_GrokDefaultMappingIsNotAllowlist(t *testing.T) {
+	account := &Account{ID: 41, Platform: PlatformGrok, Type: AccountTypeOAuth}
+	require.True(t, account.IsModelSupported("grok-4.5"))
+	require.True(t, account.IsModelSupported("grok-4.3"))
+	// Models outside xai.DefaultModelMapping must still be schedulable so new
+	// xAI model ids work before the built-in table is updated.
+	require.True(t, account.IsModelSupported("grok-brand-new-model"))
+	require.True(t, account.IsModelSupported("custom-grok-alias"))
+}
+
+func TestIsModelSupported_GrokExplicitMappingIsAllowlist(t *testing.T) {
+	account := &Account{
+		ID:       42,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"grok-4.3": "grok-4.3",
+			},
+		},
+	}
+	require.True(t, account.IsModelSupported("grok-4.3"))
+	require.False(t, account.IsModelSupported("grok-4.5"))
+	require.False(t, account.IsModelSupported("custom-grok-alias"))
+}
+
 func TestIsOpenAIOAuthServableModel(t *testing.T) {
 	require.True(t, isOpenAIOAuthServableModel("gpt-5.4-high"))
 	require.True(t, isOpenAIOAuthServableModel("  gpt-5.3-codex  "))

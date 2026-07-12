@@ -5556,6 +5556,19 @@
                     </select>
                   </div>
 
+                  <!-- Open in new tab FAB (iframe pages only) -->
+                  <div class="sm:col-span-2 flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 dark:border-dark-600">
+                    <div class="min-w-0">
+                      <p class="text-xs font-medium text-gray-700 dark:text-gray-300">
+                        {{ t("admin.settings.customMenu.showOpenInNewTab") }}
+                      </p>
+                      <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.customMenu.showOpenInNewTabHint") }}
+                      </p>
+                    </div>
+                    <Toggle v-model="item.show_open_in_new_tab" />
+                  </div>
+
                   <!-- URL (full width) -->
                   <div class="sm:col-span-2">
                     <label
@@ -8159,6 +8172,7 @@ const form = reactive<SettingsForm>({
     url: string;
     visibility: "user" | "admin";
     sort_order: number;
+    show_open_in_new_tab: boolean;
   }>,
   custom_endpoints: [] as Array<{
     name: string;
@@ -8899,6 +8913,7 @@ function addMenuItem() {
     url: "",
     visibility: "user",
     sort_order: form.custom_menu_items.length,
+    show_open_in_new_tab: true,
   });
 }
 
@@ -9089,6 +9104,14 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    // #4064: missing show_open_in_new_tab on legacy items defaults to visible.
+    form.custom_menu_items = (Array.isArray(form.custom_menu_items)
+      ? form.custom_menu_items
+      : []
+    ).map((item) => ({
+      ...item,
+      show_open_in_new_tab: item.show_open_in_new_tab !== false,
+    }));
     if (!form.claude_oauth_system_prompt_blocks?.trim()) {
       form.claude_oauth_system_prompt_blocks =
         defaultClaudeOAuthSystemPromptBlocks;

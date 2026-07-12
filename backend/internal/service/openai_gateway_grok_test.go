@@ -179,6 +179,8 @@ func TestBuildGrokResponsesRequestUsesAccountBaseURLAndBearerToken(t *testing.T)
 	require.Equal(t, "Bearer access-token", req.Header.Get("Authorization"))
 	require.Equal(t, "application/json", req.Header.Get("Content-Type"))
 	require.Contains(t, req.Header.Get("Accept"), "text/event-stream")
+	require.Equal(t, "sub2api-grok/1.0", req.Header.Get("User-Agent"))
+	require.Equal(t, grokUpstreamClientVersion, req.Header.Get("x-grok-client-version"))
 
 	data, err := io.ReadAll(req.Body)
 	require.NoError(t, err)

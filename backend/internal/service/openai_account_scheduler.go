@@ -491,7 +491,48 @@ func openAIStickyAccountMatchesGroup(account *Account, groupID *int64) bool {
 	return false
 }
 
+// openAIAccountSchedulingPriority returns the priority used for OpenAI load-balance
+// scoring. When the account is bound to groups, prefer the group-binding priority
+// (account_groups.priority) for the first matching group — that is the value
+// operators edit in the group account list (issue #4061). Fall back to the
+// account-level Priority when no group binding is present.
 func openAIAccountSchedulingPriority(account *Account) int {
+	if account == nil {
+		return 0
+	}
+	if p, ok := openAIAccountGroupBindingPriority(account, nil); ok {
+		return p
+	}
+	return account.Priority
+}
+
+// openAIAccountGroupBindingPriority returns the account_groups.priority for the
+// requested group (or the lowest/highest-priority binding when groupID is nil).
+// ok is false when the account has no group bindings.
+func openAIAccountGroupBindingPriority(account *Account, groupID *int64) (int, bool) {
+	if account == nil || len(account.AccountGroups) == 0 {
+		return 0, false
+	}
+	best := 0
+	found := false
+	for _, ag := range account.AccountGroups {
+		if groupID != nil && ag.GroupID != *groupID {
+			continue
+		}
+		if !found || ag.Priority < best {
+			best = ag.Priority
+			found = true
+		}
+	}
+	return best, found
+}
+
+// openAIAccountSchedulingPriorityForGroup is the group-scoped variant used when
+// the scheduler already knows which group the request is bound to.
+func openAIAccountSchedulingPriorityForGroup(account *Account, groupID *int64) int {
+	if p, ok := openAIAccountGroupBindingPriority(account, groupID); ok {
+		return p
+	}
 	if account == nil {
 		return 0
 	}
@@ -553,12 +594,30 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 	return last
 }
 
+func openAICandidateEffectivePriority(c openAIAccountCandidateScore) int {
+	// candidate.priority is set when the load plan is built (including 0).
+	// Fall back only for ad-hoc candidates that never went through the plan.
+	if c.account == nil {
+		return c.priority
+	}
+	// Prefer the precomputed field so legitimate priority 0 is preserved.
+	// Recompute only when the field is still zero AND account/group binding
+	// also resolves to zero — equivalent; when field was set to a non-zero
+	// group priority it is returned as-is. When field is 0 because it was
+	// never assigned, openAIAccountSchedulingPriority fills the gap.
+	if c.priority != 0 {
+		return c.priority
+	}
+	return openAIAccountSchedulingPriority(c.account)
+}
+
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
 	if left.score != right.score {
 		return left.score > right.score
 	}
-	if left.account.Priority != right.account.Priority {
-		return left.account.Priority < right.account.Priority
+	leftP, rightP := openAICandidateEffectivePriority(left), openAICandidateEffectivePriority(right)
+	if leftP != rightP {
+		return leftP < rightP
 	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
@@ -733,6 +792,8 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:   account,
 			loadInfo:  loadInfo,
+			// Group-binding priority for this request's group (issue #4061).
+			priority:  openAIAccountSchedulingPriorityForGroup(account, req.GroupID),
 			errorRate: errorRate,
 			ttft:      ttft,
 			hasTTFT:   hasTTFT,
@@ -763,7 +824,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		return plan
 	}
 
-	minPriority, maxPriority := openAIAccountSchedulingPriority(candidates[0].account), openAIAccountSchedulingPriority(candidates[0].account)
+	minPriority, maxPriority := openAIAccountSchedulingPriorityForGroup(candidates[0].account, req.GroupID), openAIAccountSchedulingPriorityForGroup(candidates[0].account, req.GroupID)
 	maxWaiting := 1
 	loadRateSum := 0.0
 	loadRateSumSquares := 0.0
@@ -771,7 +832,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	hasTTFTSample := false
 	for i := range candidates {
 		candidate := &candidates[i]
-		candidate.priority = openAIAccountSchedulingPriority(candidate.account)
+		candidate.priority = openAIAccountSchedulingPriorityForGroup(candidate.account, req.GroupID)
 		if candidate.priority < minPriority {
 			minPriority = candidate.priority
 		}
@@ -949,8 +1010,9 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
+		aP, bP := openAICandidateEffectivePriority(a), openAICandidateEffectivePriority(b)
+		if aP != bP {
+			return aP < bP
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
@@ -1374,6 +1436,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 	// rechecks won't reach healthy accounts that fell outside TopK — manifesting as
 	// "no available accounts" even though healthy ones exist.
 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+		return false
+	}
+	// Grok OAuth accounts use a separate quota snapshot (requests/tokens/retry_after).
+	// Keep this gate in the advanced scheduler initial filter so it matches the
+	// non-advanced eligibility path (isOpenAICompatibleAccountEligibleForRequest).
+	if paused, _ := shouldAutoPauseGrokAccountByQuota(account); paused {
 		return false
 	}
 	// 母账号健康联动：影子账号的凭据来自母账号，母账号不可调度时影子也不应被选中。

@@ -623,6 +623,30 @@ func addOpenAIUsage(dst *OpenAIUsage, usage OpenAIUsage) {
 	dst.ImageOutputTokens += usage.ImageOutputTokens
 }
 
+const (
+	// grokUpstreamClientVersion is the xAI CLI-compatible client version header.
+	// Upstream Grok/xAI endpoints expect this for entitlement and routing.
+	grokUpstreamClientVersion = "1.0.0"
+	grokUpstreamUserAgent     = "sub2api-grok/1.0"
+)
+
+func applyGrokUpstreamClientHeaders(req *http.Request, c *gin.Context) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("User-Agent", grokUpstreamUserAgent)
+	req.Header.Set("x-grok-client-version", grokUpstreamClientVersion)
+	if c == nil {
+		return
+	}
+	if v := strings.TrimSpace(c.GetHeader("x-grok-client-version")); v != "" {
+		req.Header.Set("x-grok-client-version", v)
+	}
+	if v := strings.TrimSpace(c.GetHeader("OpenAI-Beta")); v != "" {
+		req.Header.Set("OpenAI-Beta", v)
+	}
+}
+
 func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string) (*http.Request, error) {
 	targetURL, err := xai.BuildResponsesURL(account.GetGrokBaseURL())
 	if err != nil {
@@ -635,12 +659,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("User-Agent", "sub2api-grok/1.0")
-	if c != nil {
-		if v := c.GetHeader("OpenAI-Beta"); strings.TrimSpace(v) != "" {
-			req.Header.Set("OpenAI-Beta", v)
-		}
-	}
+	applyGrokUpstreamClientHeaders(req, c)
 	return req, nil
 }
 

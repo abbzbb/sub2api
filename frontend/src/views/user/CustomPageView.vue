@@ -96,6 +96,7 @@
         <!-- Iframe embed mode -->
         <div v-else class="custom-embed-shell">
           <a
+            v-if="showOpenInNewTab"
             :href="embeddedUrl"
             target="_blank"
             rel="noopener noreferrer"
@@ -189,6 +190,10 @@ const isValidUrl = computed(() => {
   const url = embeddedUrl.value
   return url.startsWith('http://') || url.startsWith('https://')
 })
+
+// #4064: admin can hide the floating "Open in new tab" control per menu item.
+// Missing field keeps the historical default (visible).
+const showOpenInNewTab = computed(() => menuItem.value?.show_open_in_new_tab !== false)
 
 function generateHeadingId(text: string, index: number): string {
   const base = text

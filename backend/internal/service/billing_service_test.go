@@ -312,6 +312,60 @@ func TestCalculateCost_OpenAIGPT54LongContextAppliesMultiplierToCacheRead(t *tes
 	require.InDelta(t, expectedTotal, cost.ActualCost, 1e-10)
 }
 
+// GPT-5.6 系列：>272K 不叠加长上下文倍率（issue #4016 / #4030），缓存写入仍按 1.25x 输入价计费。
+func TestCalculateCost_OpenAIGPT56NoLongContextMultiplierAndCacheWrite(t *testing.T) {
+	svc := newTestBillingService()
+
+	tokens := UsageTokens{
+		InputTokens:         200000,
+		CacheCreationTokens: 100000,
+		CacheReadTokens:     50000,
+		OutputTokens:        4000,
+	}
+
+	cost, err := svc.CalculateCost("gpt-5.6-sol", tokens, 1.0)
+	require.NoError(t, err)
+
+	// sol: input 5e-6, output 30e-6, cache write 6.25e-6, cache read 0.5e-6; no 2x long-ctx.
+	expectedInput := float64(tokens.InputTokens) * 5e-6
+	expectedOutput := float64(tokens.OutputTokens) * 30e-6
+	expectedCacheWrite := float64(tokens.CacheCreationTokens) * 6.25e-6
+	expectedCacheRead := float64(tokens.CacheReadTokens) * 0.5e-6
+	require.InDelta(t, expectedInput, cost.InputCost, 1e-10)
+	require.InDelta(t, expectedOutput, cost.OutputCost, 1e-10)
+	require.InDelta(t, expectedCacheWrite, cost.CacheCreationCost, 1e-10,
+		"gpt-5.6 cache write (cache_creation) must be billed")
+	require.InDelta(t, expectedCacheRead, cost.CacheReadCost, 1e-10)
+	require.InDelta(t, expectedInput+expectedOutput+expectedCacheWrite+expectedCacheRead, cost.TotalCost, 1e-10)
+
+	// priority/fast 独立高价档，也不应再叠 272K 倍率。
+	costPriority, err := svc.CalculateCostWithServiceTier("gpt-5.6-sol", tokens, 1.0, "priority")
+	require.NoError(t, err)
+	expectedInputP := float64(tokens.InputTokens) * 10e-6
+	expectedOutputP := float64(tokens.OutputTokens) * 60e-6
+	expectedCacheWriteP := float64(tokens.CacheCreationTokens) * 12.5e-6
+	expectedCacheReadP := float64(tokens.CacheReadTokens) * 1e-6
+	require.InDelta(t, expectedInputP, costPriority.InputCost, 1e-10)
+	require.InDelta(t, expectedOutputP, costPriority.OutputCost, 1e-10)
+	require.InDelta(t, expectedCacheWriteP, costPriority.CacheCreationCost, 1e-10)
+	require.InDelta(t, expectedCacheReadP, costPriority.CacheReadCost, 1e-10)
+}
+
+func TestGetModelPricing_OpenAIGPT56CacheWriteAndNoLongContext(t *testing.T) {
+	svc := newTestBillingService()
+
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		t.Run(model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(model)
+			require.NoError(t, err)
+			require.NotNil(t, pricing)
+			require.Greater(t, pricing.CacheCreationPricePerToken, 0.0)
+			require.Zero(t, pricing.LongContextInputThreshold)
+			require.LessOrEqual(t, pricing.LongContextInputMultiplier, 1.0)
+		})
+	}
+}
+
 // 阴性测试：未触发长上下文时，cache_read_price 不应被错误地乘以倍率。
 func TestCalculateCost_OpenAIGPT54NoLongContextKeepsCacheReadAtBasePrice(t *testing.T) {
 	svc := newTestBillingService()

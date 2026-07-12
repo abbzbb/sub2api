@@ -857,6 +857,9 @@ watch(inputMethod, (newVal) => {
 
 // Auto-extract code from callback URL (OpenAI/Gemini/Antigravity/Grok)
 // e.g., http://localhost:8085/callback?code=xxx...&state=...
+// #3879: 用户边粘贴边触发 watch 时，若仅在完整 URL 时才提取，中间态
+// "http://.../callback?code=" 会匹配 code= 却 get 到空串，把输入清空成残片。
+// 仅当 code 非空时才替换输入；否则保留完整粘贴内容。
 watch(authCodeInput, (newVal) => {
   if (props.platform !== 'openai' && props.platform !== 'gemini' && props.platform !== 'antigravity' && props.platform !== 'grok') return
 
@@ -871,19 +874,20 @@ watch(authCodeInput, (newVal) => {
       if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateParam) {
         oauthState.value = stateParam
       }
-      if (code && code !== trimmed) {
-        // Replace the input with just the code
+      // 必须有非空 code 才替换，避免粘贴过程中 "code=" 空值把整段 URL 清掉
+      if (code && code.trim() !== '' && code !== trimmed) {
         authCodeInput.value = code
       }
     } catch {
       // If URL parsing fails, try regex extraction
-      const match = trimmed.match(/[?&]code=([^&]+)/)
+      const match = trimmed.match(/[?&]code=([^&]*)/)
       const stateMatch = trimmed.match(/[?&]state=([^&]+)/)
       if ((props.platform === 'openai' || props.platform === 'gemini' || props.platform === 'antigravity' || props.platform === 'grok') && stateMatch && stateMatch[1]) {
         oauthState.value = stateMatch[1]
       }
-      if (match && match[1] && match[1] !== trimmed) {
-        authCodeInput.value = match[1]
+      const code = match?.[1] ? decodeURIComponent(match[1]) : ''
+      if (code && code.trim() !== '' && code !== trimmed) {
+        authCodeInput.value = code
       }
     }
   }

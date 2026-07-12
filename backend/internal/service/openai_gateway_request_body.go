@@ -211,14 +211,16 @@ func normalizeOpenAICodexCompactReasoningEffortForAccount(c *gin.Context, accoun
 }
 
 func normalizeOpenAICodexCompactReasoningEffort(body []byte, effectiveModel string) ([]byte, bool, error) {
-	if !isOpenAIGPT56Model(effectiveModel) ||
-		!strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()), "max") {
+	if !isOpenAIGPT56Model(effectiveModel) {
+		return body, false, nil
+	}
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()))
+	// ChatGPT compact 端点目前只接受到 xhigh。Codex Ultra/max 在客户端编排层
+	// 可能下发 max 或 ultra；仅对 OpenAI OAuth 的 GPT-5.6 compact 子请求降级。
+	if effort != "max" && effort != "ultra" {
 		return body, false, nil
 	}
 
-	// Codex Ultra 在客户端编排层会下发 max；ChatGPT compact 端点目前只接受到
-	// xhigh。这里只降级 OpenAI OAuth 的 GPT-5.6 compact 子请求，普通 Responses、
-	// API Key 请求和其他平台的 OAuth 请求保留 max。
 	normalized, err := sjson.SetBytes(body, "reasoning.effort", "xhigh")
 	if err != nil {
 		return body, false, fmt.Errorf("normalize codex compact reasoning effort: %w", err)
@@ -1247,9 +1249,66 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 	}
 }
 
+// OpenAIResponsesReasoningEffortAllowed 与 OpenAI Responses API 公开枚举对齐，
+// 另含 GPT-5.6 扩展档 max/ultra（#3979）以及历史 x-high 写法。
+// 用于本地 400 校验（#3782），避免拼写错误打到上游并污染账号/failover。
+var openAIResponsesReasoningEffortAllowed = map[string]struct{}{
+	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {},
+	"xhigh": {}, "x-high": {}, "x_high": {},
+	"max": {}, "ultra": {},
+}
+
+// ValidateOpenAIResponsesReasoningEffort 校验 body 中显式出现的 reasoning.effort /
+// 顶层 reasoning_effort。字段缺失或空串通过；非法枚举返回人类可读错误信息。
+// 不做模型感知折叠——这里只拦“明显非法”，合法别名留给 normalize 路径处理。
+func ValidateOpenAIResponsesReasoningEffort(body []byte) error {
+	if len(body) == 0 {
+		return nil
+	}
+	raw := ""
+	if r := gjson.GetBytes(body, "reasoning.effort"); r.Exists() {
+		if r.Type != gjson.String && r.Type != gjson.Null {
+			return fmt.Errorf("Invalid value for 'reasoning.effort': expected a string. Supported values are: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', and 'ultra'")
+		}
+		raw = r.String()
+	} else if r := gjson.GetBytes(body, "reasoning_effort"); r.Exists() {
+		if r.Type != gjson.String && r.Type != gjson.Null {
+			return fmt.Errorf("Invalid value for 'reasoning_effort': expected a string. Supported values are: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', and 'ultra'")
+		}
+		raw = r.String()
+	} else {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	key := strings.ToLower(trimmed)
+	if _, ok := openAIResponsesReasoningEffortAllowed[key]; ok {
+		return nil
+	}
+	// 再接受 normalize 后的折叠别名（extrahigh 等）
+	if n := normalizeOpenAIReasoningEffort(trimmed); n != "" || isNoneLikeReasoningEffort(key) {
+		return nil
+	}
+	return fmt.Errorf("Invalid value: '%s'. Supported values are: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', and 'ultra'", trimmed)
+}
+
+func isNoneLikeReasoningEffort(key string) bool {
+	key = strings.NewReplacer("-", "", "_", "", " ", "").Replace(key)
+	return key == "none" || key == "minimal"
+}
+
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "max") && isOpenAIGPT56Model(model) {
-		return "max"
+	trimmed := strings.TrimSpace(raw)
+	if isOpenAIGPT56Model(model) {
+		switch strings.ToLower(trimmed) {
+		case "max":
+			return "max"
+		case "ultra":
+			// GPT-5.6 Sol ultra：多 agent 最高能力档，需在使用记录中原样保留（#3979）。
+			return "ultra"
+		}
 	}
 	return normalizeOpenAIReasoningEffort(raw)
 }

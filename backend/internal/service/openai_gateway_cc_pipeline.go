@@ -187,6 +187,13 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	if userAgent != "" {
 		upstreamReq.Header.Set("user-agent", userAgent)
 	}
+	if account != nil && account.Platform == PlatformGrok {
+		applyGrokUpstreamClientHeaders(upstreamReq, c)
+		if userAgent != "" {
+			// Preserve explicit UA override after applying Grok defaults.
+			upstreamReq.Header.Set("user-agent", userAgent)
+		}
+	}
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
 	account.ApplyHeaderOverrides(upstreamReq.Header)

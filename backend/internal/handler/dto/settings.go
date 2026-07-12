@@ -16,6 +16,18 @@ type CustomMenuItem struct {
 	PageSlug   string `json:"page_slug,omitempty"`
 	Visibility string `json:"visibility"` // "user" or "admin"
 	SortOrder  int    `json:"sort_order"`
+	// ShowOpenInNewTab controls the iframe page "Open in new tab" FAB.
+	// nil/omitted means true (backward compatible with existing menu items).
+	ShowOpenInNewTab *bool `json:"show_open_in_new_tab,omitempty"`
+}
+
+// CustomMenuItemShowsOpenInNewTab reports whether the open-in-new-tab control
+// should be shown for an iframe custom page. Missing/nil defaults to true.
+func CustomMenuItemShowsOpenInNewTab(item CustomMenuItem) bool {
+	if item.ShowOpenInNewTab == nil {
+		return true
+	}
+	return *item.ShowOpenInNewTab
 }
 
 // CustomEndpoint represents an admin-configured API endpoint for quick copy.

@@ -900,6 +900,58 @@ func TestStripOpenAIImageGenerationTools_KeepsCustomImagegenFunctionChoice(t *te
 	require.Contains(t, reqBody, "tool_choice")
 }
 
+func TestNormalizeOpenAIResponsesImageGenerationTools_StripsConflictingImageGenNamespace(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.5",
+		"tools": []any{
+			map[string]any{"type": "image_generation", "format": "jpeg"},
+			map[string]any{"type": "namespace", "name": "image_gen", "tools": []any{
+				map[string]any{"type": "function", "name": "imagegen"},
+			}},
+			map[string]any{"type": "function", "name": "shell"},
+		},
+	}
+
+	require.True(t, normalizeOpenAIResponsesImageGenerationTools(reqBody))
+	require.True(t, hasHostedOpenAIImageGenerationTool(reqBody))
+	require.False(t, toolsContainImageGenerationNamespace(reqBody["tools"]))
+	require.Equal(t, "jpeg", reqBody["tools"].([]any)[0].(map[string]any)["output_format"])
+	require.NotContains(t, reqBody["tools"].([]any)[0].(map[string]any), "format")
+	require.Equal(t, "shell", reqBody["tools"].([]any)[1].(map[string]any)["name"])
+}
+
+func toolsContainImageGenerationNamespace(rawTools any) bool {
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if ok && isImageGenNamespaceToolMap(tool) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEnsureOpenAIResponsesImageGenerationTool_ReplacesImageGenNamespace(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.5",
+		"tools": []any{
+			map[string]any{"type": "namespace", "name": "image_gen", "tools": []any{
+				map[string]any{"type": "function", "name": "imagegen"},
+			}},
+			map[string]any{"type": "function", "name": "shell"},
+		},
+	}
+
+	require.True(t, ensureOpenAIResponsesImageGenerationTool(reqBody))
+	require.True(t, hasHostedOpenAIImageGenerationTool(reqBody))
+	require.False(t, toolsContainImageGenerationNamespace(reqBody["tools"]))
+	require.Equal(t, "shell", reqBody["tools"].([]any)[0].(map[string]any)["name"])
+	require.Equal(t, "image_generation", reqBody["tools"].([]any)[1].(map[string]any)["type"])
+}
+
 // Non-spark Codex models support image_generation; the tool must be preserved.
 func TestApplyCodexOAuthTransform_KeepsImageGenerationToolForNonSpark(t *testing.T) {
 	reqBody := map[string]any{

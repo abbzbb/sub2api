@@ -190,3 +190,29 @@ func TestWriteOpenAIFastPolicyBlockedResponse_BeforeKeepaliveCommit(t *testing.T
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Equal(t, "permission_error", gjson.Get(rec.Body.String(), "error.type").String())
 }
+
+// Regression for #4000: Status/Size/Written must not panic when the inner
+// gin.ResponseWriter has been cleared (opsCaptureWriter release path).
+func TestOpenAICompactKeepaliveWriter_NilInnerWriter_NoPanic(t *testing.T) {
+	w := &openAICompactKeepaliveWriter{
+		ResponseWriter: nil,
+		k:              &openAICompactSSEKeepalive{stop: make(chan struct{})},
+	}
+	require.NotPanics(t, func() {
+		require.Equal(t, 0, w.Status())
+	})
+	require.NotPanics(t, func() {
+		require.Equal(t, -1, w.Size())
+	})
+	require.NotPanics(t, func() {
+		require.False(t, w.Written())
+	})
+	require.NotPanics(t, func() {
+		n, err := w.Write([]byte("x"))
+		require.Equal(t, 0, n)
+		require.NoError(t, err)
+	})
+	require.NotPanics(t, func() {
+		require.NotNil(t, w.Header())
+	})
+}

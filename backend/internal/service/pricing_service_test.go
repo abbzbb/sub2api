@@ -601,3 +601,28 @@ func TestListModelNamesByProvider_EmptyCatalog(t *testing.T) {
 	require.NotNil(t, got)
 	require.Empty(t, got)
 }
+
+func TestWritePricingDataFile_CreatesFileAndOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model_pricing.sha256")
+
+	require.NoError(t, writePricingDataFile(path, []byte("abc\n")))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "abc\n", string(got))
+
+	// overwrite existing
+	require.NoError(t, writePricingDataFile(path, []byte("def\n")))
+	got, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "def\n", string(got))
+}
+
+func TestWritePricingDataFile_CreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "data", "model_pricing.json")
+	require.NoError(t, writePricingDataFile(path, []byte(`{"x":1}`)))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, `{"x":1}`, string(got))
+}

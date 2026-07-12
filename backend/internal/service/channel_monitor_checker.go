@@ -284,7 +284,36 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if provider == MonitorProviderOpenAI && apiMode == MonitorAPIModeResponses {
 		return extractOpenAIResponsesText(respBytes), string(respBytes), status, nil
 	}
+	if provider == MonitorProviderAnthropic {
+		return extractAnthropicText(respBytes), string(respBytes), status, nil
+	}
 	return gjson.GetBytes(respBytes, adapter.textPath).String(), string(respBytes), status, nil
+}
+
+// extractAnthropicText 聚合 Anthropic Messages 的最终 text 块。
+// content 数组里 thinking / redacted_thinking / tool_use 可能排在 text 前面，
+// 因此不能假设答案永远在 content.0.text（否则 challenge 会得到空串，报 mismatch）。
+func extractAnthropicText(respBytes []byte) string {
+	var texts []string
+	content := gjson.GetBytes(respBytes, "content")
+	if content.IsArray() {
+		content.ForEach(func(_, block gjson.Result) bool {
+			blockType := block.Get("type").String()
+			// 空 type 按 text 兜底；明确非 text 的块跳过。
+			if blockType != "" && blockType != "text" {
+				return true
+			}
+			if text := block.Get("text").String(); strings.TrimSpace(text) != "" {
+				texts = append(texts, text)
+			}
+			return true
+		})
+	}
+	if len(texts) > 0 {
+		return strings.Join(texts, "")
+	}
+	// 回退到历史 textPath，兼容旧 mock / 非标准响应。
+	return gjson.GetBytes(respBytes, "content.0.text").String()
 }
 
 // extractOpenAIResponsesText 聚合 Responses API 的最终 assistant 文本。

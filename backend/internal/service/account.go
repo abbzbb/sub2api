@@ -749,15 +749,43 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
+// hasExplicitModelMapping reports whether the account credentials contain a
+// non-empty user-configured model_mapping. Platform default mappings (Grok,
+// Antigravity) are NOT treated as explicit configuration.
+func (a *Account) hasExplicitModelMapping() bool {
+	if a == nil || a.Credentials == nil {
+		return false
+	}
+	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
+	if len(rawMapping) == 0 {
+		return false
+	}
+	for _, v := range rawMapping {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）。
 //
-// 例外：OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
-// 家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
-// 会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
-// 请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
-// 未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
+// 例外：
+//  1. OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
+//     家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
+//     会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
+//     请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
+//     未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
+//  2. Grok 平台的默认 model_mapping 仅用于别名/展示归一化，不作为调度白名单。
+//     只有账号 credentials 里显式配置了 model_mapping 时，才按映射过滤（#4098）。
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	// Grok default mapping is an alias table, not an allowlist. Without this,
+	// gateway selection rejects any model/id not present in xai.DefaultModelMapping
+	// even though admin "test connection" (direct account path) still succeeds.
+	if a != nil && a.IsGrok() && !a.hasExplicitModelMapping() {
+		return true
+	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
 		if a.IsOpenAIOAuth() && !a.IsOpenAIPassthroughEnabled() {

@@ -756,10 +756,11 @@ function validateEasyPayCustomMethods(): string | null {
     if (!method.type || !method.upstreamType) {
       return t('admin.settings.payment.validationEasyPayCustomMethodRequired')
     }
-    if (!/^[a-z0-9_-]+$/.test(method.type)) {
+    // Allow dots for upstream types such as usdt.trc20 (#4086).
+    if (!/^[a-z0-9._-]+$/.test(method.type)) {
       return t('admin.settings.payment.validationEasyPayCustomMethodTypeInvalid')
     }
-    if (!/^[a-z0-9_-]+$/.test(method.upstreamType)) {
+    if (!/^[a-z0-9._-]+$/.test(method.upstreamType)) {
       return t('admin.settings.payment.validationEasyPayCustomMethodUpstreamTypeInvalid')
     }
     if ((PROVIDER_SUPPORTED_TYPES.easypay || []).includes(method.type)) {

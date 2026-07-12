@@ -293,6 +293,16 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if imageOutput, ok := extractImageGenerationOutputFromSSEData(dataBytes, streamSeenImages); ok {
 				streamImageOutputs = append(streamImageOutputs, imageOutput)
 			}
+			// Upstream occasionally emits image_generation_call items with a
+			// full result payload but stale status="generating". Codex Desktop
+			// treats non-completed image calls as unfinished and never renders
+			// the image (#4051). Normalize before any terminal reconstruction.
+			if normalizedData, normalized := normalizeImageGenerationCallStatusInSSEData(dataBytes); normalized {
+				dataBytes = normalizedData
+				data = string(normalizedData)
+				line = "data: " + data
+				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			}
 			if responsesStreamEventMayContributeToOutput(eventType) {
 				var streamEvent apicompat.ResponsesStreamEvent
 				if err := json.Unmarshal(dataBytes, &streamEvent); err == nil {
@@ -1092,11 +1102,20 @@ func normalizeResponsesStreamingTerminalOutput(data []byte, acc *apicompat.Buffe
 		return data, false
 	}
 
+	changed := false
+	// Always normalize image statuses on terminal events, even when the
+	// response.output array is already non-empty (the common Codex Desktop
+	// path that previously kept status="generating" forever).
+	if normalizedData, normalized := normalizeImageGenerationCallStatusInSSEData(data); normalized {
+		data = normalizedData
+		changed = true
+	}
+
 	output := gjson.GetBytes(data, "response.output")
 	hasAccumulatedOutput := (acc != nil && acc.HasContent()) || len(imageOutputs) > 0
 	if output.Exists() && output.IsArray() {
 		if len(output.Array()) > 0 || !hasAccumulatedOutput {
-			return data, false
+			return data, changed
 		}
 	}
 
@@ -1106,6 +1125,59 @@ func normalizeResponsesStreamingTerminalOutput(data []byte, acc *apicompat.Buffe
 	}
 	updated, err := sjson.SetRawBytes(data, "response.output", outputJSON)
 	if err != nil {
+		return data, changed
+	}
+	return updated, true
+}
+
+// normalizeImageGenerationCallStatusInSSEData forces image_generation_call
+// items with a non-empty result to status="completed". Upstream / intermediate
+// layers sometimes leave status stuck at "generating" even after the PNG
+// payload is present; Codex Desktop will not render those items (#4051).
+func normalizeImageGenerationCallStatusInSSEData(data []byte) ([]byte, bool) {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return data, false
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	updated := data
+	changed := false
+
+	normalizeItemAt := func(path string) {
+		item := gjson.GetBytes(updated, path)
+		if !item.Exists() || !item.IsObject() {
+			return
+		}
+		if item.Get("type").String() != "image_generation_call" {
+			return
+		}
+		if strings.TrimSpace(item.Get("result").String()) == "" {
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Get("status").String()), "completed") {
+			return
+		}
+		next, err := sjson.SetBytes(updated, path+".status", "completed")
+		if err != nil {
+			return
+		}
+		updated = next
+		changed = true
+	}
+
+	switch eventType {
+	case "response.output_item.done", "response.output_item.added":
+		normalizeItemAt("item")
+	case "response.completed", "response.done", "response.incomplete", "response.cancelled", "response.canceled":
+		output := gjson.GetBytes(updated, "response.output")
+		if output.Exists() && output.IsArray() {
+			for i := range output.Array() {
+				normalizeItemAt("response.output." + strconv.Itoa(i))
+			}
+		}
+	default:
+		// Non-image events are left untouched.
+	}
+	if !changed {
 		return data, false
 	}
 	return updated, true
@@ -1334,7 +1406,15 @@ func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct
 		}
 		seen[key] = struct{}{}
 	}
-	return json.RawMessage(item.Raw), true
+	// Preserve result but force completed so reconstructed terminal output is
+	// renderable by Codex Desktop (#4051).
+	itemJSON := []byte(item.Raw)
+	if !strings.EqualFold(strings.TrimSpace(item.Get("status").String()), "completed") {
+		if patched, err := sjson.SetBytes(itemJSON, "status", "completed"); err == nil {
+			itemJSON = patched
+		}
+	}
+	return json.RawMessage(itemJSON), true
 }
 
 func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
