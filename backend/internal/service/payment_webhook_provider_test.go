@@ -367,18 +367,18 @@ func TestGetWebhookProviderAllowsSingleInstanceRegistryFallback(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	_, err := client.PaymentProviderInstance.Create().
-		SetProviderKey(payment.TypeStripe).
-		SetName("stripe-a").
+		SetProviderKey(payment.TypeAlipay).
+		SetName("alipay-a").
 		SetConfig("{}").
-		SetSupportedTypes("stripe").
+		SetSupportedTypes("alipay").
 		SetEnabled(true).
 		Save(ctx)
 	require.NoError(t, err)
 
 	registry := payment.NewRegistry()
 	registry.Register(webhookProviderTestDouble{
-		key:   payment.TypeStripe,
-		types: []payment.PaymentType{payment.TypeStripe},
+		key:   payment.TypeAlipay,
+		types: []payment.PaymentType{payment.TypeAlipay},
 	})
 
 	svc := &PaymentService{
@@ -387,11 +387,11 @@ func TestGetWebhookProviderAllowsSingleInstanceRegistryFallback(t *testing.T) {
 		providersLoaded: true,
 	}
 
-	providers, err := svc.GetWebhookProviders(ctx, payment.TypeStripe, "")
+	providers, err := svc.GetWebhookProviders(ctx, payment.TypeAlipay, "")
 	require.NoError(t, err)
 	require.Len(t, providers, 1)
 	prov := providers[0]
-	require.Equal(t, payment.TypeStripe, prov.ProviderKey())
+	require.Equal(t, payment.TypeAlipay, prov.ProviderKey())
 }
 
 func TestGetWebhookProviderRejectsRegistryFallbackForPinnedOrder(t *testing.T) {
@@ -507,4 +507,45 @@ func TestGetWebhookProviderUsesProviderSnapshotBeforeWxpayFallback(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, providers, 1)
 	require.Equal(t, payment.TypeWxpay, providers[0].ProviderKey())
+}
+
+func TestGetWebhookProvidersAcksUnknownOutTradeNo(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	svc := &PaymentService{entClient: client, registry: payment.NewRegistry(), providersLoaded: true}
+
+	_, err := svc.GetWebhookProviders(ctx, payment.TypeAlipay, "sub2_does_not_exist")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrOrderNotFound)
+}
+
+func TestGetWebhookProvidersIteratesStripeLikeWeChat(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	_, err := client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeStripe).
+		SetName("stripe-a").
+		SetConfig(encryptWebhookProviderConfig(t, map[string]string{"secretKey": "sk_a", "webhookSecret": "whsec_a"})).
+		SetSupportedTypes("stripe").
+		SetEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+	_, err = client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeStripe).
+		SetName("stripe-b").
+		SetConfig(encryptWebhookProviderConfig(t, map[string]string{"secretKey": "sk_b", "webhookSecret": "whsec_b"})).
+		SetSupportedTypes("stripe").
+		SetEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	svc := &PaymentService{
+		entClient:       client,
+		loadBalancer:    newWebhookProviderTestLoadBalancer(client),
+		registry:        payment.NewRegistry(),
+		providersLoaded: true,
+	}
+	providers, err := svc.GetWebhookProviders(ctx, payment.TypeStripe, "")
+	require.NoError(t, err)
+	require.Len(t, providers, 2)
 }

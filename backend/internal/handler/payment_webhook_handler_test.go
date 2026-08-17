@@ -178,6 +178,18 @@ func TestExtractOutTradeNo(t *testing.T) {
 			rawBody:     `{"name":"payment_intent.succeeded","data":{"object":{"merchant_order_id":"sub2_awx_123"}}}`,
 			want:        "sub2_awx_123",
 		},
+		{
+			name:        "stripe payment intent metadata.orderId",
+			providerKey: payment.TypeStripe,
+			rawBody:     `{"type":"payment_intent.succeeded","data":{"object":{"id":"pi_123","metadata":{"orderId":"sub2_stripe_99"}}}}`,
+			want:        "sub2_stripe_99",
+		},
+		{
+			name:        "stripe payload without metadata stays empty",
+			providerKey: payment.TypeStripe,
+			rawBody:     `{"type":"payment_intent.succeeded","data":{"object":{"id":"pi_123"}}}`,
+			want:        "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -252,4 +264,11 @@ func (p webhookHandlerProviderStub) VerifyNotification(context.Context, string, 
 }
 func (p webhookHandlerProviderStub) Refund(context.Context, payment.RefundRequest) (*payment.RefundResponse, error) {
 	panic("unexpected call")
+}
+
+func TestWebhookProviderLookupShouldAck(t *testing.T) {
+	require.True(t, webhookProviderLookupShouldAck(payment.ErrProviderNotFound))
+	require.True(t, webhookProviderLookupShouldAck(fmt.Errorf("%w: out_trade_no=x", service.ErrOrderNotFound)))
+	require.False(t, webhookProviderLookupShouldAck(fmt.Errorf("webhook provider fallback is ambiguous for stripe")))
+	require.False(t, webhookProviderLookupShouldAck(errors.New("lookup webhook order: connection refused")))
 }

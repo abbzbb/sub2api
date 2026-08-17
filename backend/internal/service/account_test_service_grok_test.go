@@ -572,7 +572,7 @@ func TestAccountTestService_GrokVideoUpstreamErrorIsNotMaskedAsSuccess(t *testin
 	require.Error(t, err)
 	require.Equal(t, "https://api.x.ai/v1/videos/generations", upstream.lastReq.URL.String())
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
-	require.Contains(t, rec.Body.String(), "Grok videos API returned 400")
+	require.Contains(t, rec.Body.String(), "upstream returned HTTP 400")
 	require.NotContains(t, rec.Body.String(), `"success":true`)
 }
 
@@ -677,5 +677,5 @@ func TestAccountTestService_GrokRealtimeModeDialFailure(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
-	require.Contains(t, rec.Body.String(), "Realtime")
+	require.Contains(t, rec.Body.String(), "upstream returned HTTP 401")
 }

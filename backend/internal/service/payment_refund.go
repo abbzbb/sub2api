@@ -348,9 +348,11 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 }
 
 func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.RefundResponse, error) {
-	if p.Order.PaymentTradeNo == "" {
-		s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "skipped"})
-		return &payment.RefundResponse{Status: payment.ProviderStatusSuccess}, nil
+	if strings.TrimSpace(p.Order.PaymentTradeNo) == "" && strings.TrimSpace(p.Order.OutTradeNo) == "" {
+		if s != nil && s.entClient != nil {
+			s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "missing"})
+		}
+		return nil, fmt.Errorf("refund missing payment trade number")
 	}
 
 	// Use the exact provider instance that created this order, not a random one

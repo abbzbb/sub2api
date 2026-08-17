@@ -1,12 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -73,16 +74,22 @@ func TestImageResultUploaderRewritesB64JSON(t *testing.T) {
 }
 
 func TestImageResultUploaderRewritesURL(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes)
-	}))
-	defer upstream.Close()
+	orig := validateImageResolvedIP
+	validateImageResolvedIP = func(string) error { return nil }
+	t.Cleanup(func() { validateImageResolvedIP = orig })
 
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "https://cdn.example.com/pic.png", req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pngBytes)),
+			Header:     make(http.Header),
+		}, nil
+	})}
 	storage := &fakeImageStorage{}
-	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	uploader := NewImageResultUploader(storage, "images/", 0, client)
 
-	result := json.RawMessage(`{"created":1,"data":[{"url":"` + upstream.URL + `/pic.png"}]}`)
+	result := json.RawMessage(`{"created":1,"data":[{"url":"https://cdn.example.com/pic.png"}]}`)
 	out, err := uploader.Rewrite(context.Background(), "imgtask_xyz", result)
 	require.NoError(t, err)
 
@@ -243,4 +250,47 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+}
+
+func TestImageResultUploaderRejectsPrivateAndHTTPDownloadURLs(t *testing.T) {
+	orig := validateImageResolvedIP
+	validateImageResolvedIP = func(string) error { return nil }
+	t.Cleanup(func() { validateImageResolvedIP = orig })
+
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("should not dial")
+	})})
+	for _, raw := range []string{
+		"http://cdn.example.com/pic.png",
+		"https://127.0.0.1/pic.png",
+		"https://169.254.169.254/latest/meta-data",
+		"https://10.0.0.8/pic.png",
+	} {
+		result, err := json.Marshal(map[string]any{"data": []map[string]string{{"url": raw}}})
+		require.NoError(t, err)
+		_, err = uploader.Rewrite(context.Background(), "imgtask_ssrf", result)
+		require.Error(t, err, raw)
+		require.Contains(t, err.Error(), "image url not allowed")
+	}
+}
+
+func TestImageResultUploaderRejectsSVGAndUnknownBytes(t *testing.T) {
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, nil)
+	svg := base64.StdEncoding.EncodeToString([]byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`))
+	result := json.RawMessage(`{"data":[{"b64_json":"` + svg + `"}]}`)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_svg", result)
+	require.ErrorContains(t, err, "svg")
+
+	unknown := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
+	result = json.RawMessage(`{"data":[{"b64_json":"` + unknown + `"}]}`)
+	_, err = uploader.Rewrite(context.Background(), "imgtask_unknown", result)
+	require.ErrorContains(t, err, "unsupported image type")
+}
+
+func TestImageResultUploaderAppliesSizeCapToB64JSON(t *testing.T) {
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 3, nil)
+	payload := base64.StdEncoding.EncodeToString([]byte("four"))
+	result := json.RawMessage(`{"data":[{"b64_json":"` + payload + `"}]}`)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_b64cap", result)
+	require.ErrorContains(t, err, "exceeds 3 bytes")
 }

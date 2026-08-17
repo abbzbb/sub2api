@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -8,10 +9,14 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
@@ -53,8 +58,43 @@ func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadByte
 	}
 }
 
+var validateImageResolvedIP = urlvalidator.ValidateResolvedIP
+
 func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 nil, // do not honor HTTP_PROXY
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ForceAttemptHTTP2:     true,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req == nil || req.URL == nil {
+				return errors.New("invalid redirect")
+			}
+			return validateImageDownloadURL(req.URL.String())
+		},
+	}
+}
+
+func validateImageDownloadURL(raw string) error {
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{})
+	if err != nil {
+		return err
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("invalid image url")
+	}
+	if err := validateImageResolvedIP(parsed.Hostname()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -115,11 +155,7 @@ func (u *ImageResultUploader) fetchImageBytes(ctx context.Context, item map[stri
 		var b64 string
 		if err := json.Unmarshal(raw, &b64); err == nil {
 			if b64 = strings.TrimSpace(b64); b64 != "" {
-				data, err := base64.StdEncoding.DecodeString(b64)
-				if err != nil {
-					return nil, "", fmt.Errorf("decode b64_json: %w", err)
-				}
-				return data, detectImageContentType(data), nil
+				return u.decodeBoundedBase64(b64, "b64_json")
 			}
 		}
 	}
@@ -184,14 +220,37 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 		return nil, "", fmt.Errorf("decoded image data URL exceeds %d bytes", limit)
 	}
 
-	contentType := detectedImageContentType(data)
-	if contentType == "" {
-		contentType = declaredType
+	contentType, err := allowedImageContentType(data)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, contentType, nil
+}
+
+func (u *ImageResultUploader) decodeBoundedBase64(payload, source string) ([]byte, string, error) {
+	limit := u.maxDownloadBytes
+	if limit <= 0 {
+		limit = defaultImageMaxDownloadBytes
+	}
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(payload))
+	data, err := io.ReadAll(io.LimitReader(decoder, limit+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode %s: %w", source, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, "", fmt.Errorf("decoded %s exceeds %d bytes", source, limit)
+	}
+	contentType, err := allowedImageContentType(data)
+	if err != nil {
+		return nil, "", err
 	}
 	return data, contentType, nil
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
+	if err := validateImageDownloadURL(rawURL); err != nil {
+		return nil, "", fmt.Errorf("image url not allowed: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("build download request: %w", err)
@@ -215,9 +274,9 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 	if int64(len(data)) > limit {
 		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
 	}
-	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = detectImageContentType(data)
+	contentType, err := allowedImageContentType(data)
+	if err != nil {
+		return nil, "", err
 	}
 	return data, contentType, nil
 }
@@ -226,19 +285,30 @@ func (u *ImageResultUploader) buildKey(taskID string, index int, contentType str
 	return u.prefix + taskID + "-" + strconv.Itoa(index) + extensionForContentType(contentType)
 }
 
-func detectImageContentType(data []byte) string {
-	if ct := detectedImageContentType(data); ct != "" {
-		return ct
+func allowedImageContentType(data []byte) (string, error) {
+	if looksLikeSVG(data) {
+		return "", errors.New("svg images are not allowed")
 	}
-	return "image/png"
+	ct := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	switch ct {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return ct, nil
+	default:
+		return "", fmt.Errorf("unsupported image type %q", ct)
+	}
 }
 
-func detectedImageContentType(data []byte) string {
-	ct := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
-	if strings.HasPrefix(ct, "image/") {
-		return ct
+func looksLikeSVG(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
 	}
-	return ""
+	window := trimmed
+	if len(window) > 256 {
+		window = window[:256]
+	}
+	lower := bytes.ToLower(window)
+	return bytes.Contains(lower, []byte("<svg"))
 }
 
 func extensionForContentType(ct string) string {

@@ -89,12 +89,12 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 
 	providers, err := h.paymentService.GetWebhookProviders(c.Request.Context(), providerKey, outTradeNo)
 	if err != nil {
-		slog.Warn("[Payment Webhook] provider not found", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
-		if providerKey == payment.TypeWxpay {
-			c.String(http.StatusBadRequest, "verify failed")
+		slog.Warn("[Payment Webhook] provider lookup failed", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
+		if webhookProviderLookupShouldAck(err) {
+			writeSuccessResponse(c, providerKey)
 			return
 		}
-		writeSuccessResponse(c, providerKey)
+		c.String(http.StatusInternalServerError, "handle failed")
 		return
 	}
 
@@ -164,10 +164,29 @@ func extractOutTradeNo(rawBody, providerKey string) string {
 		if err := json.Unmarshal([]byte(rawBody), &payload); err == nil {
 			return strings.TrimSpace(payload.Data.Object.MerchantOrderID)
 		}
+	case payment.TypeStripe:
+		var payload struct {
+			Data struct {
+				Object struct {
+					Metadata map[string]string `json:"metadata"`
+				} `json:"object"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(rawBody), &payload); err == nil {
+			return strings.TrimSpace(payload.Data.Object.Metadata["orderId"])
+		}
 	}
-	// For other providers (Stripe, Alipay direct, WxPay direct), the registry
-	// typically has only one instance, so no instance lookup is needed.
+	// WeChat Pay bodies are encrypted before merchant binding; Stripe
+	// metadata.orderId is best-effort. Empty means the handler must iterate
+	// enabled instances instead of guessing a single registry provider.
 	return ""
+}
+
+// webhookProviderLookupShouldAck reports whether GetWebhookProviders failed
+// because the merchant/order is known-absent (ACK so the channel stops
+// retrying) rather than because of an internal/DB/config error (5xx retry).
+func webhookProviderLookupShouldAck(err error) bool {
+	return errors.Is(err, payment.ErrProviderNotFound) || errors.Is(err, service.ErrOrderNotFound)
 }
 
 func verifyNotificationWithProviders(ctx context.Context, providers []payment.Provider, rawBody string, headers map[string]string) (string, *payment.PaymentNotification, error) {

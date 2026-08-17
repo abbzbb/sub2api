@@ -883,16 +883,15 @@ func normalizeBatchImageReferenceInputs(model string, item *BatchImageSubmitItem
 		if ref.MimeType == "" {
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
-		if len(ref.Data) == 0 && ref.FileURI == "" {
+		if ref.FileURI != "" {
+			// User-supplied file_uri is not locked to ManagedGCSBucket/Prefix/batch_id.
+			// Only inline bytes are accepted on the public submit path.
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
-		if len(ref.Data) > 0 && ref.FileURI != "" {
+		if len(ref.Data) == 0 {
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
 		if len(ref.Data) > maxBatchImageReferenceImageBytes {
-			return 0, 0, ErrBatchImageInvalidReferenceImage
-		}
-		if ref.FileURI != "" && !strings.HasPrefix(ref.FileURI, "gs://") {
 			return 0, 0, ErrBatchImageInvalidReferenceImage
 		}
 		inlineBytes += len(ref.Data)

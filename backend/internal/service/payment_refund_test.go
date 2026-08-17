@@ -166,6 +166,17 @@ func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
 		SetUsername("refund-execute-clamp").
 		Save(ctx)
 	require.NoError(t, err)
+
+	inst, err := client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeStripe).
+		SetName("stripe-refund-execute-clamp").
+		SetConfig("{}").
+		SetSupportedTypes("stripe").
+		SetEnabled(true).
+		SetRefundEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
 	order, err := client.PaymentOrder.Create().
 		SetUserID(user.ID).
 		SetUserEmail(user.Email).
@@ -176,13 +187,14 @@ func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
 		SetRechargeCode("REFUND-EXECUTE-CLAMP").
 		SetOutTradeNo("refund_execute_clamp").
 		SetPaymentType(payment.TypeStripe).
-		SetPaymentTradeNo("").
+		SetPaymentTradeNo("pi_refund_execute_clamp").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusCompleted).
 		SetExpiresAt(time.Now().Add(time.Hour)).
 		SetPaidAt(time.Now()).
 		SetClientIP("127.0.0.1").
 		SetSrcHost("api.example.com").
+		SetProviderInstanceID(strconv.FormatInt(inst.ID, 10)).
 		Save(ctx)
 	require.NoError(t, err)
 
@@ -196,7 +208,10 @@ func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
 		Reason: "concurrent spend", Force: true, DeductionType: payment.DeductionTypeBalance, BalanceToDeduct: 100,
 	}
 
-	result, err := (&PaymentService{entClient: client, userRepo: repo}).ExecuteRefund(ctx, plan)
+	restore := replacePaymentProviderFactoryForTest(t, refundSuccessProviderTestDouble{})
+	defer restore()
+
+	result, err := (&PaymentService{entClient: client, userRepo: repo, loadBalancer: &captureLoadBalancer{}}).ExecuteRefund(ctx, plan)
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	require.Equal(t, 25.0, plan.BalanceToDeduct)
@@ -646,6 +661,14 @@ func replacePaymentProviderFactoryForTest(t *testing.T, prov payment.Provider) f
 	return func() { createPaymentProviderFromInstance = original }
 }
 
+type refundSuccessProviderTestDouble struct {
+	refundProviderTestDouble
+}
+
+func (refundSuccessProviderTestDouble) Refund(context.Context, payment.RefundRequest) (*payment.RefundResponse, error) {
+	return &payment.RefundResponse{RefundID: "rf_execute_clamp", Status: payment.ProviderStatusSuccess}, nil
+}
+
 type refundProviderTestDouble struct{}
 
 func (refundProviderTestDouble) Name() string { return "refund-test" }
@@ -675,4 +698,13 @@ type refundQueryProviderTestDouble struct {
 
 func (p *refundQueryProviderTestDouble) QueryRefund(context.Context, payment.RefundQueryRequest) (*payment.RefundResponse, error) {
 	return p.refundResponse, nil
+}
+
+func TestGwRefundRejectsMissingTradeIdentifiers(t *testing.T) {
+	svc := &PaymentService{}
+	_, err := svc.gwRefund(context.Background(), &RefundPlan{
+		Order: &dbent.PaymentOrder{ID: 1, PaymentTradeNo: "", OutTradeNo: ""},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing payment trade number")
 }

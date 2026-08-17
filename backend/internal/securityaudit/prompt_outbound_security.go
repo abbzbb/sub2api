@@ -2,6 +2,7 @@ package securityaudit
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,8 +83,24 @@ func NewSecureHTTPClient(endpoint ActiveEndpoint) (*http.Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeoutMS * time.Millisecond
 	}
+	originHost := ""
+	if parsed, err := url.Parse(endpoint.BaseURL); err == nil {
+		originHost = strings.ToLower(parsed.Hostname())
+	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req == nil || req.URL == nil {
+				return errors.New("invalid redirect")
+			}
+			if originHost != "" && strings.ToLower(req.URL.Hostname()) != originHost {
+				return errors.New("cross-host redirect is not allowed")
+			}
+			return nil
+		},
 	}, nil
 }

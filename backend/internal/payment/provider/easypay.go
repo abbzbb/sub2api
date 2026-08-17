@@ -59,6 +59,9 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 		cfg[k] = v
 	}
 	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
+	if !strings.HasPrefix(strings.ToLower(cfg["apiBase"]), "https://") {
+		return nil, fmt.Errorf("easypay apiBase must be an HTTPS URL")
+	}
 	return &EasyPay{
 		instanceID: instanceID,
 		config:     cfg,
@@ -339,6 +342,9 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 	if !easyPayVerifySign(params, e.config["pkey"], sign) {
 		return nil, fmt.Errorf("invalid signature")
 	}
+	if err := rejectStalePaymentNotify(firstNonEmpty(params["notify_time"], params["addtime"], params["time"]), time.Now()); err != nil {
+		return nil, err
+	}
 	status := payment.ProviderStatusFailed
 	if params["trade_status"] == tradeStatusSuccess {
 		status = payment.ProviderStatusSuccess
@@ -554,4 +560,13 @@ func easyPaySign(params map[string]string, pkey string) string {
 
 func easyPayVerifySign(params map[string]string, pkey string, sign string) bool {
 	return hmac.Equal([]byte(easyPaySign(params, pkey)), []byte(sign))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

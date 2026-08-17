@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/redis/go-redis/v9"
@@ -46,12 +47,19 @@ const (
 	searchDataTimeout    = 60 * time.Second // response data transfer timeout
 	searchRequestTimeout = searchDataTimeout + proxyDialTimeout
 
-	quotaKeyPrefix      = "websearch:quota:"
-	proxyUnavailableKey = "websearch:proxy_unavailable:%d"
-	proxyUnavailableTTL = 5 * time.Minute
-	quotaTTLBuffer      = 24 * time.Hour
-	defaultQuotaTTL     = 31*24*time.Hour + quotaTTLBuffer // fallback when no subscription date
-	maxCachedClients    = 100
+	quotaKeyPrefix          = "websearch:quota:"
+	proxyUnavailableKey     = "websearch:proxy_unavailable:%d"
+	proxyUnavailableTTL     = 5 * time.Minute
+	quotaTTLBuffer          = 24 * time.Hour
+	defaultQuotaTTL         = 31*24*time.Hour + quotaTTLBuffer // fallback when no subscription date
+	maxCachedClients        = 100
+	maxTestSearchQueryRunes = 256
+)
+
+var (
+	errWebsearchEmptyQuery   = errors.New("websearch: empty query")
+	errWebsearchQueryTooLong = errors.New("websearch: query too long")
+	errWebsearchNoProvider   = errors.New("websearch: no available provider")
 )
 
 // ErrProxyUnavailable indicates the search failed due to a proxy connectivity issue.
@@ -352,8 +360,12 @@ func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
 // TestSearch executes a search using the first available provider without reserving quota.
 // Intended for admin test functionality only.
 func (m *Manager) TestSearch(ctx context.Context, req SearchRequest) (*SearchResponse, string, error) {
-	if strings.TrimSpace(req.Query) == "" {
-		return nil, "", fmt.Errorf("websearch: empty search query")
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		return nil, "", errWebsearchEmptyQuery
+	}
+	if utf8.RuneCountInString(req.Query) > maxTestSearchQueryRunes {
+		return nil, "", errWebsearchQueryTooLong
 	}
 	for _, cfg := range m.configs {
 		if !m.isProviderAvailable(cfg) {
@@ -365,7 +377,7 @@ func (m *Manager) TestSearch(ctx context.Context, req SearchRequest) (*SearchRes
 		}
 		return resp, cfg.Type, nil
 	}
-	return nil, "", fmt.Errorf("websearch: no available provider")
+	return nil, "", errWebsearchNoProvider
 }
 
 func (m *Manager) executeSearch(ctx context.Context, cfg ProviderConfig, req SearchRequest) (*SearchResponse, error) {

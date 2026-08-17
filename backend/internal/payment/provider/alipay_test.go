@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/smartwalle/alipay/v3"
@@ -442,5 +443,33 @@ func TestParseAlipayAmount(t *testing.T) {
 
 	if _, err := parseAlipayAmount("", "not-a-number"); err == nil {
 		t.Fatal("expected error when no valid amount field exists")
+	}
+}
+
+func TestAlipayRefundOutRequestNoIsStable(t *testing.T) {
+	t.Parallel()
+	req := payment.RefundRequest{OrderID: "sub2_abc", Amount: "12.30"}
+	first := alipayRefundOutRequestNo(req)
+	second := alipayRefundOutRequestNo(req)
+	if first != second {
+		t.Fatalf("OutRequestNo is not stable: %q vs %q", first, second)
+	}
+	if first != "sub2_abc-refund-12.30" {
+		t.Fatalf("OutRequestNo = %q", first)
+	}
+}
+
+func TestRejectStalePaymentNotify(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.Local)
+	if err := rejectStalePaymentNotify("", now); err != nil {
+		t.Fatalf("empty notify time should be allowed: %v", err)
+	}
+	if err := rejectStalePaymentNotify(now.Format("2006-01-02 15:04:05"), now); err != nil {
+		t.Fatalf("fresh notify rejected: %v", err)
+	}
+	stale := now.Add(-30 * time.Minute).Format("2006-01-02 15:04:05")
+	if err := rejectStalePaymentNotify(stale, now); err == nil {
+		t.Fatal("expected stale notify to be rejected")
 	}
 }

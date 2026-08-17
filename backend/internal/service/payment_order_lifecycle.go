@@ -166,6 +166,10 @@ func (s *PaymentService) checkPaidWithOptions(ctx context.Context, o *dbent.Paym
 		return ""
 	}
 	if resp.Status == payment.ProviderStatusPaid {
+		if !providerQueryIsTrustedFulfillmentSource(prov) {
+			slog.Info("skip unsigned query fulfillment", "provider", prov.ProviderKey(), "orderID", o.ID)
+			return ""
+		}
 		if !isValidProviderAmount(resp.Amount) {
 			s.writeAuditLog(ctx, o.ID, "PAYMENT_INVALID_AMOUNT", prov.ProviderKey(), map[string]any{
 				"expected": o.PayAmount,
@@ -224,6 +228,15 @@ func requeryPaidOrderOnce(ctx context.Context, prov payment.Provider, queryRef s
 		return nil, false
 	}
 	return resp, true
+}
+
+func providerQueryIsTrustedFulfillmentSource(prov payment.Provider) bool {
+	if prov == nil {
+		return false
+	}
+	// EasyPay QueryOrder responses are unsigned JSON; fulfillment must come
+	// from the signed notify path instead.
+	return prov.ProviderKey() != payment.TypeEasyPay
 }
 
 func paymentOrderQueryReference(order *dbent.PaymentOrder, prov payment.Provider) string {
@@ -449,6 +462,9 @@ func paymentOrderFallbackProviderKey(registry *payment.Registry, order *dbent.Pa
 func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {
 	if inst == nil {
 		return nil, fmt.Errorf("payment provider instance is missing")
+	}
+	if s == nil || s.loadBalancer == nil {
+		return nil, fmt.Errorf("payment load balancer is missing")
 	}
 
 	cfg, err := s.loadBalancer.GetInstanceConfig(ctx, int64(inst.ID))

@@ -261,6 +261,10 @@ func TestContentModerationUpdateConfigProxyIDSemantics(t *testing.T) {
 
 // TestAPIKeys 的 proxy_id 语义：nil 沿用已保存配置的代理；0 强制直连；>0 指定代理。
 func TestContentModerationTestAPIKeysProxySemantics(t *testing.T) {
+	orig := validateContentModerationBaseURL
+	validateContentModerationBaseURL = func(raw string) (string, error) { return raw, nil }
+	t.Cleanup(func() { validateContentModerationBaseURL = orig })
+
 	var proxied atomic.Int64
 	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxied.Add(1)
