@@ -21,6 +21,7 @@ func resetViperWithJWTSecret(t *testing.T) {
 	t.Setenv("CONFIG_FILE", "")
 	t.Setenv("DATA_DIR", "")
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("TOTP_ENCRYPTION_KEY", strings.Repeat("a", 64))
 }
 
 func TestLoadTimezonePrecedence(t *testing.T) {
@@ -79,6 +80,36 @@ func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, "app-user", cfg.Redis.Username)
+}
+
+
+func TestLoadReleaseRequiresTOTPEncryptionKey(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
+	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("TOTP_ENCRYPTION_KEY", "")
+	t.Setenv("SERVER_MODE", "release")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "totp.encryption_key")
+}
+
+func TestLoadBootstrapAllowsMissingTOTPEncryptionKey(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", "")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("TOTP_ENCRYPTION_KEY", "")
+	t.Setenv("SERVER_MODE", "release")
+
+	cfg, err := LoadForBootstrap()
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.Totp.EncryptionKey)
+	require.False(t, cfg.Totp.EncryptionKeyConfigured)
 }
 
 func TestLoadHTTPIngressSafetyDefaults(t *testing.T) {

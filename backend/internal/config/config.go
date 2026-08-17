@@ -1937,16 +1937,20 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.UserMessageQueue.Mode = ""
 	}
 
-	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
+	// TOTP encryption key: required in release. Bootstrap/debug may auto-generate
+	// a process-local key so the wizard and local runs still work.
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
 	if cfg.Totp.EncryptionKey == "" {
+		if !allowMissingJWTSecret && strings.EqualFold(cfg.Server.Mode, "release") {
+			return nil, fmt.Errorf("totp.encryption_key is required in release mode")
+		}
 		key, err := generateJWTSecret(32) // Reuse the same random generation function
 		if err != nil {
 			return nil, fmt.Errorf("generate totp encryption key error: %w", err)
 		}
 		cfg.Totp.EncryptionKey = key
 		cfg.Totp.EncryptionKeyConfigured = false
-		slog.Warn("TOTP encryption key auto-generated. Consider setting a fixed key for production.")
+		slog.Warn("TOTP encryption key auto-generated. Set a fixed key before enabling 2FA in production.")
 	} else {
 		cfg.Totp.EncryptionKeyConfigured = true
 	}

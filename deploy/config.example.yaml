@@ -1198,10 +1198,12 @@ oidc_connect:
 # 默认设置
 # =============================================================================
 default:
-  # Initial admin account (created on first run)
-  # 初始管理员账户（首次运行时创建）
-  admin_email: "admin@example.com"
-  admin_password: "admin123"
+  # These fields do not create an admin by themselves. Use the setup wizard,
+  # AUTO_SETUP + ADMIN_PASSWORD, or an empty users table bootstrap.
+  # 这些字段不会单独创建管理员。请使用安装向导、AUTO_SETUP + ADMIN_PASSWORD，
+  # 或空用户表引导。
+  admin_email: ""
+  admin_password: ""
 
   # Default settings for new users
   # 新用户默认设置
