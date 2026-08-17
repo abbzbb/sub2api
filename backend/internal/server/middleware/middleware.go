@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
@@ -108,6 +109,20 @@ func AnthropicErrorWriter(c *gin.Context, status int, message string) {
 	})
 }
 
+// OpenAIErrorWriter 按 OpenAI API 规范输出错误
+func OpenAIErrorWriter(c *gin.Context, status int, message string) {
+	errType := "invalid_request_error"
+	if status == http.StatusForbidden || status == http.StatusUnauthorized {
+		errType = "permission_error"
+	}
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
 // GoogleErrorWriter 按 Google API 规范输出错误
 func GoogleErrorWriter(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{
@@ -117,6 +132,37 @@ func GoogleErrorWriter(c *gin.Context, status int, message string) {
 			"status":  googleapi.HTTPStatusToGoogleStatus(status),
 		},
 	})
+}
+
+// GatewayProtocolErrorWriter selects Completions/Responses/Anthropic/Gemini envelopes.
+func GatewayProtocolErrorWriter(c *gin.Context, status int, message string) {
+	switch gatewayErrorProtocol(c) {
+	case "google":
+		GoogleErrorWriter(c, status, message)
+	case "openai":
+		OpenAIErrorWriter(c, status, message)
+	default:
+		AnthropicErrorWriter(c, status, message)
+	}
+}
+
+func gatewayErrorProtocol(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return "anthropic"
+	}
+	_, protocol := ingressRejectRoute(c.Request.URL.Path)
+	if protocol == "openai" || protocol == "google" || protocol == "anthropic" {
+		return protocol
+	}
+	path := strings.ToLower(c.Request.URL.Path)
+	switch {
+	case strings.Contains(path, "/v1beta"), strings.Contains(path, "/antigravity/v1beta"):
+		return "google"
+	case strings.Contains(path, "/messages"):
+		return "anthropic"
+	default:
+		return "openai"
+	}
 }
 
 // RequireGroupAssignment 检查 API Key 是否已分配到分组，

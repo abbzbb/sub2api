@@ -1469,6 +1469,46 @@ func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 	require.Equal(t, "insufficient_quota", response.Error.Code)
 }
 
+func TestAPIKeyAuthOpenAIQuotaErrorFormatForChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{ID: 11, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
+	group := &service.Group{ID: 8, Platform: service.PlatformOpenAI, Status: service.StatusActive}
+	apiKey := &service.APIKey{
+		ID: 105, UserID: user.ID, Key: "openai-quota-exhausted", Status: service.StatusAPIKeyQuotaExhausted,
+		User: user, Group: group, GroupID: &group.ID,
+	}
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+		if key != apiKey.Key {
+			return nil, service.ErrAPIKeyNotFound
+		}
+		clone := *apiKey
+		userClone := *user
+		clone.User = &userClone
+		return &clone, nil
+	}}
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	var response struct {
+		Error struct {
+			Message string  `json:"message"`
+			Type    string  `json:"type"`
+			Param   *string `json:"param"`
+			Code    string  `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Equal(t, "insufficient_quota", response.Error.Type)
+	require.Equal(t, "insufficient_quota", response.Error.Code)
+}
+
 func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1507,6 +1547,7 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	}
 	router.GET("/t", ok)
 	router.POST("/v1/responses", ok)
+	router.POST("/v1/chat/completions", ok)
 	router.POST("/v1/messages", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)
