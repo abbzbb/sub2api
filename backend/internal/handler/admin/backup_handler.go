@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"log/slog"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -54,7 +56,8 @@ func (h *BackupHandler) TestS3Connection(c *gin.Context) {
 	}
 	err := h.backupService.TestS3Connection(c.Request.Context(), req)
 	if err != nil {
-		response.Success(c, gin.H{"ok": false, "message": err.Error()})
+		slog.Warn("admin S3 probe failed", "reason", reasonS3ProbeFailed, "err", err)
+		response.Success(c, gin.H{"ok": false, "message": genericS3ProbeMessage(), "reason": reasonS3ProbeFailed})
 		return
 	}
 	response.Success(c, gin.H{"ok": true, "message": "connection successful"})

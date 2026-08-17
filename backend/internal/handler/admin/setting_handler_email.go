@@ -2,10 +2,12 @@ package admin
 
 import (
 	"html"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -55,7 +57,7 @@ func (h *SettingHandler) TestSMTPConnection(c *gin.Context) {
 		password = savedConfig.Password
 	}
 	if req.SMTPHost == "" {
-		response.BadRequest(c, "SMTP host is required")
+		adminProbeFailed(c, http.StatusBadRequest, reasonSMTPHostRequired, "SMTP host is required", nil)
 		return
 	}
 
@@ -69,7 +71,7 @@ func (h *SettingHandler) TestSMTPConnection(c *gin.Context) {
 
 	err := h.emailService.TestSMTPConnectionWithConfig(config)
 	if err != nil {
-		response.BadRequest(c, "SMTP connection test failed: "+err.Error())
+		adminProbeFailed(c, http.StatusBadRequest, reasonSMTPProbeFailed, genericSMTPProbeMessage(), err)
 		return
 	}
 
@@ -131,7 +133,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 		req.SMTPFromName = savedConfig.FromName
 	}
 	if req.SMTPHost == "" {
-		response.BadRequest(c, "SMTP host is required")
+		adminProbeFailed(c, http.StatusBadRequest, reasonSMTPHostRequired, "SMTP host is required", nil)
 		return
 	}
 
@@ -143,6 +145,13 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 		From:     req.SMTPFrom,
 		FromName: req.SMTPFromName,
 		UseTLS:   req.SMTPUseTLS,
+	}
+
+	allowedRecipients := allowedTestEmailRecipients(c.GetString(middleware.ContextKeyAuthEmail), config)
+	if !isAllowedTestEmailRecipient(req.Email, allowedRecipients) {
+		adminProbeFailed(c, http.StatusBadRequest, reasonTestEmailRecipientNotAllowed,
+			"Test email can only be sent to the current admin or the configured SMTP from address", nil)
+		return
 	}
 
 	siteName := h.settingService.GetSiteName(c.Request.Context())
@@ -180,7 +189,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 `
 
 	if err := h.emailService.SendEmailWithConfig(config, req.Email, subject, body); err != nil {
-		response.BadRequest(c, "Failed to send test email: "+err.Error())
+		adminProbeFailed(c, http.StatusBadRequest, reasonTestEmailSendFailed, genericTestEmailSendMessage(), err)
 		return
 	}
 

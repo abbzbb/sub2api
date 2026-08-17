@@ -101,6 +101,7 @@ func newSystemHandlerTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServ
 	router.POST("/api/v1/admin/system/update", handler.PerformUpdate)
 	router.POST("/api/v1/admin/system/rollback", handler.Rollback)
 	router.GET("/api/v1/admin/system/rollback-versions", handler.GetRollbackVersions)
+	router.GET("/api/v1/admin/system/check-updates", handler.CheckUpdates)
 	return router
 }
 
@@ -321,4 +322,32 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	var env systemUpdateErrorEnvelope
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	require.Equal(t, genericRollbackListMessage(), env.Message)
+	require.NotContains(t, rec.Body.String(), "github unavailable")
+}
+
+func TestSystemHandlerCheckUpdatesDoesNotEchoUpstreamError(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{
+		checkErr: errors.New("Get https://api.github.com/repos/example/releases: 403 rate limit"),
+	}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/check-updates", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	var env struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Reason  string `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	require.Equal(t, genericUpdateCheckMessage(), env.Message)
+	require.Equal(t, reasonUpdateCheckFailed, env.Reason)
+	require.NotContains(t, rec.Body.String(), "api.github.com")
+	require.NotContains(t, rec.Body.String(), "rate limit")
 }
