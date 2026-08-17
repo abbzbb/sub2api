@@ -116,3 +116,16 @@ func stringContains(s, sub string) bool {
 		return false
 	})()))
 }
+
+func TestEventLoggingBatchStillReturnsOK(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterCommonRoutes(r, HealthDependencies{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/event_logging/batch", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}

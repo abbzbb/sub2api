@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
@@ -42,15 +43,17 @@ func (c redisReadyChecker) Ping(ctx context.Context) error {
 
 // HealthDependencies are optional probes used by /health/ready.
 type HealthDependencies struct {
-	DB    ReadyChecker
-	Redis ReadyChecker
+	DB          ReadyChecker
+	Redis       ReadyChecker
+	RedisClient *redis.Client
 }
 
 // NewHealthDependencies builds readiness probes from the process SQL and Redis clients.
 func NewHealthDependencies(db *sql.DB, redisClient *redis.Client) HealthDependencies {
 	return HealthDependencies{
-		DB:    sqlReadyChecker{db: db},
-		Redis: redisReadyChecker{client: redisClient},
+		DB:          sqlReadyChecker{db: db},
+		Redis:       redisReadyChecker{client: redisClient},
+		RedisClient: redisClient,
 	}
 }
 
@@ -65,10 +68,19 @@ func RegisterCommonRoutes(r *gin.Engine, deps HealthDependencies) {
 	r.GET("/health/live", live)
 	r.GET("/health/ready", readyHandler(deps))
 
-	// Claude Code 遥测日志（忽略，直接返回200）
-	r.POST("/api/event_logging/batch", func(c *gin.Context) {
+	// Claude Code 遥测日志（忽略，直接返回200）。有 Redis 时限流，避免空 200 被用来刷连接。
+	eventLog := func(c *gin.Context) {
 		c.Status(http.StatusOK)
-	})
+	}
+	if deps.RedisClient != nil {
+		r.POST("/api/event_logging/batch", middleware.NewRateLimiter(deps.RedisClient).LimitWithOptions(
+			"event-logging-batch", 30, time.Minute, middleware.RateLimitOptions{
+				FailureMode: middleware.RateLimitFailOpen,
+			},
+		), eventLog)
+	} else {
+		r.POST("/api/event_logging/batch", eventLog)
+	}
 
 	// Setup status endpoint (always returns needs_setup: false in normal mode)
 	// This is used by the frontend to detect when the service has restarted after setup
