@@ -285,14 +285,6 @@ func (u *ImageResultUploader) buildKey(taskID string, index int, contentType str
 	return u.prefix + taskID + "-" + strconv.Itoa(index) + extensionForContentType(contentType)
 }
 
-func detectImageContentType(data []byte) string {
-	ct, err := allowedImageContentType(data)
-	if err != nil {
-		return ""
-	}
-	return ct
-}
-
 func allowedImageContentType(data []byte) (string, error) {
 	if looksLikeSVG(data) {
 		return "", errors.New("svg images are not allowed")
@@ -317,14 +309,6 @@ func looksLikeSVG(data []byte) bool {
 	}
 	lower := bytes.ToLower(window)
 	return bytes.Contains(lower, []byte("<svg"))
-}
-
-func detectedImageContentType(data []byte) string {
-	ct, err := allowedImageContentType(data)
-	if err != nil {
-		return ""
-	}
-	return ct
 }
 
 func extensionForContentType(ct string) string {

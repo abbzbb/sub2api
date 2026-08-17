@@ -2357,7 +2357,7 @@ func TestAccountTestServiceGrokOAuthPaymentRequiredTemporarilyUnschedulesAccount
 	require.Equal(t, account.ID, repo.lastRateLimitedID)
 	require.WithinDuration(t, before.Add(grokSpendingLimitProbeCooldown), repo.lastRateLimitResetAt, time.Second)
 	require.Contains(t, recorder.Body.String(), `"type":"error"`)
-	require.Contains(t, recorder.Body.String(), "Grok Responses API returned 402")
+	require.Contains(t, recorder.Body.String(), "upstream returned HTTP 402")
 }
 
 func TestForwardAsChatCompletionsForGrokStreamingUsesRawXAIChatCompletions(t *testing.T) {
@@ -3150,7 +3150,6 @@ func TestHandleGrokAccountUpstreamErrorSpendingLimit403RateLimits(t *testing.T) 
 	require.Zero(t, repo.tempUnschedCalls)
 	require.True(t, isGrokSpendingLimitError(body))
 }
-
 
 func TestHandleGrokAccountUpstreamError5xxRespectsPoolMode(t *testing.T) {
 	t.Run("pool mode keeps scheduling state", func(t *testing.T) {

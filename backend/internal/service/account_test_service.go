@@ -3025,8 +3025,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		}
 	}()
 	if resp.StatusCode >= 400 {
-		body := readAccountTestBody(resp.Body, 2<<20)
-		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
+		_ = readAccountTestBody(resp.Body, 2<<20)
 		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
