@@ -174,6 +174,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
 		if cfg.RunMode == config.RunModeSimple {
+			// Still skip charging/quota/balance, but never accept a disabled or expired key.
+			if apiKey.Status == service.StatusAPIKeyExpired || apiKey.IsExpired() {
+				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+				return
+			}
 			c.Set(string(ContextKeyAPIKey), apiKey)
 			c.Set(string(ContextKeyUser), AuthSubject{
 				UserID:      apiKey.User.ID,
