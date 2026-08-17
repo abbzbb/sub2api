@@ -188,7 +188,7 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 - **Smart Scheduling** - Intelligent account selection with sticky sessions
 - **Concurrency Control** - Per-user and per-account concurrency limits
 - **Rate Limiting** - Configurable request and token rate limits
-- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, and Stripe for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
+- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, Stripe, and Airwallex for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
 - **Admin Dashboard** - Web interface for monitoring and management
 - **Composite Groups** - Admin routing layer that resolves requested models to concrete providers for multi-provider groups ([Operator Guide](docs/COMPOSITE_GROUPS.md))
 - **External System Integration** - Embed external systems (e.g. ticketing) via iframe to extend the admin dashboard
@@ -208,8 +208,8 @@ Community projects that extend or integrate with Sub2API:
 |-----------|------------|
 | Backend | Go 1.26.6, Gin, Ent |
 | Frontend | Vue 3.4+, Vite 5+, TailwindCSS |
-| Database | PostgreSQL 15+ |
-| Cache/Queue | Redis 7+ |
+| Database | PostgreSQL 18+ (Compose uses 18) |
+| Cache/Queue | Redis 8+ (Compose uses 8) |
 
 ---
 
@@ -234,14 +234,14 @@ One-click installation script that downloads pre-built binaries from GitHub Rele
 #### Prerequisites
 
 - Linux server (amd64 or arm64)
-- PostgreSQL 15+ (installed and running)
-- Redis 7+ (installed and running)
+- PostgreSQL 18+ (installed and running)
+- Redis 8+ (installed and running)
 - Root privileges
 
 #### Installation Steps
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash
 ```
 
 The script will:
@@ -291,7 +291,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # Uninstall
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -314,7 +314,7 @@ Use the automated deployment script for easy setup:
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # Download and run deployment preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/docker-deploy.sh | bash
 
 # Start services
 docker compose up -d
@@ -336,7 +336,7 @@ If you prefer manual setup:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 
 # 2. Copy environment configuration
@@ -466,7 +466,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple-silicon Macs running macOS 26 can run the full Sub2API, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -483,16 +483,16 @@ Build and run from source code for development or customization.
 
 #### Prerequisites
 
-- Go 1.21+
+- Go 1.26.6+
 - Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
+- PostgreSQL 18+
+- Redis 8+
 
 #### Build Steps
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api
 
 # 2. Install pnpm (if not already installed)
@@ -566,7 +566,7 @@ Additional security-related options are available in `config.yaml`:
 - `security.response_headers.enabled` to enable configurable response header filtering (disabled uses default allowlist)
 - `security.csp` to control Content-Security-Policy headers
 - `billing.circuit_breaker` to fail closed on billing errors
-- `security.trust_forwarded_ip_for_api_key_acl` enables legacy raw forwarded-header takeover (enabled by default for upgrade compatibility); disable it to enforce `server.trusted_proxies`, which should contain only the exact proxy CIDRs that connect directly to Sub2API
+- `security.trust_forwarded_ip_for_api_key_acl` enables legacy raw forwarded-header takeover (disabled by default; only enable it behind an explicit `server.trusted_proxies` policy). When disabled, Gin uses `server.trusted_proxies`, which should contain only the exact proxy CIDRs that connect directly to Sub2API
 - `security.forwarded_client_ip_headers` configures up to 16 third-party CDN client-IP header names; they are checked in order before the built-in headers only while legacy takeover is enabled
 - `turnstile.required` to require Turnstile in release mode
 
@@ -738,7 +738,8 @@ Sub2API supports both Grok subscription accounts through xAI OAuth and standard 
 - Media targets for Grok groups: `/v1/images/generations`, `/images/generations`, `/v1/images/edits`, `/images/edits`, `/v1/videos/generations`, `/videos/generations`, `/v1/videos/edits`, `/videos/edits`, `/v1/videos/extensions`, `/videos/extensions`, `/v1/videos/{request_id}`, and `/videos/{request_id}`. Generation, editing, and extension requests require the group image-generation permission.
 - Media models: `grok-imagine`, `grok-imagine-image-quality`, `grok-imagine-image`, `grok-imagine-edit`, `grok-imagine-video`, and `grok-imagine-video-1.5`
 - JSON image-edit and video-generation requests accept image references in `image`, `images`, `reference_images`, and `mask` objects. Use `url` for xAI-compatible payloads; the legacy `image_url` field remains accepted and is normalized to `url` before forwarding.
-- Out of scope for this provider: TTS, transcription, browser automation, cookies, and Grok web scraping
+- Voice targets for Grok groups: `/v1/tts`, `/tts`, `/v1/stt`, `/stt`, `/v1/realtime`, `/realtime`, plus `/web_search` and `/x_search`
+- Out of scope for this provider: browser automation, cookies, and Grok web scraping
 
 ### OAuth Configuration
 
@@ -847,7 +848,7 @@ sub2api/
 │   │   ├── model/            # Data models
 │   │   ├── service/          # Business logic
 │   │   ├── handler/          # HTTP handlers
-│   │   └── gateway/          # API gateway core
+│   │   └── server/routes/    # Gateway and HTTP routes
 │   └── resources/            # Static resources
 │
 ├── frontend/                 # Vue 3 frontend

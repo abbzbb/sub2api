@@ -89,6 +89,7 @@ func TestValidateWebAuthnConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			viper.Reset()
 			t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+			t.Setenv("TOTP_ENCRYPTION_KEY", strings.Repeat("a", 64))
 			cfg, err := Load()
 			require.NoError(t, err)
 			tt.configure(cfg)

@@ -23,7 +23,7 @@ func Logger() gin.HandlerFunc {
 		c.Next()
 
 		// 跳过健康检查等高频探针路径的日志
-		if path == "/health" || path == "/setup/status" {
+		if path == "/health" || path == "/health/live" || path == "/health/ready" || path == "/setup/status" {
 			return
 		}
 

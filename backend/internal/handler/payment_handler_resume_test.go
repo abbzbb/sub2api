@@ -147,6 +147,7 @@ func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
 	require.NotEmpty(t, resp.Data["expires_at"])
 	for _, field := range []string{
 		"id",
+		"user_id",
 		"amount",
 		"pay_amount",
 		"fee_rate",
@@ -159,6 +160,7 @@ func TestVerifyOrderPublicReturnsLegacyOrderState(t *testing.T) {
 		"refund_requested_by",
 		"refund_request_reason",
 		"plan_id",
+		"provider_instance_id",
 	} {
 		require.NotContains(t, resp.Data, field)
 	}

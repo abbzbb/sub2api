@@ -191,7 +191,7 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅的
 - **智能调度** - 智能账号选择，支持粘性会话
 - **并发控制** - 用户级和账号级并发限制
 - **速率限制** - 可配置的请求和 Token 速率限制
-- **内置支付系统** - 支持 EasyPay 易支付、支付宝官方、微信官方、Stripe，用户自助充值，无需独立部署支付服务（[配置指南](docs/PAYMENT_CN.md)）
+- **内置支付系统** - 支持 EasyPay 易支付、支付宝官方、微信官方、Stripe、Airwallex，用户自助充值，无需独立部署支付服务（[配置指南](docs/PAYMENT_CN.md)）
 - **管理后台** - Web 界面进行监控和管理
 - **外部系统集成** - 支持通过 iframe 嵌入外部系统（如工单等），扩展管理后台功能
 
@@ -210,8 +210,8 @@ Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅的
 |------|------|
 | 后端 | Go 1.26.6, Gin, Ent |
 | 前端 | Vue 3.4+, Vite 5+, TailwindCSS |
-| 数据库 | PostgreSQL 15+ |
-| 缓存/队列 | Redis 7+ |
+| 数据库 | PostgreSQL 18+（Compose 使用 18） |
+| 缓存/队列 | Redis 8+（Compose 使用 8） |
 
 ---
 
@@ -236,14 +236,14 @@ Nginx 默认会丢弃名称中含下划线的请求头（如 `session_id`），�
 #### 前置条件
 
 - Linux 服务器（amd64 或 arm64）
-- PostgreSQL 15+（已安装并运行）
-- Redis 7+（已安装并运行）
+- PostgreSQL 18+（已安装并运行）
+- Redis 8+（已安装并运行）
 - Root 权限
 
 #### 安装步骤
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash
 ```
 
 脚本会自动：
@@ -293,7 +293,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # 卸载
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -316,7 +316,7 @@ curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # 下载并运行部署准备脚本
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/docker-deploy.sh | bash
 
 # 启动服务
 docker compose up -d
@@ -338,7 +338,7 @@ docker compose logs -f sub2api
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 
 # 2. 复制环境配置文件
@@ -480,7 +480,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple 芯片 Mac 在 macOS 26 上可使用 Apple `container` 1.1.0 或更高版本运行完整的 Sub2API、PostgreSQL 和 Redis：
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -497,16 +497,16 @@ cd sub2api/deploy
 
 #### 前置条件
 
-- Go 1.21+
+- Go 1.26.6+
 - Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
+- PostgreSQL 18+
+- Redis 8+
 
 #### 编译步骤
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api
 
 # 2. 安装 pnpm（如果还没有安装）
@@ -600,7 +600,7 @@ gateway:
 - `security.response_headers.enabled` 可启用可配置响应头过滤（关闭时使用默认白名单）
 - `security.csp` 配置 Content-Security-Policy
 - `billing.circuit_breaker` 计费异常时 fail-closed
-- `security.trust_forwarded_ip_for_api_key_acl` 控制旧版原始转发头接管（为升级兼容默认开启）；关闭后严格使用 `server.trusted_proxies`，其中只应填写直接连接 Sub2API 的精确代理 CIDR
+- `security.trust_forwarded_ip_for_api_key_acl` 控制旧版原始转发头接管（默认关闭；仅在明确配置 `server.trusted_proxies` 后才应开启）。关闭后严格使用 `server.trusted_proxies`，其中只应填写直接连接 Sub2API 的精确代理 CIDR
 - `security.forwarded_client_ip_headers` 最多配置 16 个第三方 CDN 客户端 IP 请求头；仅在旧版接管开启时按顺序优先于内置请求头解析
 - `turnstile.required` 在 release 模式强制启用 Turnstile
 
@@ -778,7 +778,7 @@ sub2api/
 │   │   ├── model/            # 数据模型
 │   │   ├── service/          # 业务逻辑
 │   │   ├── handler/          # HTTP 处理器
-│   │   └── gateway/          # API 网关核心
+│   │   └── server/routes/    # 网关与 HTTP 路由
 │   └── resources/            # 静态资源
 │
 ├── frontend/                 # Vue 3 前端

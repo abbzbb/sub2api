@@ -9,10 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // installMutex prevents concurrent installation attempts (TOCTOU protection)
@@ -136,6 +138,10 @@ func testDatabase(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "Invalid hostname format")
 		return
 	}
+	if err := validateSetupProbeHost(req.Host); err != nil {
+		response.Error(c, http.StatusBadRequest, "Host is not allowed")
+		return
+	}
 	if !validatePort(req.Port) {
 		response.Error(c, http.StatusBadRequest, "Invalid port number")
 		return
@@ -167,7 +173,8 @@ func testDatabase(c *gin.Context) {
 	}
 
 	if err := TestDatabaseConnection(cfg); err != nil {
-		response.Error(c, http.StatusBadRequest, "Connection failed: "+err.Error())
+		logger.L().Warn("setup test-db failed", zap.Error(err))
+		response.Error(c, http.StatusBadRequest, "Connection failed")
 		return
 	}
 
@@ -197,6 +204,10 @@ func testRedis(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "Invalid hostname format")
 		return
 	}
+	if err := validateSetupProbeHost(req.Host); err != nil {
+		response.Error(c, http.StatusBadRequest, "Host is not allowed")
+		return
+	}
 	if !validatePort(req.Port) {
 		response.Error(c, http.StatusBadRequest, "Invalid port number")
 		return
@@ -221,7 +232,8 @@ func testRedis(c *gin.Context) {
 	}
 
 	if err := TestRedisConnection(cfg); err != nil {
-		response.Error(c, http.StatusBadRequest, "Connection failed: "+err.Error())
+		logger.L().Warn("setup test-redis failed", zap.Error(err))
+		response.Error(c, http.StatusBadRequest, "Connection failed")
 		return
 	}
 
@@ -267,6 +279,10 @@ func install(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "Invalid database hostname")
 		return
 	}
+	if err := validateSetupProbeHost(req.Database.Host); err != nil {
+		response.Error(c, http.StatusBadRequest, "Database host is not allowed")
+		return
+	}
 	if !validatePort(req.Database.Port) {
 		response.Error(c, http.StatusBadRequest, "Invalid database port")
 		return
@@ -283,6 +299,10 @@ func install(c *gin.Context) {
 	// Redis validation
 	if !validateHostname(req.Redis.Host) {
 		response.Error(c, http.StatusBadRequest, "Invalid Redis hostname")
+		return
+	}
+	if err := validateSetupProbeHost(req.Redis.Host); err != nil {
+		response.Error(c, http.StatusBadRequest, "Redis host is not allowed")
 		return
 	}
 	if !validatePort(req.Redis.Port) {

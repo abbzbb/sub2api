@@ -201,9 +201,10 @@ gateway:
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600
-  # OpenAI/Codex upstream response header timeout (seconds, 0=disabled)
-  # OpenAI/Codex 等待上游响应头超时时间（秒，0=禁用本地响应头超时）
-  openai_response_header_timeout: 0
+  # OpenAI/Codex upstream response header timeout (seconds, 0=disabled).
+  # Only waits for the first response header; streaming continues after headers arrive.
+  # OpenAI/Codex 等待上游响应头超时时间（秒，0=禁用）。只约束首包，不影响流式传输。
+  openai_response_header_timeout: 90
   # Native OpenAI HTTP Responses first semantic output timeout (seconds, 0=disabled)
   # Includes response-header wait; does not apply to passthrough or WebSocket transports.
   # A timed-out request may already have incurred upstream usage; account failover can therefore duplicate upstream billing.
@@ -228,6 +229,7 @@ gateway:
   # Enable Gemini upstream response header debug logs (default: false)
   # 是否开启 Gemini 上游响应头调试日志（默认 false）
   gemini_debug_response_headers: false
+  # Sora is temporarily unavailable; these keys are reserved and currently unused.
   # Sora max request body size in bytes (0=use max_body_size)
   # Sora 请求体最大字节数（0=使用 max_body_size）
   sora_max_body_size: 268435456
@@ -650,7 +652,7 @@ log:
     thereafter: 100
 
 # =============================================================================
-# Sora Direct Client Configuration
+# Sora Direct Client Configuration (temporarily unavailable / reserved)
 # Sora 直连配置
 # =============================================================================
 sora:
@@ -1197,10 +1199,12 @@ oidc_connect:
 # 默认设置
 # =============================================================================
 default:
-  # Initial admin account (created on first run)
-  # 初始管理员账户（首次运行时创建）
-  admin_email: "admin@example.com"
-  admin_password: "admin123"
+  # These fields do not create an admin by themselves. Use the setup wizard,
+  # AUTO_SETUP + ADMIN_PASSWORD, or an empty users table bootstrap.
+  # 这些字段不会单独创建管理员。请使用安装向导、AUTO_SETUP + ADMIN_PASSWORD，
+  # 或空用户表引导。
+  admin_email: ""
+  admin_password: ""
 
   # Default settings for new users
   # 新用户默认设置
