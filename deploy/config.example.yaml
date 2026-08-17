@@ -201,9 +201,10 @@ gateway:
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600
-  # OpenAI/Codex upstream response header timeout (seconds, 0=disabled)
-  # OpenAI/Codex 等待上游响应头超时时间（秒，0=禁用本地响应头超时）
-  openai_response_header_timeout: 0
+  # OpenAI/Codex upstream response header timeout (seconds, 0=disabled).
+  # Only waits for the first response header; streaming continues after headers arrive.
+  # OpenAI/Codex 等待上游响应头超时时间（秒，0=禁用）。只约束首包，不影响流式传输。
+  openai_response_header_timeout: 90
   # Native OpenAI HTTP Responses first semantic output timeout (seconds, 0=disabled)
   # Includes response-header wait; does not apply to passthrough or WebSocket transports.
   # A timed-out request may already have incurred upstream usage; account failover can therefore duplicate upstream billing.

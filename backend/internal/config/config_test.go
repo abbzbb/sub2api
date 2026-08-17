@@ -620,12 +620,12 @@ func TestLoadOpenAIHTTP2DisabledFromEnv(t *testing.T) {
 	require.False(t, cfg.Gateway.OpenAIHTTP2.Enabled)
 }
 
-func TestLoadDefaultOpenAIResponseHeaderTimeoutUnlimited(t *testing.T) {
+func TestLoadDefaultOpenAIResponseHeaderTimeout(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, 0, cfg.Gateway.OpenAIResponseHeaderTimeout)
+	require.Equal(t, 90, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
 func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
