@@ -24,7 +24,6 @@ const (
 const (
 	alipayFundChangeYes    = "Y"
 	alipayErrTradeNotExist = "ACQ.TRADE_NOT_EXIST"
-	alipayRefundSuffix     = "-refund"
 )
 
 var (
@@ -296,6 +295,10 @@ func (a *Alipay) VerifyNotification(ctx context.Context, rawBody string, _ map[s
 		return nil, fmt.Errorf("alipay verify notification: %w", err)
 	}
 
+	if err := rejectStalePaymentNotify(notification.NotifyTime, time.Now()); err != nil {
+		return nil, err
+	}
+
 	status := payment.ProviderStatusFailed
 	if notification.TradeStatus == alipay.TradeStatusSuccess || notification.TradeStatus == alipay.TradeStatusFinished {
 		status = payment.ProviderStatusSuccess
@@ -338,11 +341,12 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		return nil, err
 	}
 
+	outRequestNo := alipayRefundOutRequestNo(req)
 	result, err := client.TradeRefund(ctx, alipay.TradeRefund{
 		OutTradeNo:   req.OrderID,
 		RefundAmount: req.Amount,
 		RefundReason: req.Reason,
-		OutRequestNo: fmt.Sprintf("%s-refund-%d", req.OrderID, time.Now().UnixNano()),
+		OutRequestNo: outRequestNo,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alipay TradeRefund: %w", err)
@@ -353,15 +357,54 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		refundStatus = payment.ProviderStatusSuccess
 	}
 
-	refundID := result.TradeNo
-	if refundID == "" {
-		refundID = req.OrderID + alipayRefundSuffix
-	}
-
 	return &payment.RefundResponse{
-		RefundID: refundID,
+		RefundID: outRequestNo,
 		Status:   refundStatus,
 	}, nil
+}
+
+// QueryRefund looks up a previously requested Alipay refund by the stable
+// OutRequestNo (orderID + amount).
+func (a *Alipay) QueryRefund(ctx context.Context, req payment.RefundQueryRequest) (*payment.RefundResponse, error) {
+	client, err := a.getClient()
+	if err != nil {
+		return nil, err
+	}
+	outRequestNo := strings.TrimSpace(req.RefundID)
+	if outRequestNo == "" {
+		outRequestNo = alipayRefundOutRequestNo(payment.RefundRequest{OrderID: req.OrderID, Amount: req.Amount})
+	}
+	result, err := client.TradeFastPayRefundQuery(ctx, alipay.TradeFastPayRefundQuery{
+		OutTradeNo:   req.OrderID,
+		OutRequestNo: outRequestNo,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("alipay TradeFastPayRefundQuery: %w", err)
+	}
+	status := payment.ProviderStatusPending
+	switch strings.TrimSpace(result.RefundStatus) {
+	case "REFUND_SUCCESS":
+		status = payment.ProviderStatusSuccess
+	case "REFUND_FAIL":
+		status = payment.ProviderStatusFailed
+	}
+	return &payment.RefundResponse{RefundID: outRequestNo, Status: status}, nil
+}
+
+func alipayRefundOutRequestNo(req payment.RefundRequest) string {
+	orderID := strings.TrimSpace(req.OrderID)
+	amount := strings.TrimSpace(req.Amount)
+	if orderID == "" {
+		orderID = "unknown"
+	}
+	if amount == "" {
+		amount = "0"
+	}
+	id := orderID + "-refund-" + amount
+	if len(id) > 64 {
+		id = id[:64]
+	}
+	return id
 }
 
 // CancelPayment closes a pending trade on Alipay.
@@ -407,4 +450,5 @@ var (
 	_ payment.Provider                 = (*Alipay)(nil)
 	_ payment.CancelableProvider       = (*Alipay)(nil)
 	_ payment.MerchantIdentityProvider = (*Alipay)(nil)
+	_ payment.RefundQueryProvider      = (*Alipay)(nil)
 )

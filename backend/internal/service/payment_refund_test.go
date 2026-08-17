@@ -676,3 +676,12 @@ type refundQueryProviderTestDouble struct {
 func (p *refundQueryProviderTestDouble) QueryRefund(context.Context, payment.RefundQueryRequest) (*payment.RefundResponse, error) {
 	return p.refundResponse, nil
 }
+
+func TestGwRefundRejectsMissingTradeIdentifiers(t *testing.T) {
+	svc := &PaymentService{}
+	_, err := svc.gwRefund(context.Background(), &RefundPlan{
+		Order: &dbent.PaymentOrder{ID: 1, PaymentTradeNo: "", OutTradeNo: ""},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing payment trade number")
+}

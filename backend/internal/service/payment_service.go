@@ -3,10 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -54,18 +54,30 @@ const paymentResumeSigningKeyEnv = "PAYMENT_RESUME_SIGNING_KEY"
 // --- Types ---
 
 // generateOutTradeNo creates a unique external order ID for payment providers.
-// Format: sub2_20250409aB3kX9mQ (prefix + date + 8-char random)
+// Format: sub2_20250409 + 16-char crypto-random suffix.
 func generateOutTradeNo() string {
 	date := time.Now().Format("20060102")
-	rnd := generateRandomString(8)
+	rnd := generateRandomString(16)
 	return orderIDPrefix + date + rnd
 }
 
 func generateRandomString(n int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	if n <= 0 {
+		return ""
+	}
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		// crypto/rand failure is exceptional; keep a non-empty unique-ish fallback
+		// without using math/rand, then still mix in a timestamp nibble.
+		fallback := fmt.Sprintf("%x", time.Now().UnixNano())
+		for i := 0; i < n; i++ {
+			raw[i] = fallback[i%len(fallback)]
+		}
+	}
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = charset[rand.IntN(len(charset))]
+		b[i] = charset[int(raw[i])%len(charset)]
 	}
 	return string(b)
 }

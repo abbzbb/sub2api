@@ -290,16 +290,42 @@ func TestEasyPaySupportedTypesIncludeCustomMethods(t *testing.T) {
 
 func newTestEasyPay(t *testing.T, apiBase string) *EasyPay {
 	t.Helper()
+	// Tests talk to httptest (http://127.0.0.1). Production NewEasyPay requires HTTPS.
+	return &EasyPay{
+		instanceID: "test-instance",
+		config: map[string]string{
+			"pid":       "pid-1",
+			"pkey":      "pkey-1",
+			"apiBase":   normalizeEasyPayAPIBase(apiBase),
+			"notifyUrl": "https://example.com/notify",
+			"returnUrl": "https://example.com/return",
+		},
+		httpClient: &http.Client{Timeout: easypayHTTPTimeout},
+	}
+}
 
-	provider, err := NewEasyPay("test-instance", map[string]string{
-		"pid":       "pid-1",
-		"pkey":      "pkey-1",
-		"apiBase":   apiBase,
+func TestNewEasyPayRequiresHTTPSAPIBase(t *testing.T) {
+	t.Parallel()
+	_, err := NewEasyPay("test-instance", map[string]string{
+		"pid": "pid-1", "pkey": "pkey-1",
+		"apiBase":   "http://pay.example.com",
+		"notifyUrl": "https://example.com/notify",
+		"returnUrl": "https://example.com/return",
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("NewEasyPay(http) error = %v, want HTTPS required", err)
+	}
+
+	got, err := NewEasyPay("test-instance", map[string]string{
+		"pid": "pid-1", "pkey": "pkey-1",
+		"apiBase":   "https://pay.example.com",
 		"notifyUrl": "https://example.com/notify",
 		"returnUrl": "https://example.com/return",
 	})
 	if err != nil {
-		t.Fatalf("NewEasyPay: %v", err)
+		t.Fatalf("NewEasyPay(https) = %v", err)
 	}
-	return provider
+	if got.apiBase() != "https://pay.example.com" {
+		t.Fatalf("apiBase = %q", got.apiBase())
+	}
 }
