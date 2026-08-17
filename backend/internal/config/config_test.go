@@ -82,7 +82,6 @@ func TestLoadRedisUsernameFromEnvironment(t *testing.T) {
 	require.Equal(t, "app-user", cfg.Redis.Username)
 }
 
-
 func TestLoadReleaseRequiresTOTPEncryptionKey(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
