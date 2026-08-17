@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const (
@@ -753,7 +754,11 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 		configured = true
 	}
 	if strings.TrimSpace(input.BaseURL) != "" {
-		cfg.BaseURL = input.BaseURL
+		normalized, err := validateContentModerationBaseURL(input.BaseURL)
+		if err != nil {
+			return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_BASE_URL", "OpenAI Base URL 无效")
+		}
+		cfg.BaseURL = normalized
 	}
 	if strings.TrimSpace(input.Model) != "" {
 		cfg.Model = input.Model
@@ -796,16 +801,21 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 		result, err := s.callModerationOnceWithInput(ctx, cfg, key, testInput, &httpStatus)
 		latency := int(time.Since(start).Milliseconds())
 		keyHash := moderationAPIKeyHash(key)
+		status := s.apiKeyStatusForHash(idx, keyHash, maskSecretTail(key), configured)
+		status.LastTested = true
+		status.LastLatencyMS = latency
+		status.LastHTTPStatus = httpStatus
 		if err != nil {
-			s.markAPIKeyError(key, err.Error(), latency, httpStatus)
+			// Admin tests must not freeze or mutate production key health.
+			status.Status = "error"
+			status.LastError = contentModerationStableError(httpStatus)
 		} else {
-			s.markAPIKeySuccess(key, latency, httpStatus)
+			status.Status = "ok"
+			status.LastError = ""
 			if auditResult == nil {
 				auditResult = buildContentModerationTestAuditResult(result, cfg.Thresholds)
 			}
 		}
-		status := s.apiKeyStatusForHash(idx, keyHash, maskSecretTail(key), configured)
-		status.LastTested = true
 		items = append(items, status)
 	}
 	return &TestContentModerationAPIKeysResult{Items: items, AuditResult: auditResult, ImageCount: imageCount}, nil
@@ -1658,9 +1668,11 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	default:
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_MODE", "内容审计模式无效")
 	}
-	if _, err := url.ParseRequestURI(cfg.BaseURL); err != nil {
+	normalized, err := validateContentModerationBaseURL(cfg.BaseURL)
+	if err != nil {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_BASE_URL", "OpenAI Base URL 无效")
 	}
+	cfg.BaseURL = normalized
 	if cfg.ProxyID != nil && s.proxyRepo != nil {
 		if _, err := s.proxyRepo.GetByID(ctx, *cfg.ProxyID); err != nil {
 			return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_PROXY", fmt.Sprintf("代理服务器不存在: %d", *cfg.ProxyID))
@@ -1715,7 +1727,7 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		if trackLoad {
 			s.finishModerationAPIKeyCall(key, latency, false)
 		}
-		s.markAPIKeyError(key, err.Error(), latency, httpStatus)
+		s.markAPIKeyError(key, contentModerationStableError(httpStatus), latency, httpStatus)
 		lastErr = err
 		if httpStatus == http.StatusBadRequest {
 			break
@@ -2365,6 +2377,25 @@ func (s *ContentModerationService) markAPIKeyError(key string, errText string, l
 	state.LastTested = true
 	if freezeDuration := contentModerationFreezeDurationForHTTPStatus(httpStatus); freezeDuration > 0 {
 		state.FrozenUntil = time.Now().Add(freezeDuration)
+	}
+}
+
+var validateContentModerationBaseURL = func(raw string) (string, error) {
+	return urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{})
+}
+
+func contentModerationStableError(httpStatus int) string {
+	switch {
+	case httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden:
+		return "upstream_auth_failed"
+	case httpStatus == http.StatusTooManyRequests || httpStatus == 529:
+		return "upstream_rate_limited"
+	case httpStatus >= 500:
+		return "upstream_unavailable"
+	case httpStatus > 0:
+		return "upstream_http_error"
+	default:
+		return "moderation_failed"
 	}
 }
 

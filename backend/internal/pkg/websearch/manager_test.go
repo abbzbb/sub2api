@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,4 +321,14 @@ func TestManager_ResetUsage_NilRedis(t *testing.T) {
 	m := NewManager(nil, nil)
 	err := m.ResetUsage(context.Background(), "brave")
 	require.NoError(t, err)
+}
+
+func TestManager_TestSearchQueryLimitsAndStableErrors(t *testing.T) {
+	m := NewManager([]ProviderConfig{{Type: "brave", APIKey: ""}}, nil)
+	_, _, err := m.TestSearch(context.Background(), SearchRequest{Query: "   "})
+	require.ErrorIs(t, err, errWebsearchEmptyQuery)
+	_, _, err = m.TestSearch(context.Background(), SearchRequest{Query: strings.Repeat("q", maxTestSearchQueryRunes+1)})
+	require.ErrorIs(t, err, errWebsearchQueryTooLong)
+	_, _, err = m.TestSearch(context.Background(), SearchRequest{Query: "ok"})
+	require.ErrorIs(t, err, errWebsearchNoProvider)
 }

@@ -82,6 +82,43 @@ func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
 const maxAccountTestMediaBytes = 8 << 20
 
 const (
+	accountTestErrRequestFailed = "upstream_request_failed"
+	accountTestErrInvalidURL    = "invalid_upstream_url"
+	accountTestErrForbidden     = "upstream_forbidden"
+	accountTestErrHTTP          = "upstream_http_error"
+	accountTestErrParseFailed   = "upstream_response_invalid"
+	accountTestErrStreamFailed  = "upstream_stream_failed"
+)
+
+func accountTestClientMessage(status int) string {
+	if status > 0 {
+		return fmt.Sprintf("upstream returned HTTP %d", status)
+	}
+	return accountTestErrRequestFailed
+}
+
+func persistAccountTestError(status int) string {
+	if status == http.StatusForbidden {
+		return accountTestErrForbidden
+	}
+	if status == http.StatusUnauthorized {
+		return "upstream_unauthorized"
+	}
+	if status > 0 {
+		return accountTestErrHTTP
+	}
+	return "probe_failed"
+}
+
+func readAccountTestBody(r io.Reader, limit int64) []byte {
+	if limit <= 0 {
+		limit = 1 << 20
+	}
+	body, _ := io.ReadAll(io.LimitReader(r, limit))
+	return body
+}
+
+const (
 	defaultGeminiTextTestPrompt  = "hi"
 	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
 	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
@@ -350,7 +387,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		}
 		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 		}
 		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/v1/messages?beta=true"
 	} else {
@@ -405,20 +442,16 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
-
-		// 403 表示账号被上游封禁，标记为 error 状态
+		_ = readAccountTestBody(resp.Body, 1<<20)
 		if resp.StatusCode == http.StatusForbidden {
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.accountRepo.SetError(ctx, account.ID, persistAccountTestError(resp.StatusCode))
 		}
-
-		return s.sendErrorAndEnd(c, errMsg)
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Process SSE stream
@@ -474,17 +507,16 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
+		_ = readAccountTestBody(resp.Body, 1<<20)
 		if resp.StatusCode == http.StatusForbidden {
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.accountRepo.SetError(ctx, account.ID, persistAccountTestError(resp.StatusCode))
 		}
-		return s.sendErrorAndEnd(c, errMsg)
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	return s.processClaudeStream(c, resp.Body)
@@ -557,14 +589,14 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, nil)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(resp.Body)
+	body := readAccountTestBody(resp.Body, 1<<20)
 
 	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Bedrock non-streaming response is standard Claude JSON, extract the text
@@ -574,7 +606,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse response: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrParseFailed)
 	}
 
 	text := ""
@@ -661,7 +693,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 		}
 		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
@@ -743,7 +775,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -755,7 +787,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := readAccountTestBody(resp.Body, 1<<20)
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
 		if !agentIdentityTaskRecoveryWasTried(ctx) && credentialAccount.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
 			expectedTaskID := credentialAccount.GetCredential("task_id")
@@ -770,10 +802,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		// 401 Unauthorized: 标记账号为永久错误
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.accountRepo.SetError(ctx, account.ID, persistAccountTestError(resp.StatusCode))
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Process SSE stream
@@ -954,7 +985,7 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 	// for the user-facing test result.
 	var responseBody []byte
 	if resp.StatusCode >= http.StatusBadRequest && resp.Body != nil {
-		responseBody, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		responseBody = readAccountTestBody(resp.Body, 1<<20)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(responseBody))
 	}
@@ -1069,7 +1100,7 @@ func (s *AccountTestService) reconcileGrokTestResponseState(
 func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID string) error {
 	apiURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	s.prepareGrokTestSSE(c)
@@ -1091,15 +1122,15 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	s.observeGrokTestResponse(withGrokTeamRateLimitModel(ctx, testModelID), account, resp)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API returned %d: %s", resp.StatusCode, string(body)))
+		_ = readAccountTestBody(resp.Body, 1<<20)
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	return s.processOpenAIStreamForAccount(c, account, resp.Body)
@@ -1143,7 +1174,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 
 	apiURL, err := buildGrokMediaURL(account, s.cfg, endpoint, "")
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok media base URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	s.prepareGrokTestSSE(c)
@@ -1209,10 +1240,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(ctx, account, resp)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read Grok image response: %s", err.Error()))
-	}
+	body := readAccountTestBody(resp.Body, 1<<20)
 	if resp.StatusCode != http.StatusOK {
 		return s.sendErrorAndEnd(c, formatGrokImagesAPIError(resp.StatusCode, body, hasSourceImage))
 	}
@@ -1226,7 +1254,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse Grok image response: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrParseFailed)
 	}
 	if len(result.Data) == 0 {
 		return s.sendErrorAndEnd(c, "No images returned from Grok API")
@@ -1258,7 +1286,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context.Context, account *Account, authToken, modelID, prompt string, opts AccountTestOptions) error {
 	apiURL, err := buildGrokMediaURL(account, s.cfg, GrokMediaEndpointVideosGenerations, "")
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok media base URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	s.prepareGrokTestSSE(c)
@@ -1291,17 +1319,14 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(ctx, account, resp)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read Grok video response: %s", err.Error()))
-	}
+	body := readAccountTestBody(resp.Body, 1<<20)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok videos API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	requestID := strings.TrimSpace(gjson.GetBytes(body, "request_id").String())
@@ -1309,7 +1334,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		requestID = strings.TrimSpace(gjson.GetBytes(body, "id").String())
 	}
 	if requestID == "" {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video create response missing request_id: %s", string(body)))
+		return s.sendErrorAndEnd(c, accountTestErrParseFailed)
 	}
 
 	s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("video request accepted: %s\n", requestID)})
@@ -1317,7 +1342,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 
 	statusURL, err := buildGrokMediaURL(account, s.cfg, GrokMediaEndpointVideoStatus, requestID)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok video status URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	deadline := time.Now().Add(60 * time.Second)
@@ -1332,12 +1357,12 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		s.applyGrokTestRequestHeaders(statusReq, account, authToken, "application/json")
 		statusResp, err := s.httpUpstream.Do(statusReq, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 		if err != nil {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video status failed: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 		}
-		statusBody, _ := io.ReadAll(statusResp.Body)
+		statusBody := readAccountTestBody(statusResp.Body, 1<<20)
 		_ = statusResp.Body.Close()
 		if statusResp.StatusCode != http.StatusOK && statusResp.StatusCode != http.StatusAccepted {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video status returned %d: %s", statusResp.StatusCode, string(statusBody)))
+			return s.sendErrorAndEnd(c, accountTestClientMessage(statusResp.StatusCode))
 		}
 		st := strings.ToLower(strings.TrimSpace(gjson.GetBytes(statusBody, "status").String()))
 		progress := gjson.GetBytes(statusBody, "progress")
@@ -1350,7 +1375,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		case "done", "completed", "succeeded", "success":
 			return s.emitGrokVideoResult(c, ctx, account, authToken, requestID, statusBody)
 		case "failed", "error", "canceled", "cancelled":
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video failed: %s", string(statusBody)))
+			return s.sendErrorAndEnd(c, "upstream_job_failed")
 		}
 		select {
 		case <-ctx.Done():
@@ -1379,7 +1404,7 @@ func (s *AccountTestService) emitGrokVideoResult(c *gin.Context, ctx context.Con
 	// Fetch binary content via official /videos/{id}/content (Bearer-authenticated).
 	contentURL, err := buildGrokMediaURL(account, s.cfg, GrokMediaEndpointVideoContent, requestID)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok video content URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 	s.sendEvent(c, TestEvent{Type: "status", Text: "Downloading video content for preview..."})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, contentURL, nil)
@@ -1389,7 +1414,7 @@ func (s *AccountTestService) emitGrokVideoResult(c *gin.Context, ctx context.Con
 	s.applyGrokTestRequestHeaders(req, account, authToken, "video/*, application/octet-stream, */*")
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video content download failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20)) // 64 MiB cap for admin preview
@@ -1401,7 +1426,7 @@ func (s *AccountTestService) emitGrokVideoResult(c *gin.Context, ctx context.Con
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 			return nil
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video content returned %d: %s", resp.StatusCode, truncateString(string(body), 300)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" || strings.HasPrefix(ct, "application/octet-stream") {
@@ -1451,7 +1476,7 @@ User query:
 
 	apiURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -1461,14 +1486,14 @@ User query:
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("standalone web_search probe failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(withGrokTeamRateLimitModel(ctx, grokDefaultResponsesModel), account, resp)
 
-	body, _ := io.ReadAll(resp.Body)
+	body := readAccountTestBody(resp.Body, 1<<20)
 	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("standalone web_search probe returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Normalize like gateway extractGrokWebSearchSources (URL-only sources are enough for connectivity).
@@ -1517,7 +1542,7 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 	}
 	apiURL, err := buildGrokVoiceURL(account, s.cfg, "tts")
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok TTS URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	s.prepareGrokTestSSE(c)
@@ -1531,7 +1556,6 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 		{"text": text, "language": "en"},
 		{"text": text, "language": "English", "voice_id": "Ara"},
 	}
-	var lastBody string
 	var lastCode int
 	for _, payload := range payloads {
 		payloadBytes, _ := json.Marshal(payload)
@@ -1542,13 +1566,12 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 		s.applyGrokTestRequestHeaders(req, account, authToken, "audio/*, application/json, */*")
 		resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 		if err != nil {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok TTS failed: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body := readAccountTestBody(resp.Body, 1<<20)
 		_ = resp.Body.Close()
 		s.observeGrokTestResponse(ctx, account, resp)
 		lastCode = resp.StatusCode
-		lastBody = string(body)
 		if resp.StatusCode == http.StatusOK {
 			ct := resp.Header.Get("Content-Type")
 			if ct == "" {
@@ -1571,7 +1594,7 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 			break
 		}
 	}
-	return s.sendErrorAndEnd(c, fmt.Sprintf("Grok TTS returned %d: %s", lastCode, lastBody))
+	return s.sendErrorAndEnd(c, accountTestClientMessage(lastCode))
 }
 
 // testGrokSTT posts audio to /v1/stt. When audioDataURL is set, uses the
@@ -1579,7 +1602,7 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, account *Account, authToken, audioDataURL string) error {
 	apiURL, err := buildGrokVoiceURL(account, s.cfg, "stt")
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok STT URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 
 	s.prepareGrokTestSSE(c)
@@ -1593,7 +1616,7 @@ func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, ac
 		}
 		raw, mime, err := decodeAccountTestDataURL(audioDataURL)
 		if err != nil {
-			return s.sendErrorAndEnd(c, "Invalid audio data URL: "+err.Error())
+			return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 		}
 		audioBytes = raw
 		filename = sttFilenameForMIME(mime)
@@ -1633,14 +1656,13 @@ func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, ac
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok STT failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(ctx, account, resp)
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody := readAccountTestBody(resp.Body, 1<<20)
 	if resp.StatusCode != http.StatusOK {
-		// 4xx on synthetic audio still proves the STT endpoint is wired; report clearly.
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok STT returned %d: %s", resp.StatusCode, string(respBody)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 	text := strings.TrimSpace(gjson.GetBytes(respBody, "text").String())
 	if text == "" {
@@ -1669,11 +1691,11 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 
 	base, err := buildGrokVoiceURL(account, s.cfg, "realtime")
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok Realtime URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 	u, err := url.Parse(base)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok Realtime URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
@@ -1714,19 +1736,10 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 
 	conn, status, _, dialErr := dialer.Dial(dialCtx, wsURL, headers, s.grokTestProxyURL(account))
 	if dialErr != nil {
-		detail := dialErr.Error()
-		var hs *openAIWSHandshakeError
-		if errors.As(dialErr, &hs) && len(hs.Body) > 0 {
-			body := strings.TrimSpace(string(hs.Body))
-			if len(body) > 300 {
-				body = body[:300] + "..."
-			}
-			detail = fmt.Sprintf("%s body=%s", detail, body)
-		}
 		if status > 0 {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Realtime WS handshake failed (HTTP %d): %s", status, detail))
+			return s.sendErrorAndEnd(c, accountTestClientMessage(status))
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Realtime WS dial failed: %s", detail))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -1844,16 +1857,12 @@ func formatGrokImageTransportError(err error, hasSourceImage bool, payloadBytes 
 }
 
 func formatGrokImagesAPIError(status int, body []byte, hasSourceImage bool) string {
-	msg := strings.TrimSpace(string(body))
-	if len(msg) > 800 {
-		msg = msg[:800] + "..."
-	}
-	prefix := fmt.Sprintf("Grok images API returned %d: %s", status, msg)
-	lower := strings.ToLower(msg)
+	msg := accountTestClientMessage(status)
+	lower := strings.ToLower(string(body))
 	if hasSourceImage && (strings.Contains(lower, "too small") || strings.Contains(lower, "at least 8")) {
-		return prefix + " — upload a source image with both width and height ≥ 8 px."
+		return msg + " — upload a source image with both width and height ≥ 8 px."
 	}
-	return prefix
+	return msg
 }
 
 func decodeAccountTestDataURL(raw string) (data []byte, mime string, err error) {
@@ -1996,20 +2005,19 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := readAccountTestBody(resp.Body, 1<<20)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.accountRepo.SetError(ctx, account.ID, persistAccountTestError(resp.StatusCode))
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
@@ -2055,7 +2063,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 		}
 		apiURL = buildOpenAIResponsesURL(normalizedBaseURL)
 	default:
@@ -2128,11 +2136,11 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body := readAccountTestBody(resp.Body, 2<<20)
 	body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
 	if !agentIdentityTaskRecoveryWasTried(ctx) && credentialAccount.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
 		expectedTaskID := credentialAccount.GetCredential("task_id")
@@ -2161,10 +2169,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.accountRepo.SetError(ctx, account.ID, persistAccountTestError(resp.StatusCode))
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	if !compactionFound {
@@ -2268,13 +2275,13 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		_ = readAccountTestBody(resp.Body, 1<<20)
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Process SSE stream
@@ -2524,7 +2531,7 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 				return nil
 			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrStreamFailed)
 		}
 
 		line = strings.TrimSpace(line)
@@ -2652,7 +2659,7 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 				return nil
 			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrStreamFailed)
 		}
 
 		line = strings.TrimSpace(line)
@@ -2716,7 +2723,7 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 				}
 				return s.sendErrorAndEnd(c, "Invalid Chat Completions response from /v1/chat/completions: expected SSE JSON data")
 			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions stream read error from /v1/chat/completions: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrStreamFailed)
 		}
 
 		line = strings.TrimSpace(line)
@@ -2737,12 +2744,8 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 		}
 		seenJSON = true
 
-		if errData, ok := data["error"].(map[string]any); ok {
-			errorMsg := "Chat Completions API (/v1/chat/completions) returned an error"
-			if msg, ok := errData["message"].(string); ok && msg != "" {
-				errorMsg = msg
-			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) error: %s", errorMsg))
+		if _, ok := data["error"].(map[string]any); ok {
+			return s.sendErrorAndEnd(c, accountTestErrHTTP)
 		}
 
 		choices, ok := data["choices"].([]any)
@@ -2790,7 +2793,7 @@ func (s *AccountTestService) processOpenAIStreamForAccount(c *gin.Context, accou
 				}
 				return s.sendErrorAndEnd(c, "Stream ended before response.completed")
 			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+			return s.sendErrorAndEnd(c, accountTestErrStreamFailed)
 		}
 
 		line = strings.TrimSpace(line)
@@ -2860,7 +2863,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	}
 	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrInvalidURL)
 	}
 	apiURL := buildOpenAIImagesURL(normalizedBaseURL, openAIImagesGenerationsEndpoint)
 
@@ -2896,17 +2899,14 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read response: %s", err.Error()))
-	}
+	body := readAccountTestBody(resp.Body, 1<<20)
 
 	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
 	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
@@ -2917,7 +2917,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse response: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrParseFailed)
 	}
 
 	if len(result.Data) == 0 {
@@ -3017,7 +3017,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	proxyURL := account.ProxyURL()
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Responses API request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrRequestFailed)
 	}
 	defer func() {
 		if resp != nil && resp.Body != nil {
@@ -3025,24 +3025,17 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		}
 	}()
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		body := readAccountTestBody(resp.Body, 2<<20)
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
-		message := strings.TrimSpace(extractUpstreamErrorMessage(body))
-		if message == "" {
-			message = fmt.Sprintf("Responses API returned %d", resp.StatusCode)
-		}
-		return s.sendErrorAndEnd(c, message)
+		return s.sendErrorAndEnd(c, accountTestClientMessage(resp.StatusCode))
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to read image response: %s", err.Error()))
-	}
+	body := readAccountTestBody(resp.Body, 1<<20)
 	body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
 
 	results, _, _, _, _, err := collectOpenAIImagesFromResponsesBody(body)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse image response: %s", err.Error()))
+		return s.sendErrorAndEnd(c, accountTestErrParseFailed)
 	}
 	if len(results) == 0 {
 		return s.sendErrorAndEnd(c, "No images returned from responses API")

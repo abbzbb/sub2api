@@ -44,6 +44,21 @@ func TestHTTPClientUsesDirectStandardDialer(t *testing.T) {
 	require.True(t, ok)
 	require.Nil(t, transport.Proxy)
 	require.NotNil(t, transport.DialContext)
+	require.NotNil(t, client.CheckRedirect)
+}
+
+func TestSecureHTTPClientBlocksCrossHostRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/models", http.StatusFound)
+	}))
+	defer redirect.Close()
+	result := newProbeTestService().Probe(context.Background(), ProbeRequest{Endpoint: probeEndpoint(redirect.URL, "")})
+	require.False(t, result.OK)
+	require.NotEqual(t, "healthy", result.Status)
 }
 
 func TestOpenAICompatibleScannerRequestContract(t *testing.T) {
@@ -67,13 +82,17 @@ func TestOpenAICompatibleScannerRequestContract(t *testing.T) {
 }
 
 func TestOpenAICompatibleScannerFollowsRedirectAndRejectsOversize(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" && r.URL.RawQuery == "" && r.Header.Get("X-Redirected") == "" {
+			http.Redirect(w, r, "/v1/chat/completions?ok=1", http.StatusFound)
+			return
+		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Safety: Safe\nCategories: None"}}]}`))
-	}))
-	defer target.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
-	defer redirect.Close()
-	result, err := NewOpenAICompatibleScanner().Scan(context.Background(), ActiveEndpoint{ID: "redirect", BaseURL: redirect.URL, Model: DefaultGuardModel, TimeoutMS: 1000}, "hello", AllScannerIDs)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	result, err := NewOpenAICompatibleScanner().Scan(context.Background(), ActiveEndpoint{ID: "redirect", BaseURL: server.URL, Model: DefaultGuardModel, TimeoutMS: 1000}, "hello", AllScannerIDs)
 	require.NoError(t, err)
 	require.Equal(t, EventPass, result.Decision)
 	oversize := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

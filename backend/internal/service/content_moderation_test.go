@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -1382,6 +1383,10 @@ func TestContentModerationCallModeration_FreezesByHTTPStatus(t *testing.T) {
 }
 
 func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {
+	orig := validateContentModerationBaseURL
+	validateContentModerationBaseURL = func(raw string) (string, error) { return raw, nil }
+	t.Cleanup(func() { validateContentModerationBaseURL = orig })
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":{"message":"invalid moderation request"}}`))
@@ -1872,4 +1877,43 @@ func TestContentModerationUpdateConfig_CyberPolicyExcludeFromBanCount(t *testing
 	})
 	require.NoError(t, err)
 	require.False(t, view.CyberPolicyExcludeFromBanCount)
+}
+
+func TestContentModerationValidateConfigRejectsPrivateBaseURL(t *testing.T) {
+	svc := NewContentModerationService(&contentModerationTestSettingRepo{values: map[string]string{}}, nil, nil, nil, nil, nil, nil, nil)
+	cfg := defaultContentModerationConfig()
+	cfg.BaseURL = "http://127.0.0.1:8080"
+	err := svc.validateConfig(context.Background(), cfg)
+	require.Error(t, err)
+	require.Equal(t, "INVALID_CONTENT_MODERATION_BASE_URL", infraerrors.Reason(err))
+
+	cfg.BaseURL = "https://169.254.169.254"
+	err = svc.validateConfig(context.Background(), cfg)
+	require.Error(t, err)
+}
+
+func TestContentModerationTestAPIKeysDoesNotFreezeOnServerError(t *testing.T) {
+	orig := validateContentModerationBaseURL
+	validateContentModerationBaseURL = func(raw string) (string, error) { return raw, nil }
+	t.Cleanup(func() { validateContentModerationBaseURL = orig })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+	}))
+	defer server.Close()
+
+	svc := NewContentModerationService(&contentModerationTestSettingRepo{values: map[string]string{}}, nil, nil, nil, nil, nil, nil, nil)
+	result, err := svc.TestAPIKeys(context.Background(), TestContentModerationAPIKeysInput{
+		APIKeys: []string{"sk-test"},
+		BaseURL: server.URL,
+		Prompt:  "hello",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "error", result.Items[0].Status)
+	require.Equal(t, "upstream_unavailable", result.Items[0].LastError)
+	require.Nil(t, result.Items[0].FrozenUntil)
+	require.Zero(t, result.Items[0].FailureCount)
+	status := svc.apiKeyStatusForHash(0, moderationAPIKeyHash("sk-test"), maskSecretTail("sk-test"), true)
+	require.Nil(t, status.FrozenUntil)
 }
