@@ -604,7 +604,7 @@ probe_redis() {
 
 probe_app() {
     container exec "${APP_CONTAINER}" \
-        wget -q -T 5 -O /dev/null http://localhost:8080/health
+        wget -q -T 5 -O /dev/null http://localhost:8080/health/ready
 }
 
 probe_host_app() {
