@@ -19,6 +19,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
+var (
+	errCRSLoginFailed  = errors.New("crs login failed")
+	errCRSExportFailed = errors.New("crs export failed")
+)
+
 type CRSSyncService struct {
 	accountRepo        AccountRepository
 	proxyRepo          ProxyRepository
@@ -1353,22 +1358,18 @@ func crsLogin(ctx context.Context, client *http.Client, baseURL, username, passw
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("crs login failed: status=%d body=%s", resp.StatusCode, string(raw))
+		slog.Warn("crs login failed", "status", resp.StatusCode, "body_bytes", len(raw))
+		return "", errCRSLoginFailed
 	}
 
 	var parsed crsLoginResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("crs login parse failed: %w", err)
+		slog.Warn("crs login parse failed", "error", err, "body_bytes", len(raw))
+		return "", errCRSLoginFailed
 	}
 	if !parsed.Success || strings.TrimSpace(parsed.Token) == "" {
-		msg := parsed.Message
-		if msg == "" {
-			msg = parsed.Error
-		}
-		if msg == "" {
-			msg = "unknown error"
-		}
-		return "", errors.New("crs login failed: " + msg)
+		slog.Warn("crs login rejected", "status", resp.StatusCode)
+		return "", errCRSLoginFailed
 	}
 	return parsed.Token, nil
 }
@@ -1388,22 +1389,18 @@ func crsExportAccounts(ctx context.Context, client *http.Client, baseURL, adminT
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("crs export failed: status=%d body=%s", resp.StatusCode, string(raw))
+		slog.Warn("crs export failed", "status", resp.StatusCode, "body_bytes", len(raw))
+		return nil, errCRSExportFailed
 	}
 
 	var parsed crsExportResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("crs export parse failed: %w", err)
+		slog.Warn("crs export parse failed", "error", err, "body_bytes", len(raw))
+		return nil, errCRSExportFailed
 	}
 	if !parsed.Success {
-		msg := parsed.Message
-		if msg == "" {
-			msg = parsed.Error
-		}
-		if msg == "" {
-			msg = "unknown error"
-		}
-		return nil, errors.New("crs export failed: " + msg)
+		slog.Warn("crs export rejected", "status", resp.StatusCode)
+		return nil, errCRSExportFailed
 	}
 	return &parsed, nil
 }
