@@ -241,6 +241,9 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 			{name: "reference_requires_data_or_file_uri", mutate: func(r *BatchImageSubmitRequest) {
 				r.Items[0].ReferenceImages = []BatchImageReferenceInput{{MimeType: "image/png"}}
 			}, want: ErrBatchImageInvalidReferenceImage},
+			{name: "rejects_user_file_uri", mutate: func(r *BatchImageSubmitRequest) {
+				r.Items[0].ReferenceImages = []BatchImageReferenceInput{{MimeType: "image/png", FileURI: "gs://bucket/refs/style.jpg"}}
+			}, want: ErrBatchImageInvalidReferenceImage},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {

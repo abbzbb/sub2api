@@ -252,3 +252,22 @@ func TestImageStorageSettingsFallBackToConfigFile(t *testing.T) {
 	require.Equal(t, "yaml-bucket", fetched.Bucket)
 	require.Empty(t, fetched.SecretAccessKey)
 }
+
+func TestImageStorageSettingsReuseBackupClearsPublicBaseURL(t *testing.T) {
+	svc, repo, built := newImageStorageFixture(t, config.ImageStorageConfig{})
+	ctx := context.Background()
+	seedBackupS3(t, repo, BackupS3Config{
+		Endpoint: "https://acct.r2.cloudflarestorage.com", Region: "auto",
+		Bucket: "backup-bucket", AccessKeyID: "ak", SecretAccessKey: "sk", Prefix: "backups/",
+	})
+
+	saved, err := svc.Update(ctx, ImageStorageSettings{
+		Enabled: true, ReuseBackupS3: true, PublicBaseURL: "https://cdn.example.com",
+	})
+	require.NoError(t, err)
+	require.Empty(t, saved.PublicBaseURL)
+
+	_, enabled := svc.resolve()
+	require.True(t, enabled)
+	require.Empty(t, (*built)[0].PublicBaseURL)
+}

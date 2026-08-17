@@ -171,6 +171,8 @@ func (s *ImageStorageSettingService) Update(ctx context.Context, in ImageStorage
 		// 复用备份凭证时不落自己的密钥，避免同一份密钥在库里存两份。
 		in.Endpoint, in.Region, in.AccessKeyID, in.SecretAccessKey = "", "", "", ""
 		in.ForcePathStyle = false
+		// Reusing the backup bucket must not publish objects via a public base URL.
+		in.PublicBaseURL = ""
 	} else if in.SecretAccessKey == "" {
 		if old, err := s.load(ctx); err == nil && old != nil {
 			in.SecretAccessKey = old.SecretAccessKey
@@ -268,6 +270,7 @@ func (s *ImageStorageSettingService) toImageStorageConfig(ctx context.Context, i
 		if cfg.Bucket == "" {
 			cfg.Bucket = backupCfg.Bucket
 		}
+		cfg.PublicBaseURL = ""
 	} else if cfg.SecretAccessKey != "" {
 		decrypted, err := s.encryptor.Decrypt(cfg.SecretAccessKey)
 		if err != nil {
