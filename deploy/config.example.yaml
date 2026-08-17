@@ -229,6 +229,7 @@ gateway:
   # Enable Gemini upstream response header debug logs (default: false)
   # 是否开启 Gemini 上游响应头调试日志（默认 false）
   gemini_debug_response_headers: false
+  # Sora is temporarily unavailable; these keys are reserved and currently unused.
   # Sora max request body size in bytes (0=use max_body_size)
   # Sora 请求体最大字节数（0=使用 max_body_size）
   sora_max_body_size: 268435456
@@ -651,7 +652,7 @@ log:
     thereafter: 100
 
 # =============================================================================
-# Sora Direct Client Configuration
+# Sora Direct Client Configuration (temporarily unavailable / reserved)
 # Sora 直连配置
 # =============================================================================
 sora:

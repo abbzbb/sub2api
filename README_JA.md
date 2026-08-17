@@ -190,7 +190,7 @@ Sub2API は、AI 製品のサブスクリプションから API クォータを�
 - **スマートスケジューリング** - スティッキーセッション付きのインテリジェントなアカウント選択
 - **同時実行制御** - ユーザーごと・アカウントごとの同時実行数制限
 - **レート制限** - 設定可能なリクエスト数およびトークンレート制限
-- **内蔵決済システム** - EasyPay、Alipay、WeChat Pay、Stripe に対応。ユーザーのセルフサービスチャージが可能で、別途決済サービスのデプロイは不要（[設定ガイド](docs/PAYMENT.md)）
+- **内蔵決済システム** - EasyPay、Alipay、WeChat Pay、Stripe、Airwallex に対応。ユーザーのセルフサービスチャージが可能で、別途決済サービスのデプロイは不要（[設定ガイド](docs/PAYMENT.md)）
 - **管理ダッシュボード** - 監視・管理のための Web インターフェース
 - **外部システム連携** - 外部システム（チケット管理など）を iframe 経由で管理ダッシュボードに埋め込み可能
 
@@ -209,8 +209,8 @@ Sub2API を拡張・統合するコミュニティプロジェクト:
 |-----------|------------|
 | バックエンド | Go 1.26.6, Gin, Ent |
 | フロントエンド | Vue 3.4+, Vite 5+, TailwindCSS |
-| データベース | PostgreSQL 15+ |
-| キャッシュ/キュー | Redis 7+ |
+| データベース | PostgreSQL 18+（Compose は 18） |
+| キャッシュ/キュー | Redis 8+（Compose は 8） |
 
 ---
 
@@ -235,14 +235,14 @@ GitHub Releases からビルド済みバイナリをダウンロードするワ�
 #### 前提条件
 
 - Linux サーバー（amd64 または arm64）
-- PostgreSQL 15+（インストール済みかつ稼働中）
-- Redis 7+（インストール済みかつ稼働中）
+- PostgreSQL 18+（インストール済みかつ稼働中）
+- Redis 8+（インストール済みかつ稼働中）
 - root 権限
 
 #### インストール手順
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash
 ```
 
 スクリプトは以下を実行します:
@@ -292,7 +292,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # アンインストール
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -315,7 +315,7 @@ PostgreSQL と Redis のコンテナを含む Docker Compose でデプロイし�
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # デプロイ準備スクリプトをダウンロードして実行
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/abbzbb/sub2api/self/main/deploy/docker-deploy.sh | bash
 
 # サービスを起動
 docker compose up -d
@@ -337,7 +337,7 @@ docker compose logs -f sub2api
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 
 # 2. 環境設定ファイルをコピー
@@ -467,7 +467,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple シリコン搭載 Mac と macOS 26 では、Apple `container` 1.1.0 以降を使用して Sub2API、PostgreSQL、Redis の完全なスタックを実行できます:
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -484,16 +484,16 @@ cd sub2api/deploy
 
 #### 前提条件
 
-- Go 1.21+
+- Go 1.26.6+
 - Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
+- PostgreSQL 18+
+- Redis 8+
 
 #### ビルド手順
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/abbzbb/sub2api.git
 cd sub2api
 
 # 2. pnpm をインストール（未インストールの場合）
@@ -713,7 +713,7 @@ sub2api/
 │   │   ├── model/            # データモデル
 │   │   ├── service/          # ビジネスロジック
 │   │   ├── handler/          # HTTP ハンドラー
-│   │   └── gateway/          # API ゲートウェイコア
+│   │   └── server/routes/    # ゲートウェイと HTTP ルート
 │   └── resources/            # 静的リソース
 │
 ├── frontend/                 # Vue 3 フロントエンド

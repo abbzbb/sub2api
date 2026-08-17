@@ -7,29 +7,29 @@
 | 项目 | 说明 |
 |------|------|
 | **上游仓库** | Wei-Shaw/sub2api |
-| **Fork 仓库** | bayma888/sub2api-bmai |
-| **技术栈** | Go 后端 (Ent ORM + Gin) + Vue3 前端 (pnpm) |
-| **数据库** | PostgreSQL 16 + Redis |
+| **Fork 仓库** | abbzbb/sub2api |
+| **Stack** | Go 1.26.6 + Vue3 |
+| **数据库** | PostgreSQL 18 + Redis 8 |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
 
 ## 二、本地环境配置
 
-### PostgreSQL 16 (Windows 服务)
+### PostgreSQL (local service)
 
 | 配置项 | 值 |
 |--------|-----|
 | 端口 | 5432 |
 | psql 路径 | `C:\Program Files\PostgreSQL\16\bin\psql.exe` |
 | pg_hba.conf | `C:\Program Files\PostgreSQL\16\data\pg_hba.conf` |
-| 数据库凭据 | user=`sub2api`, password=`sub2api`, dbname=`sub2api` |
-| 超级用户 | user=`postgres`, password=`postgres` |
+| DB credentials | local-only values |
+| Superuser | local-only values |
 
 ### Redis
 
 | 配置项 | 值 |
 |--------|-----|
 | 端口 | 6379 |
-| 密码 | 无 |
+| Redis auth | optional locally; required in production |
 
 ### 开发工具
 
