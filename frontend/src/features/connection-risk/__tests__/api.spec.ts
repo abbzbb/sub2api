@@ -11,6 +11,7 @@ vi.mock('@/api/client', () => ({
 
 import { apiClient } from '@/api/client'
 import * as api from '../api'
+import { connectionRiskPhaseForAPI, connectionRiskPhaseForUI } from '../types'
 
 describe('connection-risk api', () => {
   beforeEach(() => {
@@ -32,6 +33,15 @@ describe('connection-risk api', () => {
     expect(apiClient.get).toHaveBeenCalledWith('/admin/connection-risk/events', {
       params: { page: 2, page_size: 20, status: 'open', severity: 'high', user_id: '3', rule: 'R1' },
     })
+  })
+
+  it('maps backend phases onto the observe/enforce UI', () => {
+    expect(connectionRiskPhaseForUI('observe')).toBe('observe')
+    expect(connectionRiskPhaseForUI('auto_disable')).toBe('enforce')
+    expect(connectionRiskPhaseForUI('soft_throttle')).toBe('enforce')
+    expect(connectionRiskPhaseForUI('enforce')).toBe('enforce')
+    expect(connectionRiskPhaseForAPI('enforce')).toBe('auto_disable')
+    expect(connectionRiskPhaseForAPI('observe')).toBe('observe')
   })
 
   it('updateConfig puts body', async () => {

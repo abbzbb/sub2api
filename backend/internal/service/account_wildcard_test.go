@@ -526,14 +526,14 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	}
 
 	mapping := account.GetModelMapping()
-	if mapping["gemini-3-flash"] != "gemini-3-flash" {
-		t.Fatalf("expected gemini-3-flash passthrough to be auto-filled, got: %q", mapping["gemini-3-flash"])
+	if mapping["gemini-3-pro-high"] != "gemini-3.1-pro-high" {
+		t.Fatalf("expected custom remap preserved, got: %q", mapping["gemini-3-pro-high"])
 	}
-	if mapping["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatalf("expected gemini-3.1-pro-high passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-high"])
+	if _, ok := mapping["gemini-3-flash"]; ok {
+		t.Fatalf("did not expect Gemini passthroughs injected into small custom allowlist")
 	}
-	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
-		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
+	if _, ok := mapping["gemini-3.1-pro-low"]; ok {
+		t.Fatalf("did not expect gemini-3.1-pro-low passthrough on small custom allowlist")
 	}
 	// Remapped high target means this is not a pure default subset — defaults
 	// must not bulk-merge (would clobber intentional custom allowlists).
@@ -581,6 +581,9 @@ func TestAccountGetModelMapping_AntigravityMergesMissingDefaultKeys(t *testing.T
 	}
 	if mapping["gemini-3.1-pro-high"] == "" {
 		t.Fatalf("expected gemini-3.1-pro-high present after merge, mapping=%v", mapping)
+	}
+	if mapping["gemini-3-flash"] != "gemini-3-flash" {
+		t.Fatalf("expected gemini-3-flash passthrough on stale default snapshot, got: %q", mapping["gemini-3-flash"])
 	}
 }
 

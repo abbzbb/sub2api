@@ -13,6 +13,7 @@ import type {
   ConnectionRiskRuntime,
   ConnectionRiskSettings,
 } from './types'
+import { connectionRiskPhaseForAPI, connectionRiskPhaseForUI } from './types'
 
 const { t } = useI18n()
 
@@ -38,6 +39,15 @@ const selected = ref<ConnectionRiskEvent | null>(null)
 
 const settings = ref<ConnectionRiskSettings | null>(null)
 const runtime = ref<ConnectionRiskRuntime | null>(null)
+
+const uiPhase = computed({
+  get: (): 'observe' | 'enforce' => connectionRiskPhaseForUI(settings.value?.phase),
+  set: (value: 'observe' | 'enforce') => {
+    if (!settings.value) return
+    settings.value.phase = connectionRiskPhaseForAPI(value)
+  },
+})
+const phaseIsEnforce = computed(() => connectionRiskPhaseForUI(settings.value?.phase) === 'enforce')
 
 const RULE_IDS = ['R1', 'R2', 'R3_abs', 'R4', 'R5', 'R6', 'R7'] as const
 
@@ -455,7 +465,7 @@ onMounted(async () => {
           >
             {{ t('admin.connectionRisk.overview.phase') }} ·
             {{
-              settings.phase === 'enforce'
+              phaseIsEnforce
                 ? t('admin.connectionRisk.overview.phaseEnforce')
                 : t('admin.connectionRisk.overview.phaseObserve')
             }}
@@ -1007,7 +1017,7 @@ onMounted(async () => {
                 </label>
                 <label class="block text-sm">
                   <span class="text-gray-600 dark:text-dark-300">{{ t('admin.connectionRisk.config.phase') }}</span>
-                  <select v-model="settings.phase" class="input input-sm mt-1.5 w-full">
+                  <select v-model="uiPhase" class="input input-sm mt-1.5 w-full">
                     <option value="observe">{{ t('admin.connectionRisk.config.phaseObserve') }}</option>
                     <option value="enforce">{{ t('admin.connectionRisk.config.phaseEnforce') }}</option>
                   </select>

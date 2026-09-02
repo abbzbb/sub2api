@@ -38,6 +38,19 @@ export interface ConnectionRiskEventPage {
   page_size: number
 }
 
+/** UI only has observe|enforce; backend stores observe|soft_throttle|auto_disable. */
+export function connectionRiskPhaseForUI(phase: string | undefined): 'observe' | 'enforce' {
+  const value = (phase || '').trim().toLowerCase()
+  if (value === 'auto_disable' || value === 'soft_throttle' || value === 'enforce') {
+    return 'enforce'
+  }
+  return 'observe'
+}
+
+export function connectionRiskPhaseForAPI(phase: string | undefined): 'observe' | 'auto_disable' {
+  return connectionRiskPhaseForUI(phase) === 'enforce' ? 'auto_disable' : 'observe'
+}
+
 export interface ConnectionRiskSettings {
   enabled: boolean
   emit_enabled: boolean
