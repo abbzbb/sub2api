@@ -594,6 +594,9 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 		return nil, "", "", err
 	}
 	proxyURL := s.resolveProxyURL(ctx, account)
+	if (account.ProxyGroupID != nil || account.ProxyGroupExhausted) && strings.TrimSpace(proxyURL) == "" {
+		return nil, "", "", infraerrors.New(http.StatusServiceUnavailable, "GROK_QUOTA_PROXY_NOT_FOUND", "proxy group has no healthy member")
+	}
 
 	var token string
 	if account.IsGrokFreeRecoveryPending() {
@@ -616,8 +619,11 @@ func (s *GrokQuotaService) resolveProxyURL(ctx context.Context, account *Account
 		return ""
 	}
 	// 优先已 hydrate 的 Proxy（含代理组选择结果）。
-	if account.Proxy != nil {
+	if account.Proxy != nil && strings.TrimSpace(account.Proxy.Host) != "" {
 		return account.ProxyURL()
+	}
+	if account.ProxyGroupID != nil || account.ProxyGroupExhausted {
+		return ""
 	}
 	if account.ProxyID == nil || s == nil || s.proxyRepo == nil {
 		return ""

@@ -749,7 +749,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" {
 			payloadBytes := []byte(payload)
 			message := extractOpenAISSEErrorMessage(payloadBytes)
-			s.reconcileGrokStreamFailedAccountState(c, account, payloadBytes, message)
+			if !clientDisconnected {
+				s.reconcileGrokStreamFailedAccountState(c, account, payloadBytes, message)
+			}
 			if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
 				// cyber_policy 致命且不可重试：不 failover。下发标准 error chunk +
 				// [DONE]，让程序化客户端可感知并停止重试（F4）；标记供 handler 事后
@@ -787,7 +789,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			} else {
 				shouldFailover = s.shouldFailoverOpenAIStreamFailedEvent(account, payloadBytes, message)
 			}
-			if !clientOutputStarted && shouldFailover {
+			if !clientDisconnected && !clientOutputStarted && shouldFailover {
 				streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
 				return true
 			}

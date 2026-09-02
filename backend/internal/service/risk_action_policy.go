@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -43,8 +44,14 @@ func (p *RiskActionPolicy) HandleNewEvent(ctx context.Context, event *Connection
 	if p == nil || event == nil {
 		return
 	}
-	// Phase A: no automatic mutation when action flags are off (defaults).
-	if settings.Actions.SoftThrottleEnabled && p.signals != nil && event.APIKeyID != nil {
+	phase := strings.ToLower(strings.TrimSpace(settings.Phase))
+	if phase == "enforce" {
+		phase = connectionRiskPhaseAutoDisable
+	}
+	// Phase A: no automatic mutation when action flags are off, or when the
+	// configured phase is observe (UI "enforce" is normalized to auto_disable).
+	if settings.Actions.SoftThrottleEnabled && p.signals != nil && event.APIKeyID != nil &&
+		(phase == connectionRiskPhaseSoftThrottle || phase == connectionRiskPhaseAutoDisable) {
 		capRPM := settings.Actions.ThrottleAbsRPM
 		if capRPM <= 0 {
 			capRPM = 30
@@ -57,7 +64,8 @@ func (p *RiskActionPolicy) HandleNewEvent(ctx context.Context, event *Connection
 		}
 	}
 
-	if settings.Actions.AutoDisableEnabled && severityAtLeast(event.Severity, connectionRiskSeverityCritical) {
+	if settings.Actions.AutoDisableEnabled && phase == connectionRiskPhaseAutoDisable &&
+		severityAtLeast(event.Severity, connectionRiskSeverityCritical) {
 		p.autoDisable(ctx, event)
 	}
 }

@@ -654,6 +654,7 @@ import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
+import { sanitizeUrl } from '@/utils/url'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
 import OpenAIQuotaResetCell from './OpenAIQuotaResetCell.vue'
@@ -1248,10 +1249,15 @@ const grokIsFree = computed(() => {
 const grokFreeQuotaUsage = computed(() => usageInfo.value?.grok_local_usage_24h || null)
 const grokFreeTokenBar = computed(() => {
   if (!grokIsFree.value || !grokFreeQuotaUsage.value) return null
+  const quotaLimit = usageInfo.value?.grok_token_quota?.limit
+  const knownFreeQuota =
+    quotaLimit === 500_000 || quotaLimit === 1_000_000 || quotaLimit === 2_000_000
   const reported = usageInfo.value?.grok_free_token_limit
-  const limit = typeof reported === 'number' && reported > 0
-    ? reported
-    : GROK_FREE_TOKEN_LIMIT_FALLBACK
+  const limit = knownFreeQuota
+    ? quotaLimit
+    : typeof reported === 'number' && reported > 0
+      ? reported
+      : GROK_FREE_TOKEN_LIMIT_FALLBACK
   const used = Math.max(0, grokFreeQuotaUsage.value.tokens || 0)
   return { utilization: Math.min(100, (used / limit) * 100), limit }
 })
@@ -1321,7 +1327,7 @@ const hasIneligibleTiers = computed(() => {
 // Antigravity 403 forbidden 状态
 const isForbidden = computed(() => !!usageInfo.value?.is_forbidden)
 const forbiddenType = computed(() => usageInfo.value?.forbidden_type || 'forbidden')
-const validationURL = computed(() => usageInfo.value?.validation_url || '')
+const validationURL = computed(() => sanitizeUrl(usageInfo.value?.validation_url || ''))
 
 // 需要重新授权（401）
 const needsReauth = computed(() => !!usageInfo.value?.needs_reauth)
@@ -1556,6 +1562,20 @@ const handleGrokProbed = (result: GrokQuotaProbeResult) => {
   emit('account-state-changed', props.account.id)
   const current = usageInfo.value
   if (!current) {
+    const probeLimit = result.snapshot?.tokens?.limit
+    if (result.local_usage_24h != null || result.billing || result.snapshot) {
+      usageInfo.value = {
+        grok_billing: result.billing,
+        grok_local_usage_24h: result.local_usage_24h,
+        grok_local_usage_7d: result.local_usage_7d,
+        grok_local_usage_monthly: result.local_usage_monthly,
+        grok_request_quota: result.snapshot?.requests,
+        grok_token_quota: result.snapshot?.tokens,
+        grok_free_token_limit:
+          typeof probeLimit === 'number' && probeLimit > 0 ? probeLimit : undefined,
+        grok_last_status_code: result.status_code ?? result.snapshot?.status_code
+      }
+    }
     if (result.local_usage_24h == null) {
       refreshGrokUsage().catch((e) => {
         console.error('Failed to refresh Grok usage after probe:', e)
@@ -1587,6 +1607,10 @@ const handleGrokProbed = (result: GrokQuotaProbeResult) => {
     grok_local_usage_monthly: result.local_usage_monthly ?? current.grok_local_usage_monthly,
     grok_request_quota: snapshot?.requests ?? current.grok_request_quota,
     grok_token_quota: snapshot?.tokens ?? current.grok_token_quota,
+    grok_free_token_limit:
+      typeof snapshot?.tokens?.limit === 'number' && snapshot.tokens.limit > 0
+        ? snapshot.tokens.limit
+        : current.grok_free_token_limit,
     grok_retry_after_seconds: snapshot?.retry_after_seconds ?? current.grok_retry_after_seconds,
     grok_entitlement_status: entitlementStatus,
     grok_quota_snapshot_state: result.billing

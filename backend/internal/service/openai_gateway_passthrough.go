@@ -1836,6 +1836,16 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithModel(
 		}
 	}
 	retryableOnSameAccount := openAIStreamFailedEventRetryableOnSameAccount(account, payload, message)
+	var grokRetryDelay time.Duration
+	var grokRetryDeadline time.Time
+	var grokRetryMax int
+	if account != nil && account.Platform == PlatformGrok {
+		grokBody := payload
+		if normalized := openAIStreamFailedEventPassthroughBody(payload, message); len(normalized) > 0 {
+			grokBody = normalized
+		}
+		retryableOnSameAccount, grokRetryDelay, grokRetryDeadline, grokRetryMax = grokSameAccountRetryMetadata(account, statusCode, grokBody)
+	}
 	// 流终止事件承载在 HTTP 200 内，外层响应头描述的是成功流状态，而不是语义上的
 	// 429 事件。仅在配额分类时忽略这些头；故障转移错误仍保留它们，使 Retry-After
 	// 和请求 ID 能继续传递给后续处理。
@@ -1844,6 +1854,11 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithModel(
 		classificationHeaders = nil
 	}
 	failoverErr := s.newOpenAIAccountFailoverErrorWithClassificationHeaders(account, statusCode, headers, classificationHeaders, payload, message, shouldDisable, retryableOnSameAccount)
+	if account != nil && account.Platform == PlatformGrok {
+		failoverErr.SameAccountRetryDelay = grokRetryDelay
+		failoverErr.SameAccountRetryDeadline = grokRetryDeadline
+		failoverErr.SameAccountRetryMax = grokRetryMax
+	}
 	if failoverErr.IsCredentialFailure() || failoverErr.RequestScopedTransient {
 		return failoverErr
 	}

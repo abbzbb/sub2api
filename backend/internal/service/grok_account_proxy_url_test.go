@@ -63,6 +63,25 @@ func TestGrokOAuthService_AccountProxyURL_EmptyPlaceholderFallsBackToRepo(t *tes
 	require.Equal(t, "GROK_OAUTH_PROXY_LOOKUP_FAILED", infraerrors.Reason(err))
 }
 
+func TestGrokOAuthService_AccountProxyURL_GroupWithoutMemberFailsClosed(t *testing.T) {
+	t.Parallel()
+	groupID := int64(8)
+	svc := NewGrokOAuthService(nil, nil)
+
+	_, err := svc.accountProxyURL(context.Background(), &Account{ID: 3, ProxyGroupID: &groupID})
+	require.Error(t, err)
+	require.Equal(t, "GROK_OAUTH_PROXY_NOT_FOUND", infraerrors.Reason(err))
+
+	_, err = svc.accountProxyURL(context.Background(), &Account{ID: 4, ProxyGroupID: &groupID, Proxy: &Proxy{}})
+	require.Error(t, err)
+	require.Equal(t, "GROK_OAUTH_PROXY_NOT_FOUND", infraerrors.Reason(err))
+
+	exhausted := &Account{ID: 5, ProxyGroupExhausted: true}
+	_, err = svc.accountProxyURL(context.Background(), exhausted)
+	require.Error(t, err)
+	require.Equal(t, "GROK_OAUTH_PROXY_NOT_FOUND", infraerrors.Reason(err))
+}
+
 func TestAccountHasConfiguredProxy_CoversGroup(t *testing.T) {
 	t.Parallel()
 	groupID := int64(3)

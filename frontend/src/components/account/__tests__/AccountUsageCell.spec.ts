@@ -1151,6 +1151,100 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('24h|100')
   })
 
+  it('Grok Free bar prefers probe grok_token_quota.limit over 500k fallback', async () => {
+    getUsage.mockResolvedValue({
+      subscription_tier: 'FREE',
+      grok_local_usage_24h: {
+        requests: 1,
+        tokens: 500_000,
+        cost: 0,
+        standard_cost: 0
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 4419, platform: 'grok', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
+          },
+          AccountQuotaInfo: true,
+          GrokQuotaProbeCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const setupState = wrapper.vm.$.setupState as {
+      handleGrokProbed: (result: Record<string, unknown>) => void
+    }
+    setupState.handleGrokProbed({
+      source: 'active_probe',
+      snapshot: {
+        tokens: { limit: 1_000_000, remaining: 500_000 },
+        headers_observed: true,
+        updated_at: '2026-07-18T00:00:00Z',
+        status_code: 200
+      },
+      status_code: 200,
+      headers_observed: true,
+      reset_supported: false,
+      fetched_at: 1
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('24h|50')
+  })
+
+  it('Grok probe seeds 24h usage when usageInfo is still empty', async () => {
+    getUsage.mockResolvedValue(null)
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 4420, platform: 'grok', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
+          },
+          AccountQuotaInfo: true,
+          GrokQuotaProbeCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const setupState = wrapper.vm.$.setupState as {
+      handleGrokProbed: (result: Record<string, unknown>) => void
+    }
+    setupState.handleGrokProbed({
+      source: 'active_probe',
+      billing: { period_type: 'weekly', plan: '', usage_percent: null },
+      local_usage_24h: { requests: 2, tokens: 250_000, cost: 0, standard_cost: 0 },
+      snapshot: {
+        tokens: { limit: 500_000, remaining: 250_000 },
+        headers_observed: true,
+        updated_at: '2026-07-18T00:00:00Z',
+        status_code: 200
+      },
+      status_code: 200,
+      headers_observed: true,
+      reset_supported: false,
+      fetched_at: 1
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('24h|')
+  })
+
   it('Grok Free 24h bar shows rolling local usage chips', async () => {
     getUsage.mockResolvedValue({
       grok_free_token_limit: 1_000_000,

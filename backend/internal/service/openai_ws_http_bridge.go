@@ -823,8 +823,6 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 					shouldFailover = false
 				} else {
 					shouldFailover = s.shouldFailoverGrokUpstreamError(statusCode, upstreamMessage)
-					canonicalModel := canonicalOpenAIAccountSchedulingModel(account, originalModel)
-					s.handleGrokAccountUpstreamError(ctx, account, statusCode, resp.Header, upstreamMessage, canonicalModel)
 				}
 			}
 			// Grok response.failed 必须先写出并 reconcile 账号状态，再按语义
@@ -832,6 +830,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			// 上游 429 允许后续 turn 同账号重试。
 			if !wroteDownstream && !clientDisconnected && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
 				if account.Platform == PlatformGrok && eventType == "error" {
+					s.reconcileGrokStreamFailedAccountState(c, account, upstreamMessage, errMessage)
 					return nil, newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false)
 				}
 				if account.Platform != PlatformGrok {
@@ -965,7 +964,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 				statusCode := openAIStreamFailedEventSemanticStatus(upstreamMessage, extractOpenAISSEErrorMessage(upstreamMessage))
 				switch statusCode {
-				case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+				case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
 					failedMessage := extractOpenAISSEErrorMessage(upstreamMessage)
 					if failedMessage == "" {
 						failedMessage = http.StatusText(statusCode)

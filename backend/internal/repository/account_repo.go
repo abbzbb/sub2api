@@ -3036,6 +3036,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		} else {
 			proxyPlaceholder := "$" + itoa(idx)
 			setClauses = append(setClauses, "proxy_id = "+proxyPlaceholder)
+			setClauses = append(setClauses, "proxy_group_id = NULL")
 			ollamaProxyIdentityChanged = "proxy_id IS DISTINCT FROM " + proxyPlaceholder
 			args = append(args, *updates.ProxyID)
 			idx++
@@ -3049,6 +3050,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			setClauses = append(setClauses, "proxy_group_id = $"+itoa(idx))
 			args = append(args, *updates.ProxyGroupID)
 			idx++
+			setClauses = append(setClauses, "proxy_id = NULL")
 		}
 	}
 	if updates.Concurrency != nil {

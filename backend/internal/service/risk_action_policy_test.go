@@ -121,6 +121,7 @@ func TestRiskActionPolicy_AutoDisableUser_UsesUpdateStatusField(t *testing.T) {
 		Severity:    connectionRiskSeverityCritical,
 	}
 	policy.HandleNewEvent(context.Background(), event, ConnectionRiskSettings{
+		Phase:   connectionRiskPhaseAutoDisable,
 		Actions: ConnectionRiskActionSettings{AutoDisableEnabled: true},
 	})
 
@@ -146,9 +147,36 @@ func TestRiskActionPolicy_AutoDisableUser_SkipsAdmin(t *testing.T) {
 		Severity:    connectionRiskSeverityCritical,
 	}
 	policy.HandleNewEvent(context.Background(), event, ConnectionRiskSettings{
+		Phase:   connectionRiskPhaseAutoDisable,
 		Actions: ConnectionRiskActionSettings{AutoDisableEnabled: true},
 	})
 
 	require.Equal(t, 0, repo.updateCalls, "admin must never be auto-disabled")
 	require.Empty(t, event.ActionTaken)
+}
+
+func TestRiskActionPolicy_AutoDisableRequiresAutoDisablePhase(t *testing.T) {
+	uid := int64(88)
+	repo := &mockUserRepo{
+		getByIDUser: &User{ID: uid, Role: RoleUser, Status: StatusActive},
+	}
+	policy := &RiskActionPolicy{users: repo}
+	event := &ConnectionRiskEvent{
+		UserID:      &uid,
+		SubjectType: ConnectionRiskSubjectUser,
+		Severity:    connectionRiskSeverityCritical,
+	}
+
+	policy.HandleNewEvent(context.Background(), event, ConnectionRiskSettings{
+		Phase:   connectionRiskPhaseObserve,
+		Actions: ConnectionRiskActionSettings{AutoDisableEnabled: true},
+	})
+	require.Equal(t, 0, repo.updateCalls)
+
+	policy.HandleNewEvent(context.Background(), event, ConnectionRiskSettings{
+		Phase:   "enforce",
+		Actions: ConnectionRiskActionSettings{AutoDisableEnabled: true},
+	})
+	require.Equal(t, 1, repo.updateCalls)
+	require.Equal(t, "disabled_user", event.ActionTaken)
 }

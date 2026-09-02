@@ -28,6 +28,7 @@ func TestClaimDueGrokFreeRecoveryCandidatesUsesAtomicSkipLockedPage(t *testing.T
 			now, now.Format(time.RFC3339Nano), next.Format(time.RFC3339Nano), lease, 100,
 			service.SchedulerOutboxEventAccountChanged,
 			grokRecoveryRFC3339Pattern,
+			now.Add(25*time.Hour),
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	repo := newAccountRepositoryWithSQL(nil, captureQuerySQL{db: db, captured: &capturedSQL}, nil)
@@ -41,9 +42,7 @@ func TestClaimDueGrokFreeRecoveryCandidatesUsesAtomicSkipLockedPage(t *testing.T
 	require.Contains(t, normalized, "LIMIT $9")
 	require.Contains(t, normalized, "UPDATE accounts a")
 	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
-	// nextProbeAt is only bound as RFC3339 text ($7); an unused time.Time arg
-	// previously made Postgres reject the query with "could not determine data type".
-	require.NotContains(t, normalized, "$12")
+	require.Contains(t, normalized, "LEAST(GREATEST(COALESCE(a.rate_limit_reset_at, $8), $8), $12)")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -96,6 +95,7 @@ func TestClaimGrokFreeProactiveCandidatesGuardsMalformedTimestampBeforeCast(t *t
 			now, now.Format(time.RFC3339Nano), next.Format(time.RFC3339Nano), lease,
 			service.SchedulerOutboxEventAccountChanged,
 			grokRecoveryRFC3339Pattern,
+			now.Add(25*time.Hour),
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	repo := newAccountRepositoryWithSQL(nil, captureQuerySQL{db: db, captured: &capturedSQL}, nil)
@@ -106,6 +106,7 @@ func TestClaimGrokFreeProactiveCandidatesGuardsMalformedTimestampBeforeCast(t *t
 	require.Empty(t, accounts)
 	normalized := normalizeSQLWhitespace(capturedSQL)
 	require.Contains(t, normalized, "CASE WHEN a.extra ->> $6 ~ $12 THEN (a.extra ->> $6)::timestamptz <= $7 ELSE TRUE END")
+	require.Contains(t, normalized, "LEAST(GREATEST(COALESCE(a.rate_limit_reset_at, $10), $10), $13)")
 	require.Contains(t, normalized, "FOR UPDATE OF a SKIP LOCKED")
 	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
 	require.NoError(t, mock.ExpectationsWereMet())

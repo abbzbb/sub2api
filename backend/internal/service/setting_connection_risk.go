@@ -225,6 +225,8 @@ func normalizeConnectionRiskSettings(s *ConnectionRiskSettings) {
 	switch strings.ToLower(strings.TrimSpace(s.Phase)) {
 	case connectionRiskPhaseSoftThrottle, connectionRiskPhaseAutoDisable:
 		s.Phase = strings.ToLower(strings.TrimSpace(s.Phase))
+	case "enforce":
+		s.Phase = connectionRiskPhaseAutoDisable
 	default:
 		s.Phase = connectionRiskPhaseObserve
 	}

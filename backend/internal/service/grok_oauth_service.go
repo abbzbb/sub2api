@@ -513,6 +513,9 @@ func (s *GrokOAuthService) accountProxyURL(ctx context.Context, account *Account
 	if account.Proxy != nil && strings.TrimSpace(account.Proxy.Host) != "" {
 		return account.ProxyURL(), nil
 	}
+	if account.ProxyGroupID != nil || account.ProxyGroupExhausted {
+		return "", infraerrors.New(http.StatusServiceUnavailable, "GROK_OAUTH_PROXY_NOT_FOUND", "proxy group has no healthy member")
+	}
 	return s.proxyURL(ctx, account.ProxyID)
 }
 

@@ -146,6 +146,17 @@ func TestGetConnectionRiskSettingsNormalizesValues(t *testing.T) {
 	require.False(t, settings.R7IncludeAdminActors)
 }
 
+func TestGetConnectionRiskSettingsMapsEnforcePhaseToAutoDisable(t *testing.T) {
+	repo := &connectionRiskSettingRepo{values: map[string]string{
+		SettingKeyConnectionRiskSettings: `{"phase":"enforce"}`,
+	}}
+	svc := newConnectionRiskTestService(repo)
+
+	settings, err := svc.GetConnectionRiskSettings(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, connectionRiskPhaseAutoDisable, settings.Phase)
+}
+
 func TestSetConnectionRiskSettingsRoundTripAndCacheRefresh(t *testing.T) {
 	repo := &connectionRiskSettingRepo{}
 	svc := newConnectionRiskTestService(repo)

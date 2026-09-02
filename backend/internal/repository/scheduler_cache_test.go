@@ -128,6 +128,28 @@ func TestSchedulerMetadataAccountKeepsGrokRecoveryAndPaidIdentity(t *testing.T) 
 		require.False(t, metadata.IsSchedulable())
 	})
 
+	t.Run("exhausted usage snapshot survives metadata filtering", func(t *testing.T) {
+		zero := 0
+		account := service.Account{
+			ID:          27,
+			Platform:    service.PlatformGrok,
+			Type:        service.AccountTypeOAuth,
+			Status:      service.StatusActive,
+			Schedulable: true,
+			Extra: map[string]any{
+				"grok_usage_snapshot": map[string]any{
+					"status_code":         429,
+					"provider_error_code": "subscription:free-usage-exhausted",
+					"tokens":              map[string]any{"remaining": zero, "limit": 500000},
+				},
+			},
+		}
+
+		metadata := buildSchedulerMetadataAccount(account)
+
+		require.False(t, metadata.IsSchedulable())
+	})
+
 	t.Run("paid subscription evidence survives metadata filtering", func(t *testing.T) {
 		account := service.Account{
 			ID:       26,

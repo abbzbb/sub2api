@@ -220,7 +220,7 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 	}
 	thinkingEnabled := claudeRequest.Thinking != nil &&
 		(claudeRequest.Thinking.Type == "enabled" || claudeRequest.Thinking.Type == "adaptive")
-	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	mappedModel = applyAntigravityThinkingMappedModel(account, mappedModel, thinkingEnabled)
 
 	if s.tokenProvider == nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")

@@ -325,6 +325,19 @@ func applyThinkingModelSuffix(mappedModel string, thinkingEnabled bool) string {
 	return mappedModel
 }
 
+// applyAntigravityThinkingMappedModel suffixes then remaps so migrated aliases
+// (claude-sonnet-4-5-thinking → claude-sonnet-4-6) are not sent upstream.
+func applyAntigravityThinkingMappedModel(account *Account, mappedModel string, thinkingEnabled bool) string {
+	suffixed := applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	if suffixed == mappedModel || account == nil {
+		return suffixed
+	}
+	if remapped := mapAntigravityModel(account, suffixed); remapped != "" {
+		return remapped
+	}
+	return suffixed
+}
+
 // IsModelSupported 检查模型是否被支持
 // 所有 claude- 和 gemini- 前缀的模型都能通过映射或透传支持
 func (s *AntigravityGatewayService) IsModelSupported(requestedModel string) bool {

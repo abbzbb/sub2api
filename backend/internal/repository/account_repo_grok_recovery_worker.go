@@ -54,7 +54,7 @@ func (r *accountRepository) ClaimDueGrokFreeRecoveryCandidates(
 		), claimed AS (
 			UPDATE accounts a
 			SET rate_limited_at = COALESCE(a.rate_limited_at, $5),
-				rate_limit_reset_at = GREATEST(COALESCE(a.rate_limit_reset_at, $8), $8),
+				rate_limit_reset_at = LEAST(GREATEST(COALESCE(a.rate_limit_reset_at, $8), $8), $12),
 				extra = COALESCE(a.extra, '{}'::jsonb) || jsonb_build_object(
 					$1::text, TRUE,
 					$2::text, $7::text,
@@ -83,6 +83,7 @@ func (r *accountRepository) ClaimDueGrokFreeRecoveryCandidates(
 		limit,
 		service.SchedulerOutboxEventAccountChanged,
 		grokRecoveryRFC3339Pattern,
+		now.UTC().Add(25*time.Hour),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim due Grok Free recovery candidates: %w", err)
@@ -173,7 +174,7 @@ func (r *accountRepository) ClaimGrokFreeProactiveCandidates(
 		), claimed AS (
 			UPDATE accounts a
 			SET rate_limited_at = COALESCE(a.rate_limited_at, $7),
-				rate_limit_reset_at = GREATEST(COALESCE(a.rate_limit_reset_at, $10), $10),
+				rate_limit_reset_at = LEAST(GREATEST(COALESCE(a.rate_limit_reset_at, $10), $10), $13),
 				extra = COALESCE(a.extra, '{}'::jsonb) || jsonb_build_object(
 					$2::text, TRUE,
 					$3::text, $9::text,
@@ -204,6 +205,7 @@ func (r *accountRepository) ClaimGrokFreeProactiveCandidates(
 		leaseUntil.UTC(),
 		service.SchedulerOutboxEventAccountChanged,
 		grokRecoveryRFC3339Pattern,
+		now.UTC().Add(25*time.Hour),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("claim proactive Grok Free recovery candidates: %w", err)

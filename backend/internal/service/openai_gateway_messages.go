@@ -1062,7 +1062,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					return true
 				}
 				message := extractOpenAISSEErrorMessage(payloadBytes)
-				s.reconcileGrokStreamFailedAccountState(c, account, payloadBytes, message)
+				if !clientDisconnected {
+					s.reconcileGrokStreamFailedAccountState(c, account, payloadBytes, message)
+				}
 				// Once Anthropic output has started, switching accounts would splice
 				// two model streams together. Surface a proper Anthropic error event
 				// instead of returning a failover error that the handler cannot retry.
@@ -1072,7 +1074,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				} else {
 					shouldFailover = s.shouldFailoverOpenAIStreamFailedEvent(account, payloadBytes, message)
 				}
-				if !clientOutputStarted && shouldFailover {
+				if !clientDisconnected && !clientOutputStarted && shouldFailover {
 					streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
 					return true
 				}

@@ -552,6 +552,42 @@ func TestReconcileGrokStreamFailedAccountStateHandlesBareErrorAndSkipsCyberPolic
 	})
 }
 
+func TestOpenAIStreamingNativeWriterDisconnectSkipsLateGrokReconciliation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	writer := &passthroughFlushTestWriter{
+		ResponseWriter:  c.Writer,
+		recorder:        recorder,
+		failAfterWrites: 0,
+	}
+	c.Writer = writer
+
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 727, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	upstream := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		"",
+		`data: {"type":"response.failed","response":{"error":{"code":"payment_required","message":"payment required"},"usage":{"input_tokens":9,"output_tokens":1,"total_tokens":10}}}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstream)),
+	}
+
+	_, _ = svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "grok-4.5", "grok-4.5")
+
+	require.Equal(t, 1, writer.failedWrites)
+	require.Zero(t, repo.errorCalls)
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 func TestHandleSSEToJSONGrokRateLimitReturnsSemanticFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -575,9 +611,35 @@ func TestHandleSSEToJSONGrokRateLimitReturnsSemanticFailover(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 1, repo.rateLimitedCalls)
 	require.Empty(t, rec.Body.String())
+}
+
+func TestHandleSSEToJSONGrokCapacityAllowsSameAccountRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	account := &Account{ID: 761, Platform: PlatformGrok, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	svc := &OpenAIGatewayService{}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"The model is currently at capacity due to high demand"}}}`,
+		"data: [DONE]",
+	}, "\n"))
+
+	result, err := svc.handleSSEToJSON(resp, c, account, body, "grok-4.5", "grok-4.5")
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, 1, failoverErr.SameAccountRetryMax)
 }
 
 func TestReadOpenAICompatBufferedTerminalGrokBareAccountErrors(t *testing.T) {

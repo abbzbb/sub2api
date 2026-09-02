@@ -1035,6 +1035,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.GrokFreeRecoveryPendingExtraKey,
 		service.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
+		// remaining=0 / free-usage 闸门走 grokQuotaSnapshotBlocksScheduling，
+		// 必须进入 sched:meta 投影，否则 cooldown 过后缓存选号会把耗尽账号当健康。
+		"grok_usage_snapshot",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {

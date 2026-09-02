@@ -223,6 +223,7 @@ func TestGetModelPricing_UnknownGeminiVariantsFallBackByTier(t *testing.T) {
 	newestFlashTier := []string{
 		"gemini-3.6-flash-tiered",
 		"gemini-3.6-flash",
+		"gemini-3-6-flash",
 		"gemini-3.7-flash-tiered",
 		"gemini-4-flash-lite",
 		"gemini-4.2-flash-thinking-exp",
@@ -1827,6 +1828,16 @@ func TestGetModelPricingWithChannel_CacheWriteTTLPricesCanDiffer(t *testing.T) {
 	require.InDelta(t, 13e-6, pricing.CacheCreationPricePerToken, 1e-12)
 	require.InDelta(t, 13e-6, pricing.CacheCreation5mPrice, 1e-12)
 	require.InDelta(t, 21e-6, pricing.CacheCreation1hPrice, 1e-12)
+}
+
+func TestGetModelPricing_Fable5FallbackPricing(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricing("claude-fable-5")
+	require.NoError(t, err)
+	require.InDelta(t, 10e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 50e-6, pricing.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 1e-6, pricing.CacheReadPricePerToken, 1e-12)
 }
 
 func TestGetModelPricing_Fable51FallbackPricing(t *testing.T) {

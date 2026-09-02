@@ -1580,6 +1580,57 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokReconcilesSemanticAccountErrors(t *te
 	}
 }
 
+type grokBridgeAccountRepo struct {
+	stubOpenAIAccountRepo
+	tempUnschedCalls int
+}
+
+func (r *grokBridgeAccountRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, _ string) error {
+	r.tempUnschedCalls++
+	return nil
+}
+
+func TestProxyOpenAIWSHTTPBridgeTurnForGrokUnauthorizedIsTurnError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"type":"response.failed","response":{"id":"resp_unauth","error":{"code":"invalid_api_key","message":"authentication failed"}}}` + "\n\n",
+		)),
+	}}
+	repo := &grokBridgeAccountRepo{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream: upstream,
+		accountRepo:  repo,
+	}
+	account := &Account{
+		ID:          749,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{"base_url": xai.DefaultCLIBaseURL},
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	_, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+		context.Background(), c, account, "access-token",
+		[]byte(`{"type":"response.create","generate":true,"stream":true,"input":"hi"}`),
+		len(`{"type":"response.create","generate":true,"stream":true,"input":"hi"}`),
+		"", "", "", "", "", 1,
+		func([]byte) error { return nil },
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "status=401")
+	require.Greater(t, repo.tempUnschedCalls, 0)
+}
+
 func TestProxyOpenAIWSHTTPBridgeTurnClientDisconnectDrainsUsageWithoutStateMutation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sseBody := strings.Join([]string{

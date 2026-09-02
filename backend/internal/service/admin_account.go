@@ -429,6 +429,10 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Status:       StatusActive,
 		Schedulable:  true,
 	}
+	if account.ProxyGroupID != nil {
+		account.ProxyID = nil
+		account.Proxy = nil
+	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
@@ -736,6 +740,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			account.ProxyID = nil
 		} else {
 			account.ProxyID = input.ProxyID
+			account.ProxyGroupID = nil
 		}
 		account.Proxy = nil // 清除关联对象，防止 GORM Save 时根据 Proxy.ID 覆盖 ProxyID
 	}
@@ -745,11 +750,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			account.ProxyGroupID = nil
 		} else {
 			account.ProxyGroupID = input.ProxyGroupID
+			account.ProxyID = nil
 		}
-		// 组变更后需重新 hydrate 选择结果
-		if account.ProxyID == nil {
-			account.Proxy = nil
-		}
+		account.Proxy = nil
 	}
 	if !reflect.DeepEqual(previousProbeIdentity, upstreamBillingProbeIdentity(account)) && account.Extra != nil {
 		delete(account.Extra, UpstreamBillingProbeExtraKey)

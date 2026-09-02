@@ -607,6 +607,12 @@ func TestAccountGetModelMapping_AntigravityDoesNotMergeSmallAllowlist(t *testing
 	if _, ok := mapping["claude-opus-4-8"]; ok {
 		t.Fatalf("did not expect unrelated defaults bulk-merged into small allowlist")
 	}
+	if _, ok := mapping["gemini-3.7-flash-high"]; ok {
+		t.Fatalf("did not expect Gemini passthroughs injected into small allowlist")
+	}
+	if _, ok := mapping["gemini-3.1-pro-high"]; ok {
+		t.Fatalf("did not expect Gemini 3.1 passthroughs injected into small allowlist")
+	}
 }
 
 func TestAccountGetModelMapping_GoogleOneUsesConservativeDefaults(t *testing.T) {

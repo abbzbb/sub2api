@@ -833,8 +833,6 @@ func canonicalizeAntigravityBillingModel(model string) string {
 		// Default Antigravity mapping routes Haiku → Sonnet 4.6 for inference;
 		// bill at Sonnet rates so usage is not zero-priced.
 		return "claude-sonnet-4-6"
-	case "claude-fable-5":
-		return "claude-opus-4-6"
 	case "gpt-oss-120b-medium", "tab_flash_lite_preview":
 		return "gemini-2.5-flash"
 	default:
@@ -914,6 +912,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		if strings.Contains(modelLower, "pro") {
 			return s.fallbackPrices["gemini-3.1-pro"]
 		}
+		if strings.Contains(modelLower, "gemini-3.6-flash") || strings.Contains(modelLower, "gemini-3-6-flash") {
+			return s.fallbackPrices["gemini-3.6-flash"]
+		}
 		if strings.Contains(modelLower, "2.5") ||
 			strings.Contains(modelLower, "gemini-3-") ||
 			strings.Contains(modelLower, "3.1") ||
@@ -925,9 +926,6 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if strings.Contains(modelLower, "gpt-oss") || strings.Contains(modelLower, "tab_flash") || strings.Contains(modelLower, "tab_jump") {
 		// Antigravity 附带模型：无独立公开价卡时按 Flash 档兜底，避免计费中断。
 		return s.fallbackPrices["gemini-2.5-flash"]
-	}
-	if strings.Contains(modelLower, "gemini-3.6-flash") || strings.Contains(modelLower, "gemini-3-6-flash") {
-		return s.fallbackPrices["gemini-3.6-flash"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；

@@ -66,3 +66,11 @@ func TestApplyThinkingModelSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyAntigravityThinkingMappedModelRemapsMigratedThinkingAlias(t *testing.T) {
+	account := &Account{Platform: PlatformAntigravity}
+	got := applyAntigravityThinkingMappedModel(account, "claude-sonnet-4-5", true)
+	if got != "claude-sonnet-4-6" {
+		t.Fatalf("default map + thinking on claude-sonnet-4-5 = %q, want claude-sonnet-4-6", got)
+	}
+}
