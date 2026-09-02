@@ -1565,6 +1565,10 @@ const handleGrokProbed = (result: GrokQuotaProbeResult) => {
     const probeLimit = result.snapshot?.tokens?.limit
     if (result.local_usage_24h != null || result.billing || result.snapshot) {
       usageInfo.value = {
+        updated_at: null,
+        five_hour: null,
+        seven_day: null,
+        seven_day_sonnet: null,
         grok_billing: result.billing,
         grok_local_usage_24h: result.local_usage_24h,
         grok_local_usage_7d: result.local_usage_7d,

@@ -830,7 +830,15 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			// 上游 429 允许后续 turn 同账号重试。
 			if !wroteDownstream && !clientDisconnected && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
 				if account.Platform == PlatformGrok && eventType == "error" {
-					s.reconcileGrokStreamFailedAccountState(c, account, upstreamMessage, errMessage)
+					// HTTP 200 SSE errors must not feed stream handshake headers into
+					// quota parsing (nil headers), but Free/OAuth bare 429 still needs
+					// the requested model so cooling stays model-scoped.
+					canonicalModel := canonicalOpenAIAccountSchedulingModel(account, originalModel)
+					s.handleGrokAccountUpstreamError(ctx, account, statusCode, nil, upstreamMessage, canonicalModel)
+					if c != nil {
+						key := fmt.Sprintf("grok_stream_failed_state:%d:%d", account.ID, statusCode)
+						c.Set(key, true)
+					}
 					return nil, newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false)
 				}
 				if account.Platform != PlatformGrok {
