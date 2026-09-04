@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -61,9 +62,10 @@ const (
 	// 且有流量时 TTL 会被不断刷新，必须清扫一次。marker 存在即代表已完成。
 	legacyWaitSweepMarkerKey = "concurrency:startup:legacy_wait_sweep:v1"
 
-	// 实例心跳：acquire 时刷新，启动/周期清理用它回收崩溃实例留下的未过期槽位。
-	instanceHeartbeatKeyPrefix = "concurrency:instance:"
-	instanceHeartbeatTTL       = 90 * time.Second
+	// 实例心跳：进程级周期续期（与 acquire 解耦），peer 用它判断对方是否仍存活。
+	instanceHeartbeatKeyPrefix     = "concurrency:instance:"
+	instanceHeartbeatTTL           = 90 * time.Second
+	instanceHeartbeatRenewInterval = 30 * time.Second
 )
 
 var (
@@ -373,6 +375,10 @@ type concurrencyCache struct {
 	rdb                 *redis.Client
 	slotTTLSeconds      int // 槽位过期时间（秒）
 	waitQueueTTLSeconds int // 等待队列过期时间（秒）
+
+	hbMu   sync.Mutex
+	hbStop context.CancelFunc
+	hbWG   sync.WaitGroup
 }
 
 // NewConcurrencyCache 创建并发控制缓存
@@ -1299,6 +1305,59 @@ func (c *concurrencyCache) touchInstanceHeartbeat(ctx context.Context, prefix st
 	}
 	if err := c.rdb.Set(ctx, instanceHeartbeatKey(prefix), "1", instanceHeartbeatTTL).Err(); err != nil {
 		logger.LegacyPrintf("repository.concurrency", "Warning: touch instance heartbeat %s failed: %v", prefix, err)
+	}
+}
+
+// StartInstanceHeartbeat 启动进程级心跳续期，与 acquire 解耦。
+// 滚动发布 / drain 后实例不再接新请求，但仍可能持有流式在途槽；只靠 acquire 续期会在 90s 后被误回收。
+func (c *concurrencyCache) StartInstanceHeartbeat(ctx context.Context, prefix string) {
+	c.startInstanceHeartbeat(ctx, prefix, instanceHeartbeatRenewInterval)
+}
+
+func (c *concurrencyCache) startInstanceHeartbeat(ctx context.Context, prefix string, interval time.Duration) {
+	prefix = normalizeInstancePrefix(prefix)
+	if prefix == "" || c == nil || c.rdb == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = instanceHeartbeatRenewInterval
+	}
+	c.hbMu.Lock()
+	defer c.hbMu.Unlock()
+	if c.hbStop != nil {
+		return
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	c.hbStop = cancel
+	c.touchInstanceHeartbeat(ctx, prefix)
+	c.hbWG.Add(1)
+	go func() {
+		defer c.hbWG.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				c.touchInstanceHeartbeat(runCtx, prefix)
+			}
+		}
+	}()
+}
+
+// StopInstanceHeartbeat 停止进程级心跳续期（测试与进程退出）。
+func (c *concurrencyCache) StopInstanceHeartbeat() {
+	if c == nil {
+		return
+	}
+	c.hbMu.Lock()
+	stop := c.hbStop
+	c.hbStop = nil
+	c.hbMu.Unlock()
+	if stop != nil {
+		stop()
+		c.hbWG.Wait()
 	}
 }
 

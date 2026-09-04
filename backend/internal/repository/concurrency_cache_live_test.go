@@ -95,6 +95,53 @@ func TestAcquireAccountSlotReapsDeadInstanceSlots(t *testing.T) {
 	require.EqualValues(t, 1, exists)
 }
 
+func TestAcquireAccountSlotReapsExpiredHeartbeatWithoutRenewal(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+	accountID := int64(45)
+	key := accountSlotKey(accountID)
+	now := time.Now().Unix()
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "rA-1"}).Err())
+	cache.touchInstanceHeartbeat(ctx, "rA")
+
+	redisServer.FastForward(instanceHeartbeatTTL + time.Second)
+
+	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rB-1")
+	require.NoError(t, err)
+	require.True(t, acquired, "expired heartbeat without renew must be treated as dead")
+	members, err := client.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"rB-1"}, members)
+}
+
+func TestAcquireAccountSlotKeepsInFlightWhenHeartbeatRenewed(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+	accountID := int64(46)
+	key := accountSlotKey(accountID)
+	now := time.Now().Unix()
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "rA-1"}).Err())
+	cache.startInstanceHeartbeat(ctx, "rA", 20*time.Millisecond)
+	t.Cleanup(cache.StopInstanceHeartbeat)
+
+	redisServer.FastForward(instanceHeartbeatTTL + time.Second)
+	time.Sleep(50 * time.Millisecond)
+
+	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rB-1")
+	require.NoError(t, err)
+	require.False(t, acquired, "renewed heartbeat must keep in-flight peer slots")
+	members, err := client.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.Contains(t, members, "rA-1")
+	require.NotContains(t, members, "rB-1")
+}
+
 func TestRequestIDInstancePrefix(t *testing.T) {
 	require.Equal(t, "rlive01", requestIDInstancePrefix("rlive01-1"))
 	require.Equal(t, "keep", requestIDInstancePrefix("keep-1"))
