@@ -92,6 +92,25 @@ func TestAccountProxyBindingConflict(t *testing.T) {
 	require.True(t, accountProxyBindingConflict(&p, &g))
 }
 
+func TestLeftoverQuotaPathsFailClosedOnProxyGroup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	gid := int64(3)
+	account := &Account{ProxyGroupID: &gid}
+
+	_, err := NewAntigravityQuotaFetcher(nil, nil).GetProxyURL(ctx, account)
+	require.Error(t, err)
+	require.Equal(t, "PROXY_GROUP_NO_HEALTHY_MEMBER", infraerrors.Reason(err))
+
+	_, err = (&CNProviderBalanceService{}).resolveProxyURL(ctx, account)
+	require.Error(t, err)
+	require.Equal(t, "PROXY_GROUP_NO_HEALTHY_MEMBER", infraerrors.Reason(err))
+
+	_, err = (&CNProviderQuotaService{}).resolveProxyURL(ctx, account)
+	require.Error(t, err)
+	require.Equal(t, "PROXY_GROUP_NO_HEALTHY_MEMBER", infraerrors.Reason(err))
+}
+
 func TestResolveAccountProxyURL_RepoError(t *testing.T) {
 	t.Parallel()
 	proxyID := int64(4)
