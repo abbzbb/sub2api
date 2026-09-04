@@ -352,6 +352,14 @@ function formatUnix(ts?: number) {
   }
 }
 
+async function loadRuntime() {
+  try {
+    runtime.value = await adminAPI.proxies.getHealthRuntime()
+  } catch (e: any) {
+    appStore.showError(e?.message || t('admin.proxyHealth.loadFailed'))
+  }
+}
+
 async function loadAll() {
   loading.value = true
   try {
@@ -377,12 +385,12 @@ async function saveConfig() {
       .filter(Boolean)
     const payload: ProxyHealthSettings = {
       ...form,
-      skip_name_prefix: prefixes.length ? prefixes : ['warp-']
+      skip_name_prefix: prefixes
     }
     const saved = await adminAPI.proxies.updateHealthConfig(payload)
     applySettings(saved)
     appStore.showSuccess(t('admin.proxyHealth.saved'))
-    await loadAll()
+    await loadRuntime()
   } catch (e: any) {
     appStore.showError(e?.message || t('admin.proxyHealth.saveFailed'))
   } finally {
@@ -403,7 +411,7 @@ async function runScan() {
         errors: res.errors
       })
     )
-    await loadAll()
+    await loadRuntime()
   } catch (e: any) {
     appStore.showError(e?.message || t('admin.proxyHealth.scanFailed'))
   } finally {
@@ -415,7 +423,7 @@ onMounted(() => {
   loadAll()
   timer = setInterval(() => {
     if (!loading.value && !saving.value && !scanning.value) {
-      loadAll()
+      void loadRuntime()
     }
   }, 30000)
 })

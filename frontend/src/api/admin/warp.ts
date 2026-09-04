@@ -42,8 +42,9 @@ export interface WarpSyncResult {
     duplicate_exit_ips?: Record<string, string[]>
     suggested_group_name?: string
   }
-  created_proxies?: { id: number; name: string; status: string }[]
-  updated_proxies?: { id: number; name: string; status: string }[]
+  created_proxies?: { id: number; name: string; status: string; password_set?: boolean }[]
+  updated_proxies?: { id: number; name: string; status: string; password_set?: boolean }[]
+  deleted_proxies?: { id: number; name: string; status: string; password_set?: boolean }[]
   group?: { id: number; name: string; proxy_count?: number }
   member_ids?: number[]
   detached_ids?: number[]

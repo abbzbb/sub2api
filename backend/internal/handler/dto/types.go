@@ -431,6 +431,20 @@ type ProxyGroupWithProxies struct {
 	ProxyCount int64        `json:"proxy_count"`
 }
 
+// WarpSyncResult 是 WARP sync/rotate/delete/health-sync 的管理端响应。
+// 代理成员走 AdminProxy（无明文 password）。
+type WarpSyncResult struct {
+	Snapshot       any                    `json:"snapshot,omitempty"`
+	Plan           any                    `json:"plan,omitempty"`
+	CreatedProxies []AdminProxy           `json:"created_proxies,omitempty"`
+	UpdatedProxies []AdminProxy           `json:"updated_proxies,omitempty"`
+	DeletedProxies []AdminProxy           `json:"deleted_proxies,omitempty"`
+	Group          *ProxyGroupWithProxies `json:"group,omitempty"`
+	MemberIDs      []int64                `json:"member_ids,omitempty"`
+	DetachedIDs    []int64                `json:"detached_ids,omitempty"`
+	Alerts         []string               `json:"alerts,omitempty"`
+}
+
 type RedeemCode struct {
 	ID        int64      `json:"id"`
 	Code      string     `json:"code"`

@@ -630,6 +630,37 @@ func ProxyGroupWithProxiesFromService(g *service.ProxyGroupWithProxies) *ProxyGr
 	return out
 }
 
+func adminProxiesFromService(in []service.Proxy) []AdminProxy {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AdminProxy, 0, len(in))
+	for i := range in {
+		if p := ProxyFromServiceAdmin(&in[i]); p != nil {
+			out = append(out, *p)
+		}
+	}
+	return out
+}
+
+// WarpSyncResultFromService 去掉代理明文密码，并把组映射为 id JSON。
+func WarpSyncResultFromService(r *service.WarpSyncResult) *WarpSyncResult {
+	if r == nil {
+		return nil
+	}
+	return &WarpSyncResult{
+		Snapshot:       r.Snapshot,
+		Plan:           r.Plan,
+		CreatedProxies: adminProxiesFromService(r.CreatedProxies),
+		UpdatedProxies: adminProxiesFromService(r.UpdatedProxies),
+		DeletedProxies: adminProxiesFromService(r.DeletedProxies),
+		Group:          ProxyGroupWithProxiesFromService(r.Group),
+		MemberIDs:      r.MemberIDs,
+		DetachedIDs:    r.DetachedIDs,
+		Alerts:         r.Alerts,
+	}
+}
+
 func RedeemCodeFromService(rc *service.RedeemCode) *RedeemCode {
 	if rc == nil {
 		return nil

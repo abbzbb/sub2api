@@ -197,7 +197,9 @@ export interface ProxyHealthScanResult {
 
 /** Trigger one full proxy-pool health scan (admin). */
 export async function healthScan(): Promise<ProxyHealthScanResult> {
-  const { data } = await apiClient.post<ProxyHealthScanResult>('/admin/proxies/health-scan')
+  const { data } = await apiClient.post<ProxyHealthScanResult>('/admin/proxies/health-scan', undefined, {
+    timeout: 130_000
+  })
   return data
 }
 

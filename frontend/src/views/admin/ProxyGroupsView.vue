@@ -505,8 +505,10 @@ async function openEdit(row: ProxyGroup) {
     form.proxy_ids = (detail.proxies || []).map((p) => p.id)
     form.health_fail_threshold = detail.health_fail_threshold ?? undefined
     form.health_success_threshold = detail.health_success_threshold ?? undefined
-  } catch {
-    form.proxy_ids = []
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : t('admin.proxyGroups.failedToLoad')
+    appStore.showError(msg)
+    return
   }
   showForm.value = true
 }
