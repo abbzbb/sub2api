@@ -5,9 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func mustWarpClient(t *testing.T, cfg WarpGatewayConfig) *WarpGatewayClient {
+	t.Helper()
+	c, err := NewWarpGatewayClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
 
 func TestBuildAttachPlan_Phase3(t *testing.T) {
 	snap := &WarpPoolSnapshot{
@@ -97,7 +108,7 @@ func TestWarpGatewayClient_ListAndSnapshot(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewWarpGatewayClient(WarpGatewayConfig{
+	c := mustWarpClient(t, WarpGatewayConfig{
 		Enabled: true,
 		BaseURL: srv.URL,
 		Timeout: 2 * time.Second,
@@ -112,5 +123,24 @@ func TestWarpGatewayClient_ListAndSnapshot(t *testing.T) {
 	}
 	if list[0].SocksURL() != "socks5h://127.0.0.1:41001" {
 		t.Fatal(list[0].SocksURL())
+	}
+}
+
+func TestMutatingTimeoutAtLeast90s(t *testing.T) {
+	c := mustWarpClient(t, WarpGatewayConfig{Timeout: 3 * time.Second})
+	if got := c.mutatingTimeout(); got < 90*time.Second {
+		t.Fatalf("mutatingTimeout=%s want >= 90s", got)
+	}
+}
+
+func TestNewWarpGatewayClientRejectsBadTLS(t *testing.T) {
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(ca, []byte("not-a-cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewWarpGatewayClient(WarpGatewayConfig{TLSCAFile: ca})
+	if err == nil {
+		t.Fatal("expected TLS CA parse error")
 	}
 }

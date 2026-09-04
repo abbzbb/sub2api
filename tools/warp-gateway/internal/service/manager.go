@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -325,6 +326,9 @@ func RedactInstances(list []store.Instance) []store.Instance {
 	return out
 }
 
+// ErrStartInFlight is returned when a second Start races an in-flight Start.
+var ErrStartInFlight = errors.New("instance start already in progress")
+
 func (m *Manager) Start(ctx context.Context, id string) error {
 	inst, err := m.store.Get(id)
 	if err != nil {
@@ -337,7 +341,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 	if _, inflight := m.starting[id]; inflight {
 		m.mu.Unlock()
-		return nil
+		return ErrStartInFlight
 	}
 	m.starting[id] = struct{}{}
 	m.mu.Unlock()
@@ -348,10 +352,16 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}()
 
 	_, _ = m.store.Update(id, func(i *store.Instance) {
+		if i.DesiredState == store.DesiredStopped {
+			return
+		}
 		i.Status = store.StatusStarting
 		i.DesiredState = store.DesiredRunning
 		i.LastError = ""
 	})
+	if current, getErr := m.store.Get(id); getErr == nil && current.DesiredState == store.DesiredStopped {
+		return nil
+	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	h, err := m.runtime.Start(runCtx, inst)
@@ -383,6 +393,10 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 		i.LastError = ""
 	})
 	m.watchHandle(id, h)
+
+	if current, getErr := m.store.Get(id); getErr == nil && current.DesiredState == store.DesiredStopped {
+		return m.Stop(ctx, id)
+	}
 
 	// Allow one probe after start; HealthAll within the min interval is skipped.
 	m.probeMu.Lock()

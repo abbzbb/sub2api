@@ -121,18 +121,35 @@ func (c Config) validateListenAuth() error {
 	if strings.TrimSpace(c.Token) != "" || strings.TrimSpace(c.ClientCAFile) != "" {
 		return nil
 	}
-	host, _, err := net.SplitHostPort(c.Listen)
-	if err != nil {
-		host = c.Listen
-	}
-	host = strings.TrimSpace(host)
-	if host == "" || host == "localhost" || host == "::1" {
-		return nil
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if listenHostIsLoopback(c.Listen) {
 		return nil
 	}
 	return fmt.Errorf("token is required when listening on non-loopback %q without mTLS", c.Listen)
+}
+
+// listenHostIsLoopback reports whether listen binds only loopback.
+// Empty host (":19798"), 0.0.0.0, :: and other unspecified addresses are
+// treated as all-interfaces — not loopback — and require a token or mTLS.
+func listenHostIsLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		host = listen
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if host == "localhost" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func (c Config) String() string {

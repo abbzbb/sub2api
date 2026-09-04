@@ -30,6 +30,23 @@ func TestValidateRejectsNonLoopbackWithoutToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBarePortListenWithoutToken(t *testing.T) {
+	cfg := Default()
+	cfg.Token = ""
+	cfg.Listen = ":19798"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for :19798 without token")
+	}
+	cfg.Listen = "[::]:19798"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for [::]:19798 without token")
+	}
+	cfg.Token = "secret"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateAllowsLoopbackWithoutToken(t *testing.T) {
 	cfg := Default()
 	cfg.Listen = "127.0.0.1:19798"

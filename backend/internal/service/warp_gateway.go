@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -67,7 +66,7 @@ type WarpGatewayClient struct {
 	client *http.Client
 }
 
-func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
+func NewWarpGatewayClient(cfg WarpGatewayConfig) (*WarpGatewayClient, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
@@ -81,23 +80,23 @@ func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
 		if cfg.TLSCAFile != "" {
 			pem, err := os.ReadFile(cfg.TLSCAFile)
 			if err != nil {
-				slog.Error("warp gateway tls ca load failed", "file", cfg.TLSCAFile, "err", err)
-			} else {
-				pool := x509.NewCertPool()
-				if !pool.AppendCertsFromPEM(pem) {
-					slog.Error("warp gateway tls ca parse failed", "file", cfg.TLSCAFile)
-				} else {
-					tlsCfg.RootCAs = pool
-				}
+				return nil, fmt.Errorf("warp gateway tls ca load failed: %w", err)
 			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("warp gateway tls ca parse failed: %s", cfg.TLSCAFile)
+			}
+			tlsCfg.RootCAs = pool
 		}
-		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+			if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+				return nil, fmt.Errorf("warp gateway tls requires both cert and key")
+			}
 			cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
 			if err != nil {
-				slog.Error("warp gateway tls cert load failed", "cert", cfg.TLSCertFile, "err", err)
-			} else {
-				tlsCfg.Certificates = []tls.Certificate{cert}
+				return nil, fmt.Errorf("warp gateway tls cert load failed: %w", err)
 			}
+			tlsCfg.Certificates = []tls.Certificate{cert}
 		}
 		transport.TLSClientConfig = tlsCfg
 	}
@@ -107,7 +106,7 @@ func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
 			Timeout:   cfg.Timeout,
 			Transport: transport,
 		},
-	}
+	}, nil
 }
 
 func (c *WarpGatewayClient) Enabled() bool {

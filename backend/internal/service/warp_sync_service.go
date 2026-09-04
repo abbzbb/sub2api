@@ -99,7 +99,7 @@ func (s *WarpSyncService) SetLeaderLock(lock LeaderLockCache, instanceID string,
 }
 
 // ProvideWarpGatewayClient builds the HTTP client from app config.
-func ProvideWarpGatewayClient(cfg *config.Config) *WarpGatewayClient {
+func ProvideWarpGatewayClient(cfg *config.Config) (*WarpGatewayClient, error) {
 	if cfg == nil {
 		return NewWarpGatewayClient(WarpGatewayConfig{})
 	}

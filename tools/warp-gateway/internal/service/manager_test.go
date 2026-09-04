@@ -210,6 +210,122 @@ func TestDeleteRemovesInstanceDirectory(t *testing.T) {
 	}
 }
 
+func TestStartInFlightReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.PortRangeStart = 42201
+	cfg.PortRangeEnd = 42240
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delay := &delayedRuntime{
+		inner:   runtime.NewMockManager(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mgr := service.NewManager(cfg, st, delay, nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	auto := false
+	inst, err := mgr.Create(ctx, service.CreateRequest{
+		Name:      "inflight",
+		Profile:   store.Profile{MockExitIP: "203.0.113.30"},
+		AutoStart: &auto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- mgr.Start(ctx, inst.ID) }()
+	<-delay.started
+	if err := mgr.Start(ctx, inst.ID); err != service.ErrStartInFlight {
+		t.Fatalf("second start err=%v want ErrStartInFlight", err)
+	}
+	close(delay.release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+}
+
+func TestStartHonorsDesiredStoppedBeforeReturn(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.PortRangeStart = 42301
+	cfg.PortRangeEnd = 42340
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delay := &delayedRuntime{
+		inner:   runtime.NewMockManager(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	mgr := service.NewManager(cfg, st, delay, nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	auto := false
+	inst, err := mgr.Create(ctx, service.CreateRequest{
+		Name:      "stop-race",
+		Profile:   store.Profile{MockExitIP: "203.0.113.31"},
+		AutoStart: &auto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- mgr.Start(ctx, inst.ID) }()
+	<-delay.started
+	if err := mgr.Stop(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(delay.release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("start after stop: %v", err)
+	}
+	got, err := mgr.Get(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DesiredState != store.DesiredStopped {
+		t.Fatalf("desired=%s want stopped", got.DesiredState)
+	}
+	if got.Status != store.StatusStopped {
+		t.Fatalf("status=%s want stopped", got.Status)
+	}
+}
+
+type delayedRuntime struct {
+	inner   runtime.Manager
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *delayedRuntime) Name() string { return d.inner.Name() }
+
+func (d *delayedRuntime) Start(ctx context.Context, inst *store.Instance) (runtime.Handle, error) {
+	select {
+	case <-d.started:
+	default:
+		close(d.started)
+	}
+	select {
+	case <-d.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return d.inner.Start(ctx, inst)
+}
+
 func TestRotateRejectsEmptyProfile(t *testing.T) {
 	mgr := testManager(t)
 	ctx := context.Background()
