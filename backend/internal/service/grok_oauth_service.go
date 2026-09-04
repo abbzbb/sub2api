@@ -505,18 +505,20 @@ func (s *GrokOAuthService) proxyURL(ctx context.Context, proxyID *int64) (string
 // accountProxyURL 解析账号出站代理：优先已 hydrate 的 Proxy（代理组选择结果），
 // 否则按 ProxyID 查库。管理端显式传入 proxyID 的路径仍走 proxyURL()。
 func (s *GrokOAuthService) accountProxyURL(ctx context.Context, account *Account) (string, error) {
-	if account == nil {
-		return "", nil
+	url, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err == nil {
+		return url, nil
 	}
-	// 已 hydrate 且含有效 host 时直接用（含代理组 sticky 选择结果）。
-	// 空占位 Proxy（无 host）不能当作已解析：Proxy.URL() 仍可能产出 "://:0" 非空串。
-	if account.Proxy != nil && strings.TrimSpace(account.Proxy.Host) != "" {
-		return account.ProxyURL(), nil
-	}
-	if account.ProxyGroupID != nil || account.ProxyGroupExhausted {
+	if errors.Is(err, ErrProxyGroupNoHealthyMember) || errors.Is(err, ErrProxyNotFound) {
 		return "", infraerrors.New(http.StatusServiceUnavailable, "GROK_OAUTH_PROXY_NOT_FOUND", "proxy group has no healthy member")
 	}
-	return s.proxyURL(ctx, account.ProxyID)
+	if infraerrors.Reason(err) == "ACCOUNT_PROXY_UNAVAILABLE" {
+		return "", infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_PROXY_NOT_AVAILABLE", "proxy repository is not available")
+	}
+	if account != nil && account.ProxyID != nil {
+		return s.proxyURL(ctx, account.ProxyID)
+	}
+	return "", err
 }
 
 func applyGrokTokenClaims(info *GrokTokenInfo, token string, includeTier bool) {

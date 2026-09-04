@@ -215,7 +215,7 @@ func (r *healthProxyRepoStub) ListHealthIsolatedByID(_ context.Context, afterID 
 	}
 	return out, nil
 }
-func (r *healthProxyRepoStub) UpdateStatusWithHealthIsolation(_ context.Context, proxyID int64, status string, failCount int, lastHealthAt *time.Time, isolatedBy string, onlyIfStatus string, onlyIfIsolatedBy *string, _ bool) (bool, error) {
+func (r *healthProxyRepoStub) UpdateStatusWithHealthIsolation(_ context.Context, proxyID int64, status string, failCount int, lastHealthAt *time.Time, isolatedBy string, onlyIfStatus string, onlyIfIsolatedBy *string, updateHealthCounters bool) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.proxies[proxyID]
@@ -232,9 +232,11 @@ func (r *healthProxyRepoStub) UpdateStatusWithHealthIsolation(_ context.Context,
 		}
 	}
 	p.Status = status
-	p.HealthFailCount = failCount
-	p.HealthIsolatedBy = isolatedBy
-	p.LastHealthAt = lastHealthAt
+	if updateHealthCounters {
+		p.HealthFailCount = failCount
+		p.HealthIsolatedBy = isolatedBy
+		p.LastHealthAt = lastHealthAt
+	}
 	return true, nil
 }
 func (r *healthProxyRepoStub) ClearAccountProxyBindings(context.Context, int64) (int64, error) {
@@ -348,6 +350,9 @@ func TestProxyHealthService_RunOnceIsolatesAndSkipsWarp(t *testing.T) {
 	meta, _ := health.GetProxyHealth(context.Background(), 2)
 	require.NotNil(t, meta)
 	require.Equal(t, ProxyHealthIsolatedByHealth, meta.IsolatedBy)
+	require.Equal(t, ProxyHealthIsolatedByHealth, repo.proxies[2].HealthIsolatedBy)
+	require.GreaterOrEqual(t, repo.proxies[2].HealthFailCount, 1)
+	require.NotNil(t, repo.proxies[2].LastHealthAt)
 }
 
 func TestProxyHealthService_RunOnceRecoversHealthIsolated(t *testing.T) {

@@ -4542,6 +4542,18 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+watch(
+  () => form.proxy_id,
+  (id) => {
+    if (id) form.proxy_group_id = null
+  }
+)
+watch(
+  () => form.proxy_group_id,
+  (id) => {
+    if (id) form.proxy_id = null
+  }
+)
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
@@ -5328,6 +5340,11 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
 
 // Helper function to create account with mixed channel warning handling
 const doCreateAccount = async (payload: CreateAccountRequest) => {
+  const groupID = Number(payload.proxy_group_id) || 0
+  const proxyID = Number(payload.proxy_id) || 0
+  if (groupID > 0 && proxyID > 0) {
+    payload.proxy_id = null
+  }
   const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
     await submitCreateAccount(payload)
   })

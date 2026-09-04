@@ -859,9 +859,10 @@ func (s *ProxyHealthService) isolate(ctx context.Context, proxy Proxy, meta *Pro
 	meta.IsolatedAt = now.Unix()
 	// Optimistic WHERE status=active so admin deactivate between recheck and
 	// write cannot be overwritten. Atomic status + health_isolated_by.
+	nowCopy := now
 	updated, err := s.proxyRepo.UpdateStatusWithHealthIsolation(
-		ctx, proxy.ID, StatusInactive, 0, nil, ProxyHealthIsolatedByHealth,
-		StatusActive, nil, false,
+		ctx, proxy.ID, StatusInactive, meta.FailCount, &nowCopy, ProxyHealthIsolatedByHealth,
+		StatusActive, nil, true,
 	)
 	if err != nil {
 		// 不再按错误文案兜底走无条件 Update()：那会绕过 status='active' 乐观锁。

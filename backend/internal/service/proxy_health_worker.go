@@ -85,9 +85,7 @@ func (w *ProxyHealthWorker) Start() {
 		w.log.Info("proxy health worker not started (disabled or service nil)")
 		return
 	}
-	if w.stop == nil {
-		w.stop = make(chan struct{})
-	}
+	w.stop = make(chan struct{})
 	runCtx, cancel := context.WithCancel(context.Background())
 	w.cancel = cancel
 	w.on = true
@@ -102,8 +100,8 @@ func (w *ProxyHealthWorker) Stop() {
 		return
 	}
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.on {
-		w.mu.Unlock()
 		return
 	}
 	select {
@@ -116,11 +114,8 @@ func (w *ProxyHealthWorker) Stop() {
 		w.cancel = nil
 	}
 	w.on = false
-	w.mu.Unlock()
 	w.wg.Wait()
-	w.mu.Lock()
-	w.stop = make(chan struct{})
-	w.mu.Unlock()
+	w.stop = nil
 	w.log.Info("proxy health worker stopped")
 }
 

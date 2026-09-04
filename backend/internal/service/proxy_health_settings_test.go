@@ -213,6 +213,14 @@ func TestProxyHealthWorkerApplyStartStop(t *testing.T) {
 	if w.Running() {
 		t.Fatal("should stop after disable")
 	}
+	enabled.Enabled = true
+	svc.applySettings(enabled)
+	w.Stop()
+	w.Start()
+	if !w.Running() {
+		t.Fatal("Start after Stop must recreate a live worker")
+	}
+	w.Stop()
 }
 
 // Stop() 必须能打断进行中的 tick，而不是等满 tickTimeout。

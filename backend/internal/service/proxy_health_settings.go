@@ -207,8 +207,11 @@ func (s *ProxyHealthService) UpdateConfig(ctx context.Context, in *ProxyHealthSe
 		}
 	}
 	s.applySettings(next)
-	if s.worker != nil {
-		s.worker.Apply()
+	s.workerMu.Lock()
+	worker := s.worker
+	s.workerMu.Unlock()
+	if worker != nil {
+		worker.Apply()
 	}
 	return &next, nil
 }
@@ -235,9 +238,12 @@ func (s *ProxyHealthService) RuntimeSnapshot(ctx context.Context) *ProxyHealthRu
 			out.LastTickAgeSec = &age
 		}
 	}
-	if s.worker != nil {
-		out.WorkerRunning = s.worker.Running()
-		out.WorkerInstanceID = s.worker.InstanceID()
+	s.workerMu.Lock()
+	worker := s.worker
+	s.workerMu.Unlock()
+	if worker != nil {
+		out.WorkerRunning = worker.Running()
+		out.WorkerInstanceID = worker.InstanceID()
 	}
 	if s.proxyRepo != nil {
 		if n, err := s.proxyRepo.CountHealthIsolated(ctx); err == nil {

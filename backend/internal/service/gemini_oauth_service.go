@@ -743,12 +743,9 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		oauthType = "code_assist"
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return nil, err
 	}
 
 	tokenInfo, err := s.RefreshToken(ctx, oauthType, refreshToken, proxyURL)

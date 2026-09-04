@@ -3611,6 +3611,19 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+watch(
+  () => form.proxy_id,
+  (id) => {
+    if (id) form.proxy_group_id = null
+  }
+)
+watch(
+  () => form.proxy_group_id,
+  (id) => {
+    if (id) form.proxy_id = null
+  }
+)
+
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   upstreamBillingRateSyncEnabled.value = enabled
   if (enabled) {
@@ -4667,6 +4680,13 @@ const handleSubmit = async () => {
     }
     // proxy_group_id 同样用 0 表示清除
     if (updatePayload.proxy_group_id === null) {
+      updatePayload.proxy_group_id = 0
+    }
+    const proxyID = Number(updatePayload.proxy_id) || 0
+    const groupID = Number(updatePayload.proxy_group_id) || 0
+    if (groupID > 0) {
+      updatePayload.proxy_id = 0
+    } else if (proxyID > 0) {
       updatePayload.proxy_group_id = 0
     }
     if (form.expires_at === null) {

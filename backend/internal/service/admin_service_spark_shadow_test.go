@@ -645,6 +645,102 @@ func TestUpdateAccount_PropagatesProxyToShadow(t *testing.T) {
 	require.Equal(t, newProxy, *storedShadow.ProxyID)
 }
 
+func TestCreateShadow_InheritsProxyGroupID(t *testing.T) {
+	ctx := context.Background()
+	repo := newSparkShadowRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo}
+	groupID := int64(88)
+	parent := &Account{
+		Name:         "group-parent",
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusActive,
+		ProxyGroupID: &groupID,
+		Credentials:  map[string]any{"chatgpt_account_id": "org-group"},
+	}
+	require.NoError(t, repo.Create(ctx, parent))
+
+	shadow, err := svc.CreateShadow(ctx, parent.ID, ShadowOptions{Name: "group-shadow"})
+	require.NoError(t, err)
+	require.NotNil(t, shadow.ProxyGroupID)
+	require.Equal(t, groupID, *shadow.ProxyGroupID)
+	require.Nil(t, shadow.ProxyID)
+}
+
+func TestUpdateAccount_PropagatesProxyGroupToShadow(t *testing.T) {
+	ctx := context.Background()
+	repo := newSparkShadowRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo}
+	parent := &Account{
+		Name:        "group-prop-parent",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Credentials: map[string]any{"chatgpt_account_id": "org-group-prop"},
+	}
+	require.NoError(t, repo.Create(ctx, parent))
+	shadow, err := svc.CreateShadow(ctx, parent.ID, ShadowOptions{Name: "group-prop-shadow"})
+	require.NoError(t, err)
+
+	groupID := int64(91)
+	_, err = svc.UpdateAccount(ctx, parent.ID, &UpdateAccountInput{ProxyGroupID: &groupID})
+	require.NoError(t, err)
+	stored, ok := repo.accounts[shadow.ID]
+	require.True(t, ok)
+	require.NotNil(t, stored.ProxyGroupID)
+	require.Equal(t, groupID, *stored.ProxyGroupID)
+	require.Nil(t, stored.ProxyID)
+}
+
+func TestUpdateAccount_RejectsProxyAndGroupBinding(t *testing.T) {
+	ctx := context.Background()
+	repo := newSparkShadowRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo}
+	parent := &Account{
+		Name:        "conflict-parent",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Credentials: map[string]any{"chatgpt_account_id": "org-conflict"},
+	}
+	require.NoError(t, repo.Create(ctx, parent))
+	proxyID, groupID := int64(1), int64(2)
+	_, err := svc.UpdateAccount(ctx, parent.ID, &UpdateAccountInput{ProxyID: &proxyID, ProxyGroupID: &groupID})
+	require.ErrorIs(t, err, ErrAccountProxyBindingConflict)
+}
+
+func TestCreateAccount_RejectsProxyAndGroupBinding(t *testing.T) {
+	ctx := context.Background()
+	repo := newSparkShadowRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo}
+	proxyID, groupID := int64(1), int64(2)
+	_, err := svc.CreateAccount(ctx, &CreateAccountInput{
+		Name:         "both-bound",
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeAPIKey,
+		Credentials:  map[string]any{"api_key": "k"},
+		ProxyID:      &proxyID,
+		ProxyGroupID: &groupID,
+	})
+	require.ErrorIs(t, err, ErrAccountProxyBindingConflict)
+}
+
+func TestCreateAccount_MissingProxyGroupReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	repo := newSparkShadowRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo, proxyGroupRepo: &stubProxyGroupRepo{err: ErrProxyGroupNotFound}}
+	groupID := int64(404)
+	_, err := svc.CreateAccount(ctx, &CreateAccountInput{
+		Name:         "missing-group",
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeAPIKey,
+		Credentials:  map[string]any{"api_key": "k"},
+		ProxyGroupID: &groupID,
+	})
+	require.ErrorIs(t, err, ErrProxyGroupNotFound)
+	require.Equal(t, http.StatusNotFound, infraerrors.Code(err))
+}
+
 // TestUpdateAccount_RejectsCredentialWriteToShadow 验证安全不变量「影子绝不持有鉴权凭据」
 // 在通用更新路径(UpdateAccount,被 edit/re-auth/refresh/batch 共用)上也被守住:
 // 对影子写入 access_token/refresh_token 必须被拒绝,且影子的 access_token/refresh_token

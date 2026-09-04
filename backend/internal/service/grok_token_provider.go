@@ -95,7 +95,7 @@ func (p *GrokTokenProvider) getAccessToken(ctx context.Context, account *Account
 		return "", errors.New("not a grok oauth account")
 	}
 	selectedProxyID := cloneGrokProxyID(account.ProxyID)
-	if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(account, allowRecoveryPending); eligibilityErr != nil {
+	if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(ctx, account, allowRecoveryPending); eligibilityErr != nil {
 		return "", withGrokCredentialFailureSnapshot(eligibilityErr, account)
 	}
 
@@ -139,7 +139,7 @@ func (p *GrokTokenProvider) getAccessToken(ctx context.Context, account *Account
 				return "", withGrokCredentialFailureSnapshot(errGrokOAuthAccessTokenExpired, account)
 			}
 		} else if result != nil && result.Account != nil {
-			if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(result.Account, allowRecoveryPending); eligibilityErr != nil {
+			if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(refreshCtx, result.Account, allowRecoveryPending); eligibilityErr != nil {
 				return "", withGrokCredentialFailureSnapshot(eligibilityErr, result.Account)
 			}
 			if !grokCredentialProxyIDsEqual(result.Account.ProxyID, selectedProxyID) {
@@ -161,7 +161,7 @@ func (p *GrokTokenProvider) getAccessToken(ctx context.Context, account *Account
 	if p.tokenCache != nil {
 		latestAccount, isStale := CheckTokenVersion(ctx, account, p.accountRepo)
 		if isStale && latestAccount != nil {
-			if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(latestAccount, allowRecoveryPending); eligibilityErr != nil {
+			if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(ctx, latestAccount, allowRecoveryPending); eligibilityErr != nil {
 				return "", withGrokCredentialFailureSnapshot(eligibilityErr, latestAccount)
 			}
 			if !grokCredentialProxyIDsEqual(latestAccount.ProxyID, selectedProxyID) {
@@ -213,7 +213,7 @@ func (p *GrokTokenProvider) GetAccessTokenForManualTest(ctx context.Context, acc
 	if account.Platform != PlatformGrok || account.Type != AccountTypeOAuth {
 		return "", errors.New("not a grok oauth account")
 	}
-	if account.ProxyID != nil && account.Proxy == nil {
+	if _, err := resolveAccountProxyURL(ctx, nil, account); err != nil {
 		return "", errGrokOAuthConfiguredProxyMiss
 	}
 	if strings.TrimSpace(account.GetGrokRefreshToken()) == "" {
@@ -294,7 +294,7 @@ func (p *GrokTokenProvider) waitForRefreshedToken(ctx context.Context, account *
 				return "", errOAuthRefreshAccountStateChanged
 			} else {
 				sawAuthoritativeState = true
-				if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(latest, allowRecoveryPending); eligibilityErr != nil {
+				if eligibilityErr := grokOAuthRequestAccountEligibilityErrorForMode(waitCtx, latest, allowRecoveryPending); eligibilityErr != nil {
 					return "", withGrokCredentialFailureSnapshot(eligibilityErr, latest)
 				}
 				if !grokCredentialProxyIDsEqual(latest.ProxyID, selectedProxyID) {
@@ -341,10 +341,10 @@ func (p *GrokTokenProvider) waitForRefreshedToken(ctx context.Context, account *
 }
 
 func grokOAuthRequestAccountEligibilityErrorForContext(ctx context.Context, account *Account) error {
-	return grokOAuthRequestAccountEligibilityErrorForMode(account, isGrokRecoveryProbeCredentialPath(ctx))
+	return grokOAuthRequestAccountEligibilityErrorForMode(ctx, account, isGrokRecoveryProbeCredentialPath(ctx))
 }
 
-func grokOAuthRequestAccountEligibilityErrorForMode(account *Account, allowRecoveryPending bool) error {
+func grokOAuthRequestAccountEligibilityErrorForMode(ctx context.Context, account *Account, allowRecoveryPending bool) error {
 	if account == nil || !account.IsGrokOAuth() {
 		return errOAuthRefreshAccountStateChanged
 	}
@@ -359,8 +359,7 @@ func grokOAuthRequestAccountEligibilityErrorForMode(account *Account, allowRecov
 	} else if !account.IsSchedulable() {
 		return errOAuthRefreshAccountStateChanged
 	}
-	if account.ProxyID != nil && account.Proxy == nil {
-		// 单代理绑定必须已 hydrate；代理组账号 ProxyID 为 nil，不走此分支。
+	if _, err := resolveAccountProxyURL(ctx, nil, account); err != nil {
 		return errGrokOAuthConfiguredProxyMiss
 	}
 	return nil

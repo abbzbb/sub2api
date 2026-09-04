@@ -712,6 +712,8 @@ type adminServiceImpl struct {
 	proxyGroupResolver ProxyGroupResolver
 	// proxyHealth optional; clears Redis isolation marks on manual status change.
 	proxyHealth ProxyHealthCache
+	// proxyGroupRepo optional; used to return 404 for unknown proxy_group_id instead of FK 500.
+	proxyGroupRepo ProxyGroupRepository
 	// 分组平台变更后用来失效渠道缓存；可为 nil（缓存会在 TTL 到期后自然重建）
 	channelCacheInvalidator ChannelCacheInvalidator
 }
@@ -812,6 +814,7 @@ func ProvideAdminService(
 	compositeResolver *CompositeRouteResolver,
 	proxyGroupResolver ProxyGroupResolver,
 	proxyHealthCache ProxyHealthCache,
+	proxyGroupRepo ProxyGroupRepository,
 	channelCacheInvalidator ChannelCacheInvalidator,
 ) AdminService {
 	svc := NewAdminService(
@@ -825,6 +828,7 @@ func ProvideAdminService(
 	if impl, ok := svc.(*adminServiceImpl); ok && impl != nil {
 		impl.proxyGroupResolver = proxyGroupResolver
 		impl.proxyHealth = proxyHealthCache
+		impl.proxyGroupRepo = proxyGroupRepo
 	}
 	return svc
 }

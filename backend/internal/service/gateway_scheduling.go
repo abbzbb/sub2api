@@ -1493,6 +1493,9 @@ func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Ac
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected gateway account %d not found during hydration", account.ID)
 	}
+	if err := rejectUnschedulableHydratedProxyAccount(hydrated); err != nil {
+		return nil, err
+	}
 	return hydrated, nil
 }
 

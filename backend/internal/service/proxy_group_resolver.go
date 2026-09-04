@@ -86,40 +86,40 @@ func (r *DefaultProxyGroupResolver) InvalidateGroup(groupID int64) {
 	if groupID <= 0 {
 		return
 	}
+	// 先 bump generation，再投递 outbox：避免对端先消费 rebuild 时仍读到旧 generation。
+	if r.versions != nil {
+		var lastErr error
+		bumped := false
+		for i := 0; i < proxyGroupBumpAttempts; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), proxyGroupBumpTimeout)
+			_, err := r.versions.BumpGeneration(ctx, groupID)
+			cancel()
+			if err == nil {
+				r.bumpFailed.Delete(groupID)
+				bumped = true
+				break
+			}
+			lastErr = err
+			time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+		}
+		if !bumped {
+			slog.Warn("proxy_group_cache_gen_bump_failed",
+				"group_id", groupID,
+				"attempts", proxyGroupBumpAttempts,
+				"error", lastErr,
+			)
+			until := r.now()
+			if until.IsZero() {
+				until = time.Now()
+			}
+			r.bumpFailed.Store(groupID, until.Add(proxyGroupBumpFailForceTTL))
+		}
+	}
+
 	// 组失效必须传播到调度快照：投递绑定账号的批量变更事件，让 outbox 消费者
 	// 重新 hydrate（重新按新成员/健康状态选代理）。否则快照里冻结的旧 Proxy 会
 	// 一直被使用，直到周期性全量重建。
 	r.enqueueBoundAccountsRebuild(groupID)
-
-	if r.versions == nil {
-		return
-	}
-
-	var lastErr error
-	for i := 0; i < proxyGroupBumpAttempts; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), proxyGroupBumpTimeout)
-		_, err := r.versions.BumpGeneration(ctx, groupID)
-		cancel()
-		if err == nil {
-			r.bumpFailed.Delete(groupID)
-			return
-		}
-		lastErr = err
-		// Short backoff between attempts: 10ms, 20ms, 30ms.
-		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
-	}
-	slog.Warn("proxy_group_cache_gen_bump_failed",
-		"group_id", groupID,
-		"attempts", proxyGroupBumpAttempts,
-		"error", lastErr,
-	)
-	// Local cache already cleared; force subsequent load() to miss for a short
-	// window so this instance does not re-serve a snap under the un-bumped gen.
-	until := r.now()
-	if until.IsZero() {
-		until = time.Now()
-	}
-	r.bumpFailed.Store(groupID, until.Add(proxyGroupBumpFailForceTTL))
 }
 
 const proxyGroupRebuildEnqueueTimeout = 3 * time.Second

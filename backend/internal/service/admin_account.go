@@ -27,6 +27,23 @@ func normalizeOptionalProxyGroupID(id *int64) *int64 {
 	return id
 }
 
+func (s *adminServiceImpl) validateAccountProxyBinding(ctx context.Context, proxyID, proxyGroupID *int64) error {
+	if accountProxyBindingConflict(proxyID, proxyGroupID) {
+		return ErrAccountProxyBindingConflict
+	}
+	gid := normalizeOptionalProxyGroupID(proxyGroupID)
+	if gid == nil {
+		return nil
+	}
+	if s == nil || s.proxyGroupRepo == nil {
+		return nil
+	}
+	if _, err := s.proxyGroupRepo.GetByID(ctx, *gid); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Account management implementations
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
@@ -429,6 +446,9 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Status:       StatusActive,
 		Schedulable:  true,
 	}
+	if accountProxyBindingConflict(input.ProxyID, input.ProxyGroupID) {
+		return nil, ErrAccountProxyBindingConflict
+	}
 	if account.ProxyGroupID != nil {
 		account.ProxyID = nil
 		account.Proxy = nil
@@ -488,10 +508,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 
+	if err := s.validateAccountProxyBinding(ctx, input.ProxyID, input.ProxyGroupID); err != nil {
+		return nil, err
+	}
+
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组
-	if len(groupIDs) == 0 && !input.SkipDefaultGroupBind {
+	if len(groupIDs) == 0 && !input.SkipDefaultGroupBind && s.groupRepo != nil {
 		defaultGroupName := input.Platform + "-default"
 		groups, err := s.groupRepo.ListActiveByPlatform(ctx, input.Platform)
 		if err == nil {
@@ -732,6 +756,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if requestedRateSyncEnabledUpdate != nil {
 		account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = *requestedRateSyncEnabledUpdate
 	}
+	if err := s.validateAccountProxyBinding(ctx, input.ProxyID, input.ProxyGroupID); err != nil {
+		return nil, err
+	}
 	// 影子代理恒继承母账号(由 propagateProxyToShadows 同步),不接受独立编辑——外审 B/P1;
 	// 否则要等母账号下次改 proxy 才被覆盖,期间影子会出现"有时继承、有时独立"的漂移。
 	if input.ProxyID != nil && !account.IsCredentialShadow() {
@@ -872,8 +899,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
 	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
-	if input.ProxyID != nil && !account.IsCredentialShadow() {
-		if err := s.propagateProxyToShadows(ctx, id, account.ProxyID); err != nil {
+	if (input.ProxyID != nil || input.ProxyGroupID != nil) && !account.IsCredentialShadow() {
+		if err := s.propagateProxyToShadows(ctx, id, account.ProxyID, account.ProxyGroupID); err != nil {
 			return nil, err
 		}
 	}
@@ -1009,8 +1036,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// 影子账号 proxy/proxy_group 恒继承母账号(与单账号 UpdateAccount 守卫对齐——外审第4轮 P1):批量携带
 	// proxy 或 proxy_group 时目标不得含影子,否则影子会获得独立出站配置、破坏继承不变量。
 	// 含影子即整体拒绝,提示从选择中剔除影子。
-	if input.ProxyID != nil && input.ProxyGroupID != nil && *input.ProxyID > 0 && *input.ProxyGroupID > 0 {
-		return nil, ErrAccountProxyBindingConflict
+	if err := s.validateAccountProxyBinding(ctx, input.ProxyID, input.ProxyGroupID); err != nil {
+		return nil, err
 	}
 	if input.ProxyID != nil || input.ProxyGroupID != nil {
 		for _, acc := range cachedTargets {
@@ -1139,13 +1166,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
-	if repoUpdates.ProxyID != nil {
+	if repoUpdates.ProxyID != nil || repoUpdates.ProxyGroupID != nil {
 		var effectiveProxyID *int64
-		if *repoUpdates.ProxyID != 0 {
+		if repoUpdates.ProxyID != nil && *repoUpdates.ProxyID != 0 {
 			effectiveProxyID = repoUpdates.ProxyID
 		}
+		var effectiveGroupID *int64
+		if repoUpdates.ProxyGroupID != nil && *repoUpdates.ProxyGroupID != 0 {
+			effectiveGroupID = repoUpdates.ProxyGroupID
+		}
 		for _, accountID := range input.AccountIDs {
-			if err := s.propagateProxyToShadows(ctx, accountID, effectiveProxyID); err != nil {
+			if err := s.propagateProxyToShadows(ctx, accountID, effectiveProxyID, effectiveGroupID); err != nil {
 				return nil, err
 			}
 		}
@@ -1327,7 +1358,7 @@ func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id in
 	if err != nil {
 		return fmt.Errorf("get account after proxy revert: %w", err)
 	}
-	return s.propagateProxyToShadows(ctx, id, account.ProxyID)
+	return s.propagateProxyToShadows(ctx, id, account.ProxyID, account.ProxyGroupID)
 }
 
 // CreateShadow 为指定 OpenAI OAuth 母账号创建 spark 维度影子账号（一母一影）。
@@ -1416,6 +1447,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		ParentAccountID: &parentID,
 		QuotaDimension:  QuotaDimensionSpark,
 		ProxyID:         parent.ProxyID,
+		ProxyGroupID:    parent.ProxyGroupID,
 		Priority:        priority,
 		Concurrency:     concurrency,
 		Schedulable:     true,
@@ -1456,20 +1488,27 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 // It is called synchronously so that proxy changes are immediately consistent;
 // accountRepo.Update triggers the scheduler outbox + cache propagation internally.
 // Calling this for a non-parent account is a harmless no-op.
-func (s *adminServiceImpl) propagateProxyToShadows(ctx context.Context, parentID int64, proxyID *int64) error {
-	return propagateAccountProxyToShadows(ctx, s.accountRepo, parentID, proxyID)
+func (s *adminServiceImpl) propagateProxyToShadows(ctx context.Context, parentID int64, proxyID *int64, proxyGroupID *int64) error {
+	return propagateAccountProxyToShadows(ctx, s.accountRepo, parentID, proxyID, proxyGroupID)
 }
 
-// propagateAccountProxyToShadows 把母账号的 proxy 同步到其所有 spark 影子(影子 proxy 恒继承母账号)。
-// 供 AdminService 编辑路径与 CRS 同步路径共用——后者改动母账号 proxy 后必须同样传播,否则影子保留
-// 旧 proxy 出现出站漂移(外审第8轮)。
-func propagateAccountProxyToShadows(ctx context.Context, repo AccountRepository, parentID int64, proxyID *int64) error {
+// propagateAccountProxyToShadows 把母账号的 proxy / proxy_group 同步到其所有 spark 影子。
+// 供 AdminService 编辑路径与 CRS 同步路径共用——后者改动母账号出站配置后必须同样传播。
+func propagateAccountProxyToShadows(ctx context.Context, repo AccountRepository, parentID int64, proxyID *int64, proxyGroupID *int64) error {
 	shadows, err := repo.ListShadowsByParent(ctx, parentID)
 	if err != nil {
 		return fmt.Errorf("list spark shadows for proxy propagation: %w", err)
 	}
 	for _, shadow := range shadows {
 		shadow.ProxyID = proxyID
+		shadow.ProxyGroupID = proxyGroupID
+		if proxyGroupID != nil {
+			shadow.ProxyID = nil
+		}
+		if proxyID != nil {
+			shadow.ProxyGroupID = nil
+		}
+		shadow.Proxy = nil
 		if err := repo.Update(ctx, shadow); err != nil {
 			return fmt.Errorf("update spark shadow %d proxy: %w", shadow.ID, err)
 		}
@@ -1621,11 +1660,9 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
@@ -1655,11 +1692,9 @@ func (s *adminServiceImpl) ForceOpenAIPrivacy(ctx context.Context, account *Acco
 		return ""
 	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return ""
 	}
 
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
@@ -1698,11 +1733,9 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return ""
 	}
 
 	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
@@ -1731,11 +1764,9 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		if p, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && p != nil {
-			proxyURL = p.URL()
-		}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return ""
 	}
 
 	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
