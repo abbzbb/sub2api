@@ -100,28 +100,31 @@ func startLeaderLockHeartbeat(parent context.Context, cache LeaderLockCache, key
 	}
 }
 
+// acquireDBAdvisoryLock is the DB fallback used by the legacy wrapper only.
+// Tests replace this to avoid a live Postgres.
+var acquireDBAdvisoryLock = tryAcquireDBAdvisoryLock
+
 // tryAcquireSingletonLeaderLock provides best-effort single-flight execution of a
 // periodic background job across multiple instances.
 //
-// Semantics (no Redis+DB split-brain):
+// Semantics:
 //   - cache != nil, acquire ok  -> returns redis release and true.
 //   - cache != nil, held by peer -> returns (nil, false).
-//   - cache != nil, Redis error  -> SKIP (nil, false). Do NOT fall through to DB:
-//     peers may still hold the Redis lock; falling through would double-run.
+//   - cache != nil, Redis error  -> fall back to Postgres advisory lock when db != nil
+//     (dashboard/backup/expiry and other pre-existing jobs must keep running).
+//     When db == nil, SKIP (nil, false) so unit tests / no-DB processes do not
+//     stampede ungated.
 //   - cache == nil, db != nil    -> try Postgres advisory lock.
-//   - no backend                 -> ungated no-op release and true (unit tests /
-//     single-instance without Redis).
+//   - no backend                 -> ungated no-op release and true.
 //
-// The TTL is purely a crash-safety bound: callers release the lock as soon as the
-// job completes, so leadership is re-contested every cycle rather than pinned to
-// one instance. The TTL must therefore be larger than the job's worst-case
-// runtime so the lock does not expire mid-run.
-//
-// Callers that must distinguish peer busy 409 vs Redis unavailable 503 should use
-// tryAcquireSingletonLeaderLockEx instead.
+// Callers that must not fall through to DB on Redis errors (proxy-health, WARP)
+// should use tryAcquireSingletonLeaderLockEx instead; that path stays skip-on-error.
 func tryAcquireSingletonLeaderLock(ctx context.Context, cache LeaderLockCache, db *sql.DB, key, owner string, ttl time.Duration) (func(), bool) {
-	rel, ok, _ := tryAcquireSingletonLeaderLockEx(ctx, cache, db, key, owner, ttl)
-	return rel, ok
+	rel, ok, unavail := tryAcquireSingletonLeaderLockEx(ctx, cache, db, key, owner, ttl)
+	if ok || !unavail || db == nil {
+		return rel, ok
+	}
+	return acquireDBAdvisoryLock(ctx, db, hashAdvisoryLockID(key))
 }
 
 // tryAcquireSingletonLeaderLockEx is like tryAcquireSingletonLeaderLock but reports
@@ -148,9 +151,9 @@ func tryAcquireSingletonLeaderLockEx(ctx context.Context, cache LeaderLockCache,
 			}
 			return release, true, false
 		}
-		// Redis configured but errored: SKIP. Do not fall through to DB —
-		// peers may still hold the Redis lock (split-brain if we ran via DB).
-		// Also covers canceled/deadline ctx: skip rather than stampede.
+		// Redis configured but errored: skip this Ex path (no DB fallthrough).
+		// Legacy wrapper tryAcquireSingletonLeaderLock may still take advisory
+		// lock when db != nil. Also covers canceled/deadline ctx.
 		return nil, false, true
 	}
 

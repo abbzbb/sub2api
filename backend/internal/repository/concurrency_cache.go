@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -58,6 +60,10 @@ const (
 	// 一次性迁移 marker：活跃索引机制上线前遗留的等待计数键无法被索引发现，
 	// 且有流量时 TTL 会被不断刷新，必须清扫一次。marker 存在即代表已完成。
 	legacyWaitSweepMarkerKey = "concurrency:startup:legacy_wait_sweep:v1"
+
+	// 实例心跳：acquire 时刷新，启动/周期清理用它回收崩溃实例留下的未过期槽位。
+	instanceHeartbeatKeyPrefix = "concurrency:instance:"
+	instanceHeartbeatTTL       = 90 * time.Second
 )
 
 var (
@@ -639,6 +645,7 @@ func runScriptInt64Pair(ctx context.Context, rdb *redis.Client, script *redis.Sc
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	key := accountSlotKey(accountID)
+	c.touchAndReapDeadInstanceSlots(ctx, key, requestID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
 	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveAccountSlotKey(accountID)}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
@@ -716,6 +723,7 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 
 func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
 	key := userSlotKey(userID)
+	c.touchAndReapDeadInstanceSlots(ctx, key, requestID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
 	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveUserSlotKey(userID)}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
@@ -1153,7 +1161,10 @@ func (c *concurrencyCache) reconcileExpiredIndexCandidates(ctx context.Context, 
 // 裁剪过期成员，key 自带 TTL，可在一个 slot TTL 内自愈，因此不参与启动清理。
 // activeRequestPrefix 保留以兼容接口；清理逻辑不再依赖它。
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
-	_ = activeRequestPrefix
+	currentPrefix := normalizeInstancePrefix(activeRequestPrefix)
+	if currentPrefix != "" {
+		c.touchInstanceHeartbeat(ctx, currentPrefix)
+	}
 	if err := c.sweepLegacyWaitKeysOnce(ctx); err != nil {
 		return err
 	}
@@ -1166,7 +1177,7 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 	if err != nil {
 		return err
 	}
-	if err := c.cleanupStaleProcessSlotsForIndex(ctx, accountSlotIndex, accountMembers, now); err != nil {
+	if err := c.cleanupStaleProcessSlotsForIndex(ctx, accountSlotIndex, accountMembers, now, currentPrefix); err != nil {
 		return err
 	}
 
@@ -1174,7 +1185,7 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 	if err != nil {
 		return err
 	}
-	return c.cleanupStaleProcessSlotsForIndex(ctx, userSlotIndex, userMembers, now)
+	return c.cleanupStaleProcessSlotsForIndex(ctx, userSlotIndex, userMembers, now, currentPrefix)
 }
 
 // sweepLegacyWaitKeysOnce 一次性清扫活跃索引机制上线前遗留的等待计数键。
@@ -1231,6 +1242,7 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 	spec slotIndexSpec,
 	members []string,
 	now int64,
+	currentPrefix string,
 ) error {
 	staleMembers := make([]string, 0)
 	refreshed := make([]redis.Z, 0)
@@ -1241,6 +1253,7 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 			continue
 		}
 
+		c.reapDeadInstanceSlots(ctx, spec.slotKey(id), currentPrefix)
 		_, remaining, err := runScriptInt64Pair(ctx, c.rdb, startupCleanupSlotScript, []string{spec.slotKey(id)}, c.slotTTLSeconds, now)
 		if err != nil {
 			return fmt.Errorf("cleanup stale process slots %s: %w", spec.slotKey(id), err)
@@ -1261,4 +1274,99 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 	}
 	c.removeActiveIndexMembers(ctx, spec.indexKey, staleMembers)
 	return nil
+}
+
+func instanceHeartbeatKey(prefix string) string {
+	return instanceHeartbeatKeyPrefix + prefix
+}
+
+func requestIDInstancePrefix(requestID string) string {
+	i := strings.LastIndex(requestID, "-")
+	if i <= 0 {
+		return ""
+	}
+	return requestID[:i]
+}
+
+func normalizeInstancePrefix(prefix string) string {
+	return strings.TrimRight(strings.TrimSpace(prefix), "-")
+}
+
+func (c *concurrencyCache) touchInstanceHeartbeat(ctx context.Context, prefix string) {
+	prefix = normalizeInstancePrefix(prefix)
+	if prefix == "" || c == nil || c.rdb == nil {
+		return
+	}
+	if err := c.rdb.Set(ctx, instanceHeartbeatKey(prefix), "1", instanceHeartbeatTTL).Err(); err != nil {
+		logger.LegacyPrintf("repository.concurrency", "Warning: touch instance heartbeat %s failed: %v", prefix, err)
+	}
+}
+
+func (c *concurrencyCache) touchAndReapDeadInstanceSlots(ctx context.Context, slotKey, requestID string) {
+	prefix := requestIDInstancePrefix(requestID)
+	if prefix == "" {
+		return
+	}
+	c.touchInstanceHeartbeat(ctx, prefix)
+	c.reapDeadInstanceSlots(ctx, slotKey, prefix)
+}
+
+func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, currentPrefix string) {
+	if c == nil || c.rdb == nil || slotKey == "" {
+		return
+	}
+	currentPrefix = normalizeInstancePrefix(currentPrefix)
+	members, err := c.rdb.ZRange(ctx, slotKey, 0, -1).Result()
+	if err != nil || len(members) == 0 {
+		return
+	}
+
+	type candidate struct {
+		member string
+		prefix string
+	}
+	candidates := make([]candidate, 0, len(members))
+	unique := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, member := range members {
+		pfx := requestIDInstancePrefix(member)
+		if pfx == "" || pfx == currentPrefix {
+			continue
+		}
+		candidates = append(candidates, candidate{member: member, prefix: pfx})
+		if _, ok := seen[pfx]; ok {
+			continue
+		}
+		seen[pfx] = struct{}{}
+		unique = append(unique, pfx)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	pipe := c.rdb.Pipeline()
+	cmds := make([]*redis.IntCmd, 0, len(unique))
+	for _, pfx := range unique {
+		cmds = append(cmds, pipe.Exists(ctx, instanceHeartbeatKey(pfx)))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		logger.LegacyPrintf("repository.concurrency", "Warning: check instance heartbeats failed: %v", err)
+		return
+	}
+	alive := make(map[string]bool, len(unique))
+	for i, pfx := range unique {
+		alive[pfx] = cmds[i].Val() > 0
+	}
+	dead := make([]any, 0)
+	for _, item := range candidates {
+		if !alive[item.prefix] {
+			dead = append(dead, item.member)
+		}
+	}
+	if len(dead) == 0 {
+		return
+	}
+	if err := c.rdb.ZRem(ctx, slotKey, dead...).Err(); err != nil {
+		logger.LegacyPrintf("repository.concurrency", "Warning: reap dead instance slots on %s failed: %v", slotKey, err)
+	}
 }

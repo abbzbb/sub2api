@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -75,13 +76,39 @@ func TestTryAcquireSingletonLeaderLock_ContendedThenReleased(t *testing.T) {
 	releaseB()
 }
 
-// When Redis is configured but errors, skip — never fall through to ungated
-// run or DB. Peers may still hold the Redis lock (avoids split-brain).
+// When Redis errors and no DB is configured, the legacy wrapper still skips
+// (must not run ungated). Ex callers keep the same skip-on-error behavior.
 func TestTryAcquireSingletonLeaderLock_CacheErrorSkips(t *testing.T) {
 	cache := &fakeLeaderLockCache{acquireErr: context.DeadlineExceeded}
 	release, ok := tryAcquireSingletonLeaderLock(context.Background(), cache, nil, "k", "inst", time.Minute)
 	require.False(t, ok, "cache error with live ctx must skip, not run ungated")
 	require.Nil(t, release)
+}
+
+func TestTryAcquireSingletonLeaderLock_CacheErrorFallsBackToDB(t *testing.T) {
+	orig := acquireDBAdvisoryLock
+	t.Cleanup(func() { acquireDBAdvisoryLock = orig })
+
+	called := false
+	acquireDBAdvisoryLock = func(ctx context.Context, db *sql.DB, lockID int64) (func(), bool) {
+		called = true
+		require.NotNil(t, db)
+		require.Equal(t, hashAdvisoryLockID("k"), lockID)
+		return func() {}, true
+	}
+
+	cache := &fakeLeaderLockCache{acquireErr: context.DeadlineExceeded}
+	release, ok := tryAcquireSingletonLeaderLock(context.Background(), cache, &sql.DB{}, "k", "inst", time.Minute)
+	require.True(t, ok, "legacy wrapper must fall back to DB advisory when Redis errors")
+	require.True(t, called)
+	require.NotNil(t, release)
+	release()
+
+	// Ex path must stay skip-on-error even when db is present.
+	relEx, okEx, unavail := tryAcquireSingletonLeaderLockEx(context.Background(), cache, &sql.DB{}, "k", "inst", time.Minute)
+	require.False(t, okEx)
+	require.True(t, unavail)
+	require.Nil(t, relEx)
 }
 
 // Ex path: cache error → ok=false, backendUnavailable=true (503 callers).
