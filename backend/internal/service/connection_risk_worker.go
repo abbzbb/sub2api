@@ -316,9 +316,9 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 
 	// Stable open-event dedupe key (no time bucket): continuing signals refresh
 	// the same open/acknowledged row. Automatic actions follow DB insert
-	// (first open or recurrence after resolve), not the Redis 24h SETNX hint.
+	// (first open or recurrence after resolve). Do not gate on Redis SETNX:
+	// a 24h key would suppress HandleNewEvent after resolve.
 	dedupe := fmt.Sprintf("k:%d:%s", keyID, primaryRule(result))
-	_, _ = w.signals.TryDedupe(ctx, dedupe, 24*time.Hour)
 
 	uid := userID
 	kid := keyID
