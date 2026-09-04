@@ -60,7 +60,11 @@ func (r *connectionRiskRepository) UpsertOpen(ctx context.Context, event *servic
 		metricsJSON = []byte("{}")
 	}
 
-	// Try update existing open row by dedupe_key first.
+	// Try update the existing open/acknowledged row by dedupe_key first.
+	// "acknowledged" means an operator has seen the event, not that the signal
+	// stopped; a continuing signal should refresh that row rather than open a
+	// duplicate one within the same dedupe bucket. resolved/suppressed rows are
+	// deliberately excluded so a recurrence re-alerts.
 	if event.DedupeKey != "" {
 		const upd = `
 UPDATE connection_risk_events
@@ -80,7 +84,12 @@ SET last_seen_at = $1,
     metrics = $6,
     summary = $7,
     title = $8
-WHERE dedupe_key = $9 AND status = 'open'
+WHERE id = (
+  SELECT id FROM connection_risk_events
+  WHERE dedupe_key = $9 AND status IN ('open', 'acknowledged')
+  ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen_at DESC, id DESC
+  LIMIT 1
+)
 RETURNING` + connectionRiskSelectColumns
 		row := r.db.QueryRowContext(ctx, upd,
 			event.LastSeenAt.UTC(),

@@ -1951,6 +1951,9 @@ func extendGrokFreeRecoveryLease(resetAt, now time.Time, pending bool) time.Time
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageFromResponse(ctx context.Context, account *Account, headers http.Header, statusCode int) {
+	if statusCode >= 200 && statusCode < 400 {
+		s.noteGrokUpstreamSuccess(account)
+	}
 	snapshot := parseGrokQuotaSnapshot(headers, statusCode, time.Now())
 	if snapshot != nil {
 		stampGrokQuotaSnapshotForPlan(account, snapshot, grokRequestedModelFromCtx(ctx))
@@ -2470,7 +2473,11 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 			s.tempUnscheduleGrok(ctx, account, grokSoftEntitlementCooldown, grokSoftEntitlementReason)
 			return false
 		}
-		// Ambiguous 403/404: leave durable and runtime scheduling state alone.
+		// Ambiguous 403/404: leave durable state alone. A single hit changes
+		// nothing; repeated hits inside a short window trip a runtime-only
+		// escalating cooldown so a silently broken account stops consuming a
+		// failover slot on every request (see grok_ambiguous_failure.go).
+		s.noteGrokAmbiguousFailure(account, statusCode)
 		return false
 	}
 
