@@ -1232,35 +1232,25 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 		return cacheTTLTarget5m
 	}
 
-	// Has a later 1h after this index?
-	hasLater1h := make([]bool, len(refs))
-	seen1h := false
-	for i := len(refs) - 1; i >= 0; i-- {
-		hasLater1h[i] = seen1h
-		if effective(refs[i].ttl) == cacheTTLTarget1h {
-			seen1h = true
-		}
-	}
-
+	// A later 1h after an earlier 5m is illegal. Downgrade the later 1h to 5m
+	// instead of upgrading the client's cheaper 5m breakpoints (2× cache-write).
+	hasEarlier5m := false
 	out := body
 	modified := false
-	for i, ref := range refs {
-		if !hasLater1h[i] {
-			continue
+	for _, ref := range refs {
+		eff := effective(ref.ttl)
+		if hasEarlier5m && eff == cacheTTLTarget1h {
+			next, err := sjson.SetBytes(out, ref.ttlPath, cacheTTLTarget5m)
+			if err != nil {
+				continue
+			}
+			out = next
+			modified = true
+			eff = cacheTTLTarget5m
 		}
-		if effective(ref.ttl) != cacheTTLTarget5m {
-			continue
+		if eff == cacheTTLTarget5m {
+			hasEarlier5m = true
 		}
-		// Upgrade 5m / omitted ttl → 1h so a later 1h is legal.
-		if ref.ttl == cacheTTLTarget1h {
-			continue
-		}
-		next, err := sjson.SetBytes(out, ref.ttlPath, cacheTTLTarget1h)
-		if err != nil {
-			continue
-		}
-		out = next
-		modified = true
 	}
 	if modified {
 		return out

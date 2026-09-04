@@ -850,7 +850,7 @@ func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *te
 			body:                       `{"model":"claude-haiku-4-5","metadata":{"user_id":"pi-session-metadata"},"system":[{"type":"text","text":"Pi project instructions","cache_control":{"type":"ephemeral","ttl":"1h"}}],"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
 			wantModel:                  "claude-haiku-4-5-20251001",
 			wantOriginalSystem:         "Pi project instructions",
-			wantOriginalSystemCacheTTL: "1h",
+			wantOriginalSystemCacheTTL: "5m",
 			wantMetadataUserID:         "pi-session-metadata",
 		},
 	}

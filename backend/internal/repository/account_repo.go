@@ -2519,6 +2519,7 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 					- $2::text
 					- $3::text
 					- $4::text
+					- $5::text
 			END,
 			updated_at = NOW()
 		WHERE id = $1
@@ -2528,6 +2529,7 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 		service.GrokFreeRecoveryPendingExtraKey,
 		service.GrokFreeRecoveryNextProbeAtExtraKey,
 		service.GrokFreeRecoveryLastProbeAtExtraKey,
+		service.GrokQuotaSnapshotExtraKey,
 	)
 	if err != nil {
 		return err
@@ -2611,7 +2613,8 @@ func (r *accountRepository) ForceReleaseGrokFreeRecovery(ctx context.Context, id
 					- $5::text
 					- $6::text
 					- $7::text
-					- $8::text,
+					- $8::text
+					- $10::text,
 				updated_at = NOW()
 			WHERE id = $1
 				AND deleted_at IS NULL
@@ -2629,6 +2632,7 @@ func (r *accountRepository) ForceReleaseGrokFreeRecovery(ctx context.Context, id
 		service.GrokFreeRecoveryLimitedStreakExtraKey,
 		service.GrokFreeProactiveNextProbeAtExtraKey,
 		service.SchedulerOutboxEventAccountChanged,
+		service.GrokQuotaSnapshotExtraKey,
 	)
 	if err != nil {
 		return err

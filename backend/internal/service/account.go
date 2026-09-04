@@ -138,6 +138,8 @@ const (
 	// GrokFreeProactiveNextProbeAtExtraKey throttles rolling-usage probes for
 	// accounts that have not yet returned an authoritative quota error.
 	GrokFreeProactiveNextProbeAtExtraKey = "grok_free_proactive_next_probe_at"
+	// GrokQuotaSnapshotExtraKey stores the last observed xAI quota snapshot.
+	GrokQuotaSnapshotExtraKey = "grok_usage_snapshot"
 )
 
 const (

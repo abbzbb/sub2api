@@ -88,6 +88,7 @@ func TestClearRateLimitPreservesGrokFreeRecoveryPendingInSQL(t *testing.T) {
 			service.GrokFreeRecoveryPendingExtraKey,
 			service.GrokFreeRecoveryNextProbeAtExtraKey,
 			service.GrokFreeRecoveryLastProbeAtExtraKey,
+			service.GrokQuotaSnapshotExtraKey,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO scheduler_outbox`).
@@ -209,9 +210,10 @@ func TestForceReleaseGrokFreeRecoveryClearsLatchUnconditionally(t *testing.T) {
 	require.Contains(t, normalized, "rate_limit_reset_at = NULL")
 	require.NotContains(t, normalized, "CASE", "force release must not be conditioned on the pending flag")
 	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
-	require.Len(t, exec.execArgs[0], 9)
+	require.Len(t, exec.execArgs[0], 10)
 	require.Equal(t, int64(42), exec.execArgs[0][0])
 	require.Equal(t, service.SchedulerOutboxEventAccountChanged, exec.execArgs[0][8])
+	require.Equal(t, service.GrokQuotaSnapshotExtraKey, exec.execArgs[0][9])
 	require.ElementsMatch(t, []any{
 		service.GrokFreeRecoveryPendingExtraKey,
 		service.GrokFreeRecoveryNextProbeAtExtraKey,

@@ -88,6 +88,33 @@ describe('accountStatus', () => {
     expect(isAccountRateLimited(account)).toBe(true)
   })
 
+  it('does not treat a paid Grok remaining=0 snapshot without reset as rate limited', () => {
+    const account = makeAccount({
+      credentials: { subscription_tier: 'supergrok' },
+      extra: {
+        grok_usage_snapshot: {
+          subscription_tier: 'supergrok',
+          tokens: { remaining: 0 }
+        }
+      }
+    })
+
+    expect(isAccountRateLimited(account)).toBe(false)
+  })
+
+  it('releases a stale Grok remaining=0 snapshot older than 6 hours', () => {
+    const account = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          requests: { remaining: 0 },
+          updated_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T07:00:00Z'))).toBe(false)
+  })
+
   it('ignores a misplaced Grok recovery marker on another platform', () => {
     const account = makeAccount({
       platform: 'openai',
