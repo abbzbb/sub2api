@@ -29,6 +29,8 @@ type mockHandle struct {
 
 func (h *mockHandle) LocalAddr() string { return h.addr }
 
+func (h *mockHandle) Done() <-chan error { return nil }
+
 func (h *mockHandle) Stop(ctx context.Context) error {
 	var err error
 	h.once.Do(func() {

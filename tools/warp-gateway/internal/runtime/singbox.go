@@ -35,6 +35,8 @@ type singBoxHandle struct {
 
 func (h *singBoxHandle) LocalAddr() string { return h.addr }
 
+func (h *singBoxHandle) Done() <-chan error { return h.waitCh }
+
 func (h *singBoxHandle) Stop(ctx context.Context) error {
 	if h.cmd == nil || h.cmd.Process == nil {
 		return nil

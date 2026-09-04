@@ -141,6 +141,9 @@ func (s *Store) load() error {
 	}
 	for i := range list {
 		inst := list[i]
+		if s.cipher == nil && (isEncryptedAtRest(inst.Profile.PrivateKey) || isEncryptedAtRest(inst.Profile.AccessToken)) {
+			return fmt.Errorf("encrypted profile data present for %s but profile cipher is not configured", inst.ID)
+		}
 		if s.cipher != nil {
 			if inst.Profile.PrivateKey != "" {
 				plain, err := s.cipher.DecryptString(inst.Profile.PrivateKey)
@@ -162,6 +165,10 @@ func (s *Store) load() error {
 		s.ports[inst.ListenPort] = inst.ID
 	}
 	return nil
+}
+
+func isEncryptedAtRest(value string) bool {
+	return len(value) >= 7 && value[:7] == "enc:v1:"
 }
 
 func (s *Store) persistLocked() error {
@@ -220,14 +227,27 @@ func (s *Store) AllocatePort(preferred int) (int, error) {
 		if preferred < s.portMin || preferred > s.portMax {
 			return 0, fmt.Errorf("port %d outside range %d-%d", preferred, s.portMin, s.portMax)
 		}
+		s.ports[preferred] = "reserved"
 		return preferred, nil
 	}
 	for p := s.portMin; p <= s.portMax; p++ {
 		if _, used := s.ports[p]; !used {
+			s.ports[p] = "reserved"
 			return p, nil
 		}
 	}
 	return 0, ErrNoFreePort
+}
+
+func (s *Store) ReleasePort(port int) {
+	if s == nil || port <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if owner, ok := s.ports[port]; ok && owner == "reserved" {
+		delete(s.ports, port)
+	}
 }
 
 // NameSet returns a copy of all instance names currently registered.
@@ -250,7 +270,7 @@ func (s *Store) Create(inst *Instance) error {
 	if _, ok := s.byID[inst.ID]; ok {
 		return ErrAlreadyExists
 	}
-	if owner, used := s.ports[inst.ListenPort]; used {
+	if owner, used := s.ports[inst.ListenPort]; used && owner != "reserved" {
 		return fmt.Errorf("%w: %d owned by %s", ErrPortInUse, inst.ListenPort, owner)
 	}
 	// Reject duplicate display names so multi-batch pool creation stays unique.

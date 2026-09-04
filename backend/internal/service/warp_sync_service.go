@@ -479,15 +479,12 @@ func (s *WarpSyncService) createLockTTL(count int, register bool) time.Duration 
 	if s.client != nil && s.client.cfg.Timeout > 0 {
 		createTO = s.client.cfg.Timeout
 	}
-	if register {
-		// Same formula as WarpGatewayClient.CreatePoolEx for real WARP handshakes.
-		regTO := time.Duration(30+count*25) * time.Second
-		if createTO < 120*time.Second {
-			createTO = regTO
-		}
-		if createTO < regTO {
-			createTO = regTO
-		}
+	regTO := time.Duration(30+count*25) * time.Second
+	if createTO < 120*time.Second {
+		createTO = regTO
+	}
+	if createTO < regTO {
+		createTO = regTO
 	}
 	// Snapshot + upsert + prune headroom after gateway returns.
 	syncBudget := 2*time.Minute + time.Duration(count)*2*time.Second
@@ -747,9 +744,17 @@ func (s *WarpSyncService) syncFromGatewayLocked(ctx context.Context, groupName s
 	// Soft-delete leaves accounts.proxy_id dangling unless we unbind first;
 	// also skip (with alert) when count fails rather than deleting blind.
 	// Drastic-drop rounds skip prune while still upserting present specs.
+	var managedGroupID *int64
+	if s.groupSvc != nil {
+		if g, gerr := s.lookupManagedWarpGroup(ctx, groupName); gerr == nil && g != nil {
+			id := g.ID
+			managedGroupID = &id
+		}
+	}
+
 	if allowOrphanPrune {
 		for name, p := range byName {
-			if !strings.HasPrefix(name, "warp-") {
+			if !isManagedWarpOrphan(p, managedGroupID) {
 				continue
 			}
 			key := proxyHostPortKey(p.Host, p.Port)
@@ -892,6 +897,34 @@ func (s *WarpSyncService) proxyRepoCreate(ctx context.Context, spec WarpProxySpe
 		return nil, fmt.Errorf("create proxy %s: %w", spec.Name, err)
 	}
 	return p, nil
+}
+
+func isManagedWarpOrphan(p Proxy, managedGroupID *int64) bool {
+	if !strings.HasPrefix(p.Name, "warp-") {
+		return false
+	}
+	// Only prune proxies owned by the managed WARP group. Operator-created
+	// names like warp-home (no group / other group) must not be deleted.
+	if managedGroupID == nil || p.GroupID == nil {
+		return false
+	}
+	return *p.GroupID == *managedGroupID
+}
+
+func (s *WarpSyncService) lookupManagedWarpGroup(ctx context.Context, name string) (*ProxyGroup, error) {
+	if s.groupSvc == nil {
+		return nil, fmt.Errorf("proxy group service not configured")
+	}
+	active, err := s.groupSvc.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range active {
+		if active[i].Name == name {
+			return &active[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *WarpSyncService) ensureGroup(ctx context.Context, name string) (*ProxyGroup, error) {

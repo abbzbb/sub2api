@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -37,7 +40,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if s.token != "" {
 			auth := r.Header.Get("Authorization")
 			const p = "Bearer "
-			if !strings.HasPrefix(auth, p) || strings.TrimPrefix(auth, p) != s.token {
+			if !strings.HasPrefix(auth, p) || !tokenEqual(strings.TrimPrefix(auth, p), s.token) {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
@@ -63,6 +66,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /v1/instances/{id}", s.handleDelete)
 	s.mux.HandleFunc("GET /v1/alerts/duplicate-exit-ips", s.handleDupIPs)
 	s.mux.HandleFunc("POST /v1/health/all", s.handleHealthAll)
+}
+
+func tokenEqual(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+const mutationDeadline = 90 * time.Second
+
+func mutationContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), mutationDeadline)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -210,7 +223,9 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.mgr.Restart(r.Context(), id); err != nil {
+	ctx, cancel := mutationContext(r)
+	defer cancel()
+	if err := s.mgr.Restart(ctx, id); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
@@ -223,8 +238,19 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Profile *store.Profile `json:"profile"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	inst, err := s.mgr.Rotate(r.Context(), id, body.Profile)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	if body.Profile != nil {
+		if body.Profile.PrivateKey == "" && len(body.Profile.Peers) == 0 && body.Profile.MockExitIP == "" {
+			writeJSON(w, 400, map[string]string{"error": "profile is empty"})
+			return
+		}
+	}
+	ctx, cancel := mutationContext(r)
+	defer cancel()
+	inst, err := s.mgr.Rotate(ctx, id, body.Profile)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
@@ -258,7 +284,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if body.DeregisterCloudflare != nil {
 		opts.DeregisterCloudflare = body.DeregisterCloudflare
 	}
-	if err := s.mgr.DeleteWithOptions(r.Context(), id, opts); err != nil {
+	ctx, cancel := mutationContext(r)
+	defer cancel()
+	if err := s.mgr.DeleteWithOptions(ctx, id, opts); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}

@@ -1,9 +1,14 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -21,7 +26,7 @@ type Config struct {
 	SingBoxPath      string        `json:"sing_box_path"`
 	UnhealthyAfter   int           `json:"unhealthy_after"`
 	ReconcileOnStart bool          `json:"reconcile_on_start"`
-	// ProfileKey encrypts private keys at rest (AES-256-GCM). Falls back to Token.
+	// ProfileKey encrypts private keys at rest (AES-256-GCM). Never falls back to Token.
 	ProfileKey string `json:"profile_key,omitempty"`
 	// TLS for multi-host control plane (optional).
 	TLSCertFile string `json:"tls_cert_file,omitempty"`
@@ -87,12 +92,11 @@ func LoadFromEnv() Config {
 	return cfg
 }
 
-// ProfileSecret returns material used for at-rest profile encryption.
+// ProfileSecret returns the explicit at-rest profile encryption key.
+// API tokens must not be reused: rotating the control-plane token would
+// otherwise make existing ciphertext unreadable.
 func (c Config) ProfileSecret() string {
-	if c.ProfileKey != "" {
-		return c.ProfileKey
-	}
-	return c.Token
+	return strings.TrimSpace(c.ProfileKey)
 }
 
 func (c Config) Validate() error {
@@ -107,10 +111,66 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported runtime %q (mock|sing-box)", c.Runtime)
 	}
+	if err := c.validateListenAuth(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c Config) validateListenAuth() error {
+	if strings.TrimSpace(c.Token) != "" || strings.TrimSpace(c.ClientCAFile) != "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		host = c.Listen
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || host == "localhost" || host == "::1" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("token is required when listening on non-loopback %q without mTLS", c.Listen)
 }
 
 func (c Config) String() string {
 	b, _ := json.Marshal(c)
 	return string(b)
+}
+
+const profileKeyFileName = "profile.key"
+
+// EnsureProfileKey loads or creates a 0600 key file under DataDir when ProfileKey is empty.
+func EnsureProfileKey(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if strings.TrimSpace(cfg.ProfileKey) != "" {
+		return nil
+	}
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return fmt.Errorf("data_dir is required to persist profile key")
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		return err
+	}
+	keyPath := filepath.Join(cfg.DataDir, profileKeyFileName)
+	if b, err := os.ReadFile(keyPath); err == nil {
+		if key := strings.TrimSpace(string(b)); key != "" {
+			cfg.ProfileKey = key
+			return nil
+		}
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	key := hex.EncodeToString(raw)
+	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0o600); err != nil {
+		return err
+	}
+	cfg.ProfileKey = key
+	return nil
 }

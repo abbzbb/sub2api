@@ -160,10 +160,17 @@ type memGroupRepo struct {
 	nextID  int64
 	groups  map[int64]*ProxyGroup
 	members map[int64][]int64
+	proxies *memProxyRepo
 }
 
 func newMemGroupRepo() *memGroupRepo {
 	return &memGroupRepo{nextID: 1, groups: map[int64]*ProxyGroup{}, members: map[int64][]int64{}}
+}
+
+func newMemGroupRepoFor(proxies *memProxyRepo) *memGroupRepo {
+	r := newMemGroupRepo()
+	r.proxies = proxies
+	return r
 }
 func (m *memGroupRepo) Create(ctx context.Context, group *ProxyGroup) error {
 	group.ID = m.nextID
@@ -210,6 +217,19 @@ func (m *memGroupRepo) CountAccountsByGroupID(ctx context.Context, groupID int64
 }
 func (m *memGroupRepo) SetGroupMembers(ctx context.Context, groupID int64, proxyIDs []int64) error {
 	m.members[groupID] = append([]int64(nil), proxyIDs...)
+	if m.proxies != nil {
+		for _, p := range m.proxies.proxies {
+			if p.GroupID != nil && *p.GroupID == groupID {
+				p.GroupID = nil
+			}
+		}
+		gid := groupID
+		for _, id := range proxyIDs {
+			if p := m.proxies.proxies[id]; p != nil {
+				p.GroupID = &gid
+			}
+		}
+	}
 	return nil
 }
 
@@ -272,7 +292,7 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 
 	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:              true,
@@ -331,7 +351,7 @@ func TestWarpSyncFromGateway_DuplicateNamesDifferentPortsCreateBoth(t *testing.T
 
 	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:             true,
@@ -403,8 +423,17 @@ func TestWarpSync_OrphanDeleteUnbindsAccounts(t *testing.T) {
 	}
 	proxyRepo.accountCounts[orphan.ID] = 3
 
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
+		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: []int64{orphan.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := createdGroup.ID
+	orphan.GroupID = &gid
+	_ = proxyRepo.Update(context.Background(), orphan)
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:          true,
 		DefaultGroupName: "warp-pool",
@@ -434,6 +463,52 @@ func TestWarpSync_OrphanDeleteUnbindsAccounts(t *testing.T) {
 	}
 	if !foundAlert {
 		t.Fatalf("expected unbind alert, got %v", res.Alerts)
+	}
+}
+
+func TestWarpSync_DoesNotDeleteOperatorWarpHome(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/pools/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+			Instances: []WarpInstance{
+				{ID: "i-new", Name: "new", ListenHost: "127.0.0.1", ListenPort: 42001, Status: "running"},
+			},
+			HealthyCount: 1,
+			TotalCount:   1,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	proxyRepo := newMemProxyRepo()
+	home := &Proxy{Name: "warp-home", Protocol: "socks5", Host: "10.0.0.8", Port: 1080, Status: StatusActive}
+	if err := proxyRepo.Create(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	groupRepo := newMemGroupRepoFor(proxyRepo)
+	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
+		Name: "warp-pool", Strategy: ProxyGroupStrategySticky,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Warp: config.WarpConfig{
+		Enabled: true, DefaultGroupName: "warp-pool",
+		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL},
+	}}
+	svc := NewWarpSyncService(cfg, client, proxyRepo, groupSvc, nil)
+	res, err := svc.SyncFromGateway(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proxyRepo.proxies[home.ID]; !ok {
+		t.Fatal("operator warp-home must not be pruned")
+	}
+	for _, d := range res.DeletedProxies {
+		if d.ID == home.ID {
+			t.Fatal("warp-home deleted")
+		}
 	}
 }
 
@@ -527,7 +602,7 @@ func TestWarpSync_EmptyGatewaySnapshotRefusesPrune(t *testing.T) {
 	if err := proxyRepo.Create(context.Background(), existing); err != nil {
 		t.Fatal(err)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
@@ -690,7 +765,7 @@ func TestWarpSync_DrasticDropRefusesOrphanPrune(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	// Pre-seed managed group with all 6 members so we can assert SetMembers is not shrunk.
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
@@ -774,7 +849,7 @@ func TestWarpSync_DrasticDropSmallPoolRefuses(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -846,7 +921,7 @@ func TestWarpSync_DrasticDropConfirmedAllowsPrune(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -951,7 +1026,7 @@ func TestWarpSync_DrasticDropConfirmMismatchRefuses(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -1029,7 +1104,7 @@ func TestWarpSync_DrasticDropInconsistentTotalCountRefuses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool", AutoDetachUnhealthy: false,
@@ -1084,7 +1159,7 @@ func TestWarpSync_InconsistentEmptyTotalCountRefusesPrune(t *testing.T) {
 	if err := proxyRepo.Create(context.Background(), existing); err != nil {
 		t.Fatal(err)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
@@ -1126,7 +1201,7 @@ func TestWarpSync_BindAccountsToGroup_SyncFailClosed(t *testing.T) {
 
 	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	// Pre-create group so ensureGroup succeeds before sync fails.
 	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
@@ -1174,7 +1249,7 @@ func TestWarpSync_BindAccountsToGroup_SyncBusyFailClosed(t *testing.T) {
 
 	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky,

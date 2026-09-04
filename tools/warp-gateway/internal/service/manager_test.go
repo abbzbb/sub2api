@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -144,4 +145,79 @@ func TestUnhealthyThreshold(t *testing.T) {
 	// After stop, mock probe still succeeds (probe does not require live socks in mock mode).
 	// That's intentional for control-plane unit tests.
 	_ = mgr.HealthCheck(ctx, inst.ID)
+}
+
+func TestRestartAfterCancelledContextStillStarts(t *testing.T) {
+	mgr := testManager(t)
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "restart-me", Profile: store.Profile{MockExitIP: "203.0.113.8"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Stop(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := mgr.Restart(canceled, inst.ID); err != nil {
+		t.Fatalf("restart after cancel: %v", err)
+	}
+	got, err := mgr.Get(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Fatalf("status=%s want running", got.Status)
+	}
+	if got.DesiredState != store.DesiredRunning {
+		t.Fatalf("desired=%s", got.DesiredState)
+	}
+}
+
+func TestDeleteRemovesInstanceDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.PortRangeStart = 42101
+	cfg.PortRangeEnd = 42140
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := service.NewManager(cfg, st, runtime.NewMockManager(), nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "dir-me", Profile: store.Profile{MockExitIP: "203.0.113.9"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instances", inst.ID)
+	if err := os.MkdirAll(instDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "config.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Delete(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(instDir); !os.IsNotExist(err) {
+		t.Fatalf("instance dir still present: %v", err)
+	}
+}
+
+func TestRotateRejectsEmptyProfile(t *testing.T) {
+	mgr := testManager(t)
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "empty-rot", Profile: store.Profile{MockExitIP: "203.0.113.10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Rotate(ctx, inst.ID, &store.Profile{}); err == nil {
+		t.Fatal("expected empty profile to fail")
+	}
 }

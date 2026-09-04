@@ -38,6 +38,31 @@ func TestBuildAttachPlan_Phase3(t *testing.T) {
 	}
 }
 
+func TestBuildAttachPlan_NonRunningStatusesDetach(t *testing.T) {
+	snap := &WarpPoolSnapshot{
+		Instances: []WarpInstance{
+			{ID: "run", Name: "run", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running"},
+			{ID: "stop", Name: "stop", ListenHost: "127.0.0.1", ListenPort: 41002, Status: "stopped"},
+			{ID: "start", Name: "start", ListenHost: "127.0.0.1", ListenPort: 41003, Status: "starting"},
+			{ID: "reg", Name: "reg", ListenHost: "127.0.0.1", ListenPort: 41004, Status: "registered"},
+		},
+		TotalCount:   4,
+		HealthyCount: 1,
+	}
+	plan := BuildAttachPlan(snap, "warp-pool")
+	if plan.ProxySpecs[0].Status != StatusActive {
+		t.Fatalf("running spec status=%s", plan.ProxySpecs[0].Status)
+	}
+	for i, spec := range plan.ProxySpecs[1:] {
+		if spec.Status != StatusError {
+			t.Fatalf("spec %d status=%s want error", i+1, spec.Status)
+		}
+	}
+	if len(plan.DetachProxyNames) < 3 {
+		t.Fatalf("detach=%v", plan.DetachProxyNames)
+	}
+}
+
 func TestBuildAttachPlan_DisambiguatesDuplicateInstanceNames(t *testing.T) {
 	snap := &WarpPoolSnapshot{
 		Instances: []WarpInstance{
