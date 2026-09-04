@@ -153,6 +153,16 @@ export default {
       saveConfig: '保存配置失败',
       action: '操作失败',
       noSampleIPs: '证据中无 sample_ips，无法写白名单',
+      whitelistRestrictsAllowAll: '该 Key 当前白名单为空（允许全部 IP）。确认后将限制为所列样本 IP。',
+    },
+    confirm: {
+      deleteTitle: '删除事件',
+      deleteMessage: '确定永久删除这条连接风险事件？',
+      retentionTitle: '执行过期清理',
+      retentionMessage: '确定立即删除过期的连接风险事件？',
+      whitelistTitle: '将样本 IP 写入白名单',
+      whitelistMessage: '将这些 IP 写入 API Key 白名单：{ips}',
+      whitelistAllowAllMessage: '该 Key 当前允许全部 IP。确认后将限制为：{ips}？',
     },
   },
 }

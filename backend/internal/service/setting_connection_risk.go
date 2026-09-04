@@ -116,6 +116,7 @@ type ConnectionRiskActionSettings struct {
 	SoftThrottleEnabled       bool    `json:"soft_throttle_enabled"`
 	ThrottleAbsRPM            int     `json:"throttle_abs_rpm"`
 	ThrottleConcurrencyFactor float64 `json:"throttle_concurrency_factor"`
+	ThrottleMinSeverity       string  `json:"throttle_min_severity,omitempty"`
 	AutoDisableEnabled        bool    `json:"auto_disable_enabled"`
 }
 

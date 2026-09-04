@@ -69,10 +69,15 @@ export async function exemptSubject(scope: 'k' | 'u', id: number, reason = '', t
   })
 }
 
-export async function whitelistIPs(apiKeyId: number, ips: string[]): Promise<void> {
+export async function whitelistIPs(
+  apiKeyId: number,
+  ips: string[],
+  confirmRestrictAllowAll = false,
+): Promise<void> {
   await apiClient.post(`${basePath}/actions/whitelist-ip`, {
     api_key_id: apiKeyId,
     ips,
+    confirm_restrict_allow_all: confirmRestrictAllowAll,
   })
 }
 

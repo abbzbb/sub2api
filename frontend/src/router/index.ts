@@ -667,8 +667,7 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Connection Risk',
       titleKey: 'admin.connectionRisk.title',
-      descriptionKey: 'admin.connectionRisk.description',
-      requiresRiskControl: true
+      descriptionKey: 'admin.connectionRisk.description'
     }
   },
   {

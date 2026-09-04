@@ -32,6 +32,8 @@ type ConnectionRiskWorker struct {
 
 	instanceID string
 	stopCh     chan struct{}
+	runCtx     context.Context
+	runCancel  context.CancelFunc
 	wg         sync.WaitGroup
 	started    bool
 	mu         sync.Mutex
@@ -104,6 +106,8 @@ func (w *ConnectionRiskWorker) Start() {
 		return
 	}
 	w.started = true
+	w.stopCh = make(chan struct{})
+	w.runCtx, w.runCancel = context.WithCancel(context.Background())
 	w.wg.Add(1)
 	go w.run()
 }
@@ -118,11 +122,15 @@ func (w *ConnectionRiskWorker) Stop() {
 		w.mu.Unlock()
 		return
 	}
+	if w.runCancel != nil {
+		w.runCancel()
+	}
 	select {
 	case <-w.stopCh:
 	default:
 		close(w.stopCh)
 	}
+	w.started = false
 	w.mu.Unlock()
 	w.wg.Wait()
 }
@@ -161,8 +169,17 @@ func (w *ConnectionRiskWorker) evaluateOnce() {
 	if w.cfg == nil || !w.cfg.ConnectionRisk.Enabled {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	parent := context.Background()
+	if w.runCtx != nil {
+		parent = w.runCtx
+	}
+	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
+	defer func() {
+		if err := ctx.Err(); err != nil {
+			slog.Warn("connection risk evaluate ended", "error", err)
+		}
+	}()
 
 	s := w.settings.GetConnectionRiskSettingsCached(ctx)
 	if !s.EffectiveWorkerEnabled(true) {
@@ -282,12 +299,14 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 		}
 	}
 
-	// Phase B: daily baseline snapshot + R3 inputs
-	w.maybeWriteBaseline(ctx, keyID, metrics.IPHll24h)
-	if p95, days, ok, _ := w.signals.GetBaselineP95(ctx, keyID); ok {
-		metrics.BaselineP95 = p95
-		metrics.BaselineSampleDays = days
-		metrics.BaselineFactor = 3
+	// Phase B: daily baseline snapshot + R3 inputs (skip writes when R3 is off).
+	if ruleEnabled(s.Rules.R3.Enabled, false) {
+		w.maybeWriteBaseline(ctx, keyID, metrics.IPHll24h)
+		if p95, days, ok, _ := w.signals.GetBaselineP95(ctx, keyID); ok {
+			metrics.BaselineP95 = p95
+			metrics.BaselineSampleDays = days
+			metrics.BaselineFactor = 3
+		}
 	}
 
 	result := ScoreConnectionRisk(metrics, s)
@@ -295,10 +314,11 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 		return
 	}
 
-	// Stable open-event dedupe key (rule family + 30m bucket). PG partial unique
-	// + UpsertOpen refresh last_seen; Redis SETNX is best-effort cross-instance hint only.
-	dedupe := fmt.Sprintf("k:%d:%s:%d", keyID, primaryRule(result), nowUnix/1800)
-	_, _ = w.signals.TryDedupe(ctx, dedupe, 30*time.Minute)
+	// Stable open-event dedupe key (no time bucket): continuing signals refresh
+	// the same open/acknowledged row. Redis SETNX is a cross-instance hint for
+	// first-open actions only.
+	dedupe := fmt.Sprintf("k:%d:%s", keyID, primaryRule(result))
+	isNew, _ := w.signals.TryDedupe(ctx, dedupe, 24*time.Hour)
 
 	uid := userID
 	kid := keyID
@@ -340,7 +360,7 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 	}
 	w.metrics.EventsCreated.Add(1)
 
-	if w.policy != nil && saved != nil {
+	if w.policy != nil && saved != nil && isNew {
 		before := saved.ActionTaken
 		w.policy.HandleNewEvent(ctx, saved, s)
 		// 自动处置结果必须落库并留日志：策略只改内存字段，不写回会让 action_taken

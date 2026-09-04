@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,7 +42,8 @@ func TestConnectionRiskService_ClearEventThrottle(t *testing.T) {
 
 // clearThrottleStub implements ConnectionSignalCache with only ClearThrottle observed.
 type clearThrottleStub struct {
-	cleared []int64
+	cleared   []int64
+	throttled []int64
 }
 
 func (f *clearThrottleStub) EmitAlwaysOn(context.Context, ConnectionSignal, int, int, uint64) (int, error) {
@@ -73,7 +75,10 @@ func (f *clearThrottleStub) ListActiveUsers(context.Context, int) ([]int64, erro
 func (f *clearThrottleStub) GetKeyOwner(context.Context, int64) (int64, error)    { return 0, nil }
 func (f *clearThrottleStub) GetKeyPrefix(context.Context, int64) (string, error)  { return "", nil }
 func (f *clearThrottleStub) TrimUAWindow(context.Context, int64, int64) error     { return nil }
-func (f *clearThrottleStub) SetThrottle(context.Context, int64, int, int64) error { return nil }
+func (f *clearThrottleStub) SetThrottle(_ context.Context, keyID int64, _ int, _ int64) error {
+	f.throttled = append(f.throttled, keyID)
+	return nil
+}
 func (f *clearThrottleStub) ClearThrottle(_ context.Context, keyID int64) error {
 	f.cleared = append(f.cleared, keyID)
 	return nil
@@ -179,4 +184,46 @@ func TestRiskActionPolicy_AutoDisableRequiresAutoDisablePhase(t *testing.T) {
 	})
 	require.Equal(t, 1, repo.updateCalls)
 	require.Equal(t, "disabled_user", event.ActionTaken)
+}
+
+func TestRiskActionPolicy_SoftThrottleRequiresEnabledAndHighSeverity(t *testing.T) {
+	kid := int64(9)
+	fake := &clearThrottleStub{}
+	policy := &RiskActionPolicy{signals: fake}
+	settings := ConnectionRiskSettings{
+		Enabled: true,
+		Phase:   connectionRiskPhaseSoftThrottle,
+		Actions: ConnectionRiskActionSettings{SoftThrottleEnabled: true, ThrottleAbsRPM: 20},
+	}
+	low := &ConnectionRiskEvent{APIKeyID: &kid, Severity: connectionRiskSeverityLow}
+	policy.HandleNewEvent(context.Background(), low, settings)
+	require.Empty(t, fake.throttled)
+
+	high := &ConnectionRiskEvent{APIKeyID: &kid, Severity: connectionRiskSeverityHigh}
+	disabled := settings
+	disabled.Enabled = false
+	policy.HandleNewEvent(context.Background(), high, disabled)
+	require.Empty(t, fake.throttled)
+
+	policy.HandleNewEvent(context.Background(), high, settings)
+	require.Equal(t, []int64{9}, fake.throttled)
+	require.Equal(t, "throttled", high.ActionTaken)
+}
+
+func TestMergeWhitelistSamples(t *testing.T) {
+	_, err := mergeWhitelistSamples(nil, []string{"2001:db8:1:2::"}, false)
+	require.ErrorIs(t, err, ErrConnectionRiskWhitelistRestrictsAllowAll)
+
+	merged, err := mergeWhitelistSamples(nil, []string{"2001:db8:1:2::", "192.0.2.10"}, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"2001:db8:1:2::/64", "192.0.2.10"}, merged)
+
+	merged, err = mergeWhitelistSamples([]string{"10.0.0.1"}, []string{"2001:db8:1:2::"}, false)
+	require.NoError(t, err)
+	require.Equal(t, []string{"10.0.0.1", "2001:db8:1:2::/64"}, merged)
+}
+
+func TestConnectionRiskDedupeKeyHasNoTimeBucket(t *testing.T) {
+	res := ConnectionRiskScoreResult{RulesFired: []ConnectionRiskRuleHit{{RuleID: "R1", Weight: 1, Confidence: 1}}}
+	require.Equal(t, "k:7:R1", fmt.Sprintf("k:%d:%s", 7, primaryRule(res)))
 }

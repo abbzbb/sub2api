@@ -5,6 +5,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Toggle from '@/components/common/Toggle.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import * as api from './api'
 import type {
@@ -216,9 +217,14 @@ const sampleIps = computed(() => {
 })
 
 const sampleUas = computed(() => {
-  const raw = selected.value?.evidence?.sample_uas
+  const raw = selected.value?.evidence?.sample_ua_hashes ?? selected.value?.evidence?.sample_uas
   return Array.isArray(raw) ? (raw as string[]) : []
 })
+
+const confirmDeleteId = ref<number | null>(null)
+const confirmRetention = ref(false)
+const confirmWhitelist = ref(false)
+const confirmRestrictAllowAll = ref(false)
 
 function formatNumber(n: number) {
   return Number(n || 0).toLocaleString()
@@ -308,7 +314,11 @@ async function doAction(kind: 'ack' | 'resolve' | 'suppress' | 'delete', id: num
     if (kind === 'ack') await api.ackEvent(id)
     else if (kind === 'resolve') await api.resolveEvent(id)
     else if (kind === 'suppress') await api.suppressEvent(id)
-    else await api.deleteEvent(id)
+    else {
+      confirmDeleteId.value = id
+      loading.action = false
+      return
+    }
     message.value = t('admin.connectionRisk.messages.actionOk')
     selected.value = null
     await Promise.all([loadEvents(), loadRuntime()])
@@ -325,15 +335,50 @@ async function whitelistFromEvidence() {
     error.value = t('admin.connectionRisk.errors.noSampleIPs')
     return
   }
+  confirmRestrictAllowAll.value = false
+  confirmWhitelist.value = true
+}
+
+async function confirmWhitelistFromEvidence() {
+  if (!selected.value?.api_key_id) return
   loading.action = true
   error.value = ''
   try {
-    await api.whitelistIPs(selected.value.api_key_id, sampleIps.value.slice(0, 10))
+    await api.whitelistIPs(
+      selected.value.api_key_id,
+      sampleIps.value.slice(0, 10),
+      confirmRestrictAllowAll.value,
+    )
     if (selected.value.api_key_id) {
       await api.exemptSubject('k', selected.value.api_key_id, 'whitelist-from-ui')
     }
     message.value = t('admin.connectionRisk.messages.whitelisted')
+    confirmWhitelist.value = false
     await loadEvents()
+  } catch (e: any) {
+    const reason = String(e?.reason || e?.code || '')
+    if (reason.includes('CONNECTION_RISK_WHITELIST_RESTRICTS_ALLOW_ALL') || String(e?.message || '').includes('allow-all')) {
+      confirmRestrictAllowAll.value = true
+      error.value = t('admin.connectionRisk.errors.whitelistRestrictsAllowAll')
+    } else {
+      error.value = e?.message || t('admin.connectionRisk.errors.action')
+    }
+  } finally {
+    loading.action = false
+  }
+}
+
+async function confirmDeleteEvent() {
+  if (confirmDeleteId.value == null) return
+  const id = confirmDeleteId.value
+  confirmDeleteId.value = null
+  loading.action = true
+  error.value = ''
+  try {
+    await api.deleteEvent(id)
+    message.value = t('admin.connectionRisk.messages.actionOk')
+    selected.value = null
+    await Promise.all([loadEvents(), loadRuntime()])
   } catch (e: any) {
     error.value = e?.message || t('admin.connectionRisk.errors.action')
   } finally {
@@ -342,6 +387,11 @@ async function whitelistFromEvidence() {
 }
 
 async function runRetention() {
+  confirmRetention.value = true
+}
+
+async function confirmRunRetention() {
+  confirmRetention.value = false
   loading.action = true
   error.value = ''
   try {
@@ -1195,5 +1245,36 @@ onMounted(async () => {
         </template>
       </section>
     </div>
+    <ConfirmDialog
+      :show="confirmDeleteId != null"
+      :title="t('admin.connectionRisk.confirm.deleteTitle')"
+      :message="t('admin.connectionRisk.confirm.deleteMessage')"
+      :confirm-text="t('common.delete')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      @confirm="confirmDeleteEvent"
+      @cancel="confirmDeleteId = null"
+    />
+    <ConfirmDialog
+      :show="confirmRetention"
+      :title="t('admin.connectionRisk.confirm.retentionTitle')"
+      :message="t('admin.connectionRisk.confirm.retentionMessage')"
+      :confirm-text="t('admin.connectionRisk.actions.runRetention')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      @confirm="confirmRunRetention"
+      @cancel="confirmRetention = false"
+    />
+    <ConfirmDialog
+      :show="confirmWhitelist"
+      :title="t('admin.connectionRisk.confirm.whitelistTitle')"
+      :message="confirmRestrictAllowAll
+        ? t('admin.connectionRisk.confirm.whitelistAllowAllMessage', { ips: sampleIps.slice(0, 10).join(', ') })
+        : t('admin.connectionRisk.confirm.whitelistMessage', { ips: sampleIps.slice(0, 10).join(', ') })"
+      :confirm-text="t('admin.connectionRisk.actions.whitelist')"
+      :cancel-text="t('common.cancel')"
+      @confirm="confirmWhitelistFromEvidence"
+      @cancel="confirmWhitelist = false; confirmRestrictAllowAll = false"
+    />
   </AppLayout>
 </template>

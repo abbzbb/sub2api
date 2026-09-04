@@ -289,10 +289,6 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 		UserID:   userID,
 		NowUnix:  nowUnix,
 	}
-	if prefix, err := c.GetKeyPrefix(ctx, keyID); err == nil {
-		m.APIKeyPrefix = prefix
-	}
-
 	// Collect last 5 minute IP sets + counts
 	ipKeys := make([]string, 0, 5)
 	cntKeys := make([]string, 0, 5)
@@ -303,6 +299,8 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	}
 
 	pipe := c.rdb.Pipeline()
+	prefixCmd := pipe.Get(ctx, crKeyPrefix(keyID))
+	ownerCmd := pipe.Get(ctx, crKeyOwner(keyID))
 	sunion := pipe.SUnion(ctx, ipKeys...)
 	cntCmds := make([]*redis.StringCmd, len(cntKeys))
 	for i, k := range cntKeys {
@@ -325,6 +323,13 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 
 	// Pipeline may surface redis.Nil for missing GET keys; per-cmd Result() handles misses.
 	_, _ = pipe.Exec(ctx)
+
+	if prefix, err := prefixCmd.Result(); err == nil {
+		m.APIKeyPrefix = prefix
+	}
+	if owner, err := ownerCmd.Int64(); err == nil && owner > 0 && m.UserID <= 0 {
+		m.UserID = owner
+	}
 
 	if ips, err := sunion.Result(); err == nil {
 		m.DistinctIP5m = len(ips)
@@ -538,7 +543,8 @@ func (c *connectionSignalCache) SnapshotBaselineDay(ctx context.Context, keyID i
 	if c == nil || c.rdb == nil || keyID <= 0 || day == "" {
 		return nil
 	}
-	return c.rdb.Set(ctx, crBaselineDay(keyID, day), count, 14*24*time.Hour).Err()
+	_, err := c.rdb.SetNX(ctx, crBaselineDay(keyID, day), count, 14*24*time.Hour).Result()
+	return err
 }
 
 func (c *connectionSignalCache) LoadBaselineSamples(ctx context.Context, keyID int64, days []string) ([]int64, error) {
