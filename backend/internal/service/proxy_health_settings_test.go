@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -160,8 +162,12 @@ func TestProxyHealthUpdateConfigPersistsAndApplies(t *testing.T) {
 	if !out.Enabled || out.IntervalSec != 30 || out.ProbeScope != "all_active" {
 		t.Fatalf("unexpected out: %+v", out)
 	}
-	if !cfg.ProxyHealth.Enabled || cfg.ProxyHealth.IntervalSec != 30 {
-		t.Fatalf("cfg not applied: %+v", cfg.ProxyHealth)
+	// 生效配置经 conf() 读取；不再回写共享 *config.Config（避免与 worker 循环 data race）。
+	if eff := svc.conf(); !eff.Enabled || eff.IntervalSec != 30 {
+		t.Fatalf("effective conf not applied: %+v", eff)
+	}
+	if cfg.ProxyHealth.Enabled {
+		t.Fatalf("shared YAML config must not be mutated at runtime: %+v", cfg.ProxyHealth)
 	}
 	raw, _ := repo.GetValue(context.Background(), SettingKeyProxyHealthSettings)
 	if raw == "" {
@@ -193,14 +199,41 @@ func TestProxyHealthWorkerApplyStartStop(t *testing.T) {
 	if w.Running() {
 		t.Fatal("should not run when disabled")
 	}
-	cfg.ProxyHealth.Enabled = true
+	enabled := DefaultProxyHealthSettingsFromYAML(cfg)
+	enabled.Enabled = true
+	svc.applySettings(enabled)
 	w.Apply()
 	if !w.Running() {
 		t.Fatal("should run after enable")
 	}
-	cfg.ProxyHealth.Enabled = false
+	disabled := enabled
+	disabled.Enabled = false
+	svc.applySettings(disabled)
 	w.Apply()
 	if w.Running() {
 		t.Fatal("should stop after disable")
+	}
+}
+
+// Stop() 必须能打断进行中的 tick，而不是等满 tickTimeout。
+func TestProxyHealthWorkerStopInterruptsInFlightTick(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.ProxyHealth.Enabled = true
+	cfg.ProxyHealth.IntervalSec = 60
+	svc := NewProxyHealthService(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	w := &ProxyHealthWorker{cfg: cfg, svc: svc, log: slog.Default(), stop: make(chan struct{})}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
+	w.on = true
+
+	tickCtx, tickCancel := context.WithTimeout(runCtx, w.tickTimeout())
+	defer tickCancel()
+
+	w.Stop()
+	select {
+	case <-tickCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("tick context should be cancelled by Stop()")
 	}
 }

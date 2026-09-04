@@ -173,9 +173,10 @@ func (a *Account) IsActive() bool {
 // 由服务端在 hydration 阶段按策略选出一个代理，两种情况下结果都体现在
 // Proxy 字段上，因此这里只判断 Proxy 是否存在。
 //
-// 当前不变量：Proxy != nil 蕴含 ProxyID != nil（Proxy 的全部非空赋值点均受
-// ProxyID != nil 保护），故本方法与既有的 ProxyID != nil && Proxy != nil
-// 写法等价。
+// 注意：代理池账号（ProxyGroupID != nil）在 hydration 时只写 Proxy、刻意不写
+// ProxyID（见 applyProxyGroupSelection），因此 Proxy != nil 并不蕴含 ProxyID != nil。
+// 任何仍按 `ProxyID != nil && Proxy != nil` 判断的调用点都会让代理池账号静默直连，
+// 违背 fail-closed 约束——必须统一改用本方法。
 func (a *Account) ProxyURL() string {
 	if a == nil || a.Proxy == nil {
 		return ""

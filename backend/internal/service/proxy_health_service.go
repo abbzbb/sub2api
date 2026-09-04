@@ -370,6 +370,11 @@ func (s *ProxyHealthService) runOnceLocked(ctx context.Context) (*ProxyHealthRun
 				continue
 			}
 			isolated, recovered, err := s.probeAndEvaluate(ctx, j.proxy)
+			if err != nil {
+				// 隔离/恢复的 DB 写失败若只计数不打日志，会像 193 SQL 缺陷那样长期不可见。
+				s.log.Warn("proxy health evaluate failed",
+					"proxy_id", j.proxy.ID, "name", j.proxy.Name, "error", err)
+			}
 			mu.Lock()
 			result.Probed++
 			if err != nil {
@@ -859,16 +864,9 @@ func (s *ProxyHealthService) isolate(ctx context.Context, proxy Proxy, meta *Pro
 		StatusActive, nil, false,
 	)
 	if err != nil {
-		// Fallback only for pre-migration / missing columns — never on !updated.
-		if strings.Contains(err.Error(), "does not exist") {
-			proxy.Status = StatusInactive
-			if uerr := s.proxyRepo.Update(ctx, &proxy); uerr != nil {
-				return fmt.Errorf("isolate proxy %d: %w", proxy.ID, uerr)
-			}
-			s.persistAudit(ctx, proxy.ID, meta, now)
-		} else {
-			return fmt.Errorf("isolate proxy %d: %w", proxy.ID, err)
-		}
+		// 不再按错误文案兜底走无条件 Update()：那会绕过 status='active' 乐观锁。
+		// 193 迁移在启动时已保证列存在，任何错误都应暴露而不是静默覆盖。
+		return fmt.Errorf("isolate proxy %d: %w", proxy.ID, err)
 	} else if !updated {
 		s.log.Info("isolate skipped: status condition failed (admin race)",
 			"proxy_id", proxy.ID)
@@ -904,15 +902,7 @@ func (s *ProxyHealthService) recover(ctx context.Context, proxy Proxy, meta *Pro
 		StatusInactive, &healthMark, true,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "does not exist") {
-			proxy.Status = StatusActive
-			if uerr := s.proxyRepo.Update(ctx, &proxy); uerr != nil {
-				return fmt.Errorf("recover proxy %d: %w", proxy.ID, uerr)
-			}
-			s.persistAudit(ctx, proxy.ID, meta, now)
-		} else {
-			return fmt.Errorf("recover proxy %d: %w", proxy.ID, err)
-		}
+		return fmt.Errorf("recover proxy %d: %w", proxy.ID, err)
 	} else if !updated {
 		s.log.Info("recover skipped: condition failed",
 			"proxy_id", proxy.ID)

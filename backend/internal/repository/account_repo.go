@@ -2594,6 +2594,56 @@ func (r *accountRepository) ClearGrokFreeRecoveryIfUnchanged(ctx context.Context
 	return true, nil
 }
 
+// ForceReleaseGrokFreeRecovery 无条件解除 Grok Free 恢复闩锁：清掉 pending / 探测
+// 时间戳 / streak / proactive 键与限流字段。这是管理员在 worker 关闭、Redis 不可用
+// 或探测长期失败时的逃生口；自动路径（ClearRateLimit、探测恢复）不得调用。
+func (r *accountRepository) ForceReleaseGrokFreeRecovery(ctx context.Context, id int64) error {
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts
+			SET rate_limited_at = NULL,
+				rate_limit_reset_at = NULL,
+				overload_until = NULL,
+				extra = COALESCE(extra, '{}'::jsonb)
+					- $2::text
+					- $3::text
+					- $4::text
+					- $5::text
+					- $6::text
+					- $7::text
+					- $8::text,
+				updated_at = NOW()
+			WHERE id = $1
+				AND deleted_at IS NULL
+			RETURNING id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $9, updated.id, NULL, NULL FROM updated
+	`,
+		id,
+		service.GrokFreeRecoveryPendingExtraKey,
+		service.GrokFreeRecoveryNextProbeAtExtraKey,
+		service.GrokFreeRecoveryLastProbeAtExtraKey,
+		service.GrokFreeRecoveryLastProbeResultExtraKey,
+		service.GrokFreeRecoveryLastResultAtExtraKey,
+		service.GrokFreeRecoveryLimitedStreakExtraKey,
+		service.GrokFreeProactiveNextProbeAtExtraKey,
+		service.SchedulerOutboxEventAccountChanged,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
 func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
@@ -3028,15 +3078,19 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		args = append(args, *updates.Name)
 		idx++
 	}
+	// proxy_id / proxy_group_id 互斥：先归并成每列最多一次赋值，再拼 SET。
+	// 之前按字段各自 append 会在同时传 proxy_id 与 proxy_group_id 时产生重复列
+	// （Postgres: multiple assignments to same column）。
+	proxyAssign, groupAssign := "", ""
 	if updates.ProxyID != nil {
 		// 0 表示清除代理（前端发送 0 而不是 null 来表达清除意图）
 		if *updates.ProxyID == 0 {
-			setClauses = append(setClauses, "proxy_id = NULL")
+			proxyAssign = "NULL"
 			ollamaProxyIdentityChanged = "proxy_id IS NOT NULL"
 		} else {
 			proxyPlaceholder := "$" + itoa(idx)
-			setClauses = append(setClauses, "proxy_id = "+proxyPlaceholder)
-			setClauses = append(setClauses, "proxy_group_id = NULL")
+			proxyAssign = proxyPlaceholder
+			groupAssign = "NULL"
 			ollamaProxyIdentityChanged = "proxy_id IS DISTINCT FROM " + proxyPlaceholder
 			args = append(args, *updates.ProxyID)
 			idx++
@@ -3045,13 +3099,22 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	if updates.ProxyGroupID != nil {
 		// 0 表示清除代理组（与 proxy_id 相同哨兵约定）
 		if *updates.ProxyGroupID == 0 {
-			setClauses = append(setClauses, "proxy_group_id = NULL")
+			groupAssign = "NULL"
 		} else {
-			setClauses = append(setClauses, "proxy_group_id = $"+itoa(idx))
+			if proxyAssign != "" && proxyAssign != "NULL" {
+				return 0, service.ErrAccountProxyBindingConflict
+			}
+			groupAssign = "$" + itoa(idx)
 			args = append(args, *updates.ProxyGroupID)
 			idx++
-			setClauses = append(setClauses, "proxy_id = NULL")
+			proxyAssign = "NULL"
 		}
+	}
+	if proxyAssign != "" {
+		setClauses = append(setClauses, "proxy_id = "+proxyAssign)
+	}
+	if groupAssign != "" {
+		setClauses = append(setClauses, "proxy_group_id = "+groupAssign)
 	}
 	if updates.Concurrency != nil {
 		setClauses = append(setClauses, "concurrency = $"+itoa(idx))

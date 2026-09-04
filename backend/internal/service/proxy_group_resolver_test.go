@@ -486,3 +486,38 @@ func (s *deletingProxyRepoStub) Delete(context.Context, int64) error {
 	s.deleted = true
 	return nil
 }
+
+type rebuildingStubProxyGroupRepo struct {
+	stubProxyGroupRepo
+	mu       sync.Mutex
+	rebuilds []int64
+}
+
+func (s *rebuildingStubProxyGroupRepo) EnqueueBoundAccountsRebuild(_ context.Context, groupID int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rebuilds = append(s.rebuilds, groupID)
+	return 2, nil
+}
+
+// InvalidateGroup 必须触发绑定账号的调度快照重建，否则快照中冻结的旧 Proxy
+// （已隔离 / 已移出组）会一直被使用直到周期性全量重建。
+func TestDefaultProxyGroupResolver_InvalidateGroupEnqueuesBoundAccountsRebuild(t *testing.T) {
+	t.Parallel()
+	repo := &rebuildingStubProxyGroupRepo{}
+	r := NewDefaultProxyGroupResolverWithVersions(repo, &stubProxyRepoForGroup{}, newMemGenStore())
+
+	r.InvalidateGroup(9)
+	r.InvalidateGroup(0) // invalid id: no enqueue
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	require.Equal(t, []int64{9}, repo.rebuilds)
+}
+
+// 仓库未实现扩展接口时 InvalidateGroup 仍必须安全（不 panic、不阻塞）。
+func TestDefaultProxyGroupResolver_InvalidateGroupWithoutRebuilderIsNoop(t *testing.T) {
+	t.Parallel()
+	r := NewDefaultProxyGroupResolver(&stubProxyGroupRepo{}, &stubProxyRepoForGroup{})
+	r.InvalidateGroup(9)
+}

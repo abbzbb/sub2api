@@ -214,6 +214,38 @@ func TestGetModelPricing_AntigravityMappedModelsAreBillable(t *testing.T) {
 	}
 }
 
+// Antigravity 计费别名表只能在原名查价失败时生效：有公开价卡的同名模型
+// （直连 Anthropic / Gemini 的 claude-haiku-4-5、gemini-3-pro-image-preview）
+// 必须按自身价卡计费，不得被 Antigravity 路由决策（haiku→sonnet 等）覆盖。
+func TestGetModelPricing_LiteralNameTakesPrecedenceOverAntigravityAlias(t *testing.T) {
+	catalog := `{
+		"claude-haiku-4-5": {"input_cost_per_token": 1e-6, "output_cost_per_token": 5e-6, "litellm_provider": "anthropic", "mode": "chat"},
+		"claude-sonnet-4-6": {"input_cost_per_token": 3e-6, "output_cost_per_token": 15e-6, "litellm_provider": "anthropic", "mode": "chat"},
+		"gemini-3-pro-image-preview": {"input_cost_per_token": 2e-6, "output_cost_per_token": 12e-6, "litellm_provider": "gemini", "mode": "chat"},
+		"gemini-3.1-flash-image": {"input_cost_per_token": 0.5e-6, "output_cost_per_token": 3e-6, "litellm_provider": "gemini", "mode": "chat"},
+		"gemini-3.1-pro-high": {"input_cost_per_token": 2e-6, "output_cost_per_token": 12e-6, "litellm_provider": "gemini", "mode": "chat"}
+	}`
+	svc := NewBillingService(&config.Config{}, newStubPricingServiceFromJSON(t, catalog))
+
+	haiku, err := svc.GetModelPricing("claude-haiku-4-5")
+	require.NoError(t, err)
+	require.InDelta(t, 1e-6, haiku.InputPricePerToken, 1e-15, "haiku must bill at its own public price, not sonnet")
+
+	proImage, err := svc.GetModelPricing("gemini-3-pro-image-preview")
+	require.NoError(t, err)
+	require.InDelta(t, 2e-6, proImage.InputPricePerToken, 1e-15, "gemini-3-pro-image-preview must bill at its own public price")
+
+	// 无公开价卡的 Antigravity 内部名仍通过别名表命中 LiteLLM。
+	agent, err := svc.GetModelPricing("gemini-pro-agent")
+	require.NoError(t, err)
+	require.InDelta(t, 2e-6, agent.InputPricePerToken, 1e-15)
+
+	// 别名目标在表中缺失的内部名（gemini-3-pro-image 无公开价）退到别名价。
+	proImageInternal, err := svc.GetModelPricing("gemini-3-pro-image")
+	require.NoError(t, err)
+	require.InDelta(t, 0.5e-6, proImageInternal.InputPricePerToken, 1e-15)
+}
+
 // 未知 Gemini 新版本/内部名必须命中族系档位兑底，不得零计费。
 // gemini-3.6-flash-tiered 是真实回归案例：发布后因版本枚举未覆盖而计费为 0。
 // 未知/更新版 flash 按最新 flash 档（$1.50），已知旧版保持原档（$0.30）。

@@ -2344,7 +2344,11 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 }
 
 // ClearRateLimit handles clearing account rate limit status
-// POST /api/v1/admin/accounts/:id/clear-rate-limit
+// POST /api/v1/admin/accounts/:id/clear-rate-limit[?force=true]
+//
+// force=true 额外无条件解除 Grok Free 恢复闩锁（grok_free_recovery_pending）。
+// 默认路径刻意保留该闩锁以避免绕过探测门控；force 是 worker 关闭 / Redis 不可用 /
+// 探测长期失败时的管理员逃生口。
 func (h *AccountHandler) ClearRateLimit(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -2352,7 +2356,11 @@ func (h *AccountHandler) ClearRateLimit(c *gin.Context) {
 		return
 	}
 
-	err = h.rateLimitService.ClearRateLimit(c.Request.Context(), accountID)
+	if c.Query("force") == "true" {
+		err = h.rateLimitService.ForceClearRateLimit(c.Request.Context(), accountID)
+	} else {
+		err = h.rateLimitService.ClearRateLimit(c.Request.Context(), accountID)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

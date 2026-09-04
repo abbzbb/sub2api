@@ -49,11 +49,17 @@ const grokExtraQuotaSnapshotBlocksScheduling = (
   const remainingZero = (window?: { remaining?: number | null; reset_at?: string | null }) =>
     window != null && typeof window.remaining === 'number' && window.remaining <= 0
   if (!remainingZero(snap.tokens) && !remainingZero(snap.requests)) return false
+  // 与后端 grokQuotaSnapshotBlocksSchedulingFromSnapshot 对齐：
+  // 已知重置时间 → 仅在重置时间尚未到达时视为受限；
+  // 没有任何重置时间（remaining=0 但无 reset_at）→ 保持受限，等探测刷新快照。
+  let sawResetAt = false
   for (const window of [snap.tokens, snap.requests]) {
     const resetRaw = window?.reset_at
     if (!resetRaw) continue
     const resetAt = Date.parse(resetRaw)
-    if (Number.isFinite(resetAt) && resetAt > now) return true
+    if (!Number.isFinite(resetAt)) continue
+    sawResetAt = true
+    if (resetAt > now) return true
   }
-  return true
+  return !sawResetAt
 }

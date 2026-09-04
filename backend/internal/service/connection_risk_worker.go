@@ -341,20 +341,47 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 	w.metrics.EventsCreated.Add(1)
 
 	if w.policy != nil && saved != nil {
+		before := saved.ActionTaken
 		w.policy.HandleNewEvent(ctx, saved, s)
+		// 自动处置结果必须落库并留日志：策略只改内存字段，不写回会让 action_taken
+		// 永远是 'none'，管理员无法知道 key 是被本系统自动禁用/限速的。
+		if saved.ActionTaken != before && saved.ActionTaken != "" && saved.ActionTaken != ConnectionRiskActionNone {
+			if err := w.events.UpdateActionTaken(ctx, saved.ID, saved.ActionTaken); err != nil {
+				slog.Warn("connection risk persist action_taken failed",
+					"error", err, "event_id", saved.ID, "action", saved.ActionTaken)
+			}
+			slog.Warn("connection risk automatic action applied",
+				"actor", "system:connection_risk",
+				"event_id", saved.ID,
+				"action", saved.ActionTaken,
+				"severity", saved.Severity,
+				"rules", saved.RulesFired,
+				"api_key_id", derefInt64(saved.APIKeyID),
+				"user_id", derefInt64(saved.UserID),
+			)
+		}
 	}
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func (w *ConnectionRiskWorker) maybeWriteBaseline(ctx context.Context, keyID int64, hll24h int64) {
 	if w == nil || w.signals == nil || keyID <= 0 {
 		return
 	}
-	day := time.Now().UTC().Format("20060102")
-	_ = w.signals.SnapshotBaselineDay(ctx, keyID, day, hll24h)
-	// Recompute p95 from last 7 days when we have enough samples.
-	days := make([]string, 0, 7)
 	now := time.Now().UTC()
-	for i := 0; i < 7; i++ {
+	day := now.Format("20060102")
+	_ = w.signals.SnapshotBaselineDay(ctx, keyID, day, hll24h)
+	// Recompute p95 from the previous 7 days. 今天必须排除：R3 用当前 24h HLL 与
+	// p95 比较，若样本含今天，p95 >= 今日值（n<=19 时 nearest-rank p95 就是 max），
+	// 规则永远不可能触发。
+	days := make([]string, 0, 7)
+	for i := 1; i <= 7; i++ {
 		days = append(days, now.AddDate(0, 0, -i).Format("20060102"))
 	}
 	samples, err := w.signals.LoadBaselineSamples(ctx, keyID, days)

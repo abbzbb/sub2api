@@ -40,6 +40,12 @@ jobs:
       - name: Integration tests
         working-directory: backend
         run: make test-integration
+      - name: WARP gateway build and tests
+        working-directory: tools/warp-gateway
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./... -count=1
 
   frontend:
     runs-on: ubuntu-latest

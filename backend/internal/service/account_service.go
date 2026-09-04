@@ -13,6 +13,8 @@ var (
 	ErrAccountNotFound      = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
 	ErrAccountNilInput      = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
 	ErrAccountNotInFallback = infraerrors.BadRequest("ACCOUNT_NOT_IN_FALLBACK", "account is not in proxy fallback state")
+	// ErrAccountProxyBindingConflict：proxy_id 与 proxy_group_id 互斥，不能同时绑定非零值。
+	ErrAccountProxyBindingConflict = infraerrors.BadRequest("ACCOUNT_PROXY_BINDING_CONFLICT", "proxy_id and proxy_group_id are mutually exclusive")
 )
 
 const AccountListGroupUngrouped int64 = -1
@@ -157,6 +159,12 @@ type AdminAccountRepository interface {
 // forcing unrelated AccountRepository test doubles to implement it.
 type GrokFreeRecoveryRepository interface {
 	ClearGrokFreeRecoveryIfUnchanged(ctx context.Context, id int64, probeStartedAt, nextProbeAt time.Time) (bool, error)
+}
+
+// GrokFreeRecoveryForceReleaser 是管理员逃生口：无条件解除恢复闩锁。
+// 仅供显式的管理操作调用（worker 关闭 / Redis 不可用 / 探测长期失败时）。
+type GrokFreeRecoveryForceReleaser interface {
+	ForceReleaseGrokFreeRecovery(ctx context.Context, id int64) error
 }
 
 // GrokFreeRecoveryStateRepository persists the recovery latch and its finite

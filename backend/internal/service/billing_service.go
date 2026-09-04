@@ -807,10 +807,12 @@ func (s *BillingService) initFallbackPricing() {
 	}
 }
 
-// getFallbackPricing 根据模型系列获取回退价格
 // canonicalizeAntigravityBillingModel maps Antigravity upstream model IDs to
 // publicly priced equivalents so CalculateCost can resolve LiteLLM / fallback
 // rates. Request routing still uses the original mapped upstream name.
+//
+// 注意：本表只在原名查价失败时才生效（见 billingModelCandidates）。表中不得
+// 收录本身就有公开价卡的模型名（如 claude-haiku-4-5），否则会覆盖真实价格。
 func canonicalizeAntigravityBillingModel(model string) string {
 	switch model {
 	case "gemini-pro-agent", "gemini-3.1-pro", "gemini-3.1-pro-preview", "gemini-3-pro-high", "gemini-3-pro-preview":
@@ -829,10 +831,6 @@ func canonicalizeAntigravityBillingModel(model string) string {
 		return "claude-opus-4-5"
 	case "claude-sonnet-4-5-thinking", "claude-sonnet-4-5-20250929":
 		return "claude-sonnet-4-5"
-	case "claude-haiku-4-5", "claude-haiku-4-5-20251001":
-		// Default Antigravity mapping routes Haiku → Sonnet 4.6 for inference;
-		// bill at Sonnet rates so usage is not zero-priced.
-		return "claude-sonnet-4-6"
 	case "gpt-oss-120b-medium", "tab_flash_lite_preview":
 		return "gemini-2.5-flash"
 	default:
@@ -850,6 +848,7 @@ func canonicalizeAntigravityBillingModel(model string) string {
 	}
 }
 
+// getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	modelLower := strings.ToLower(model)
 
@@ -1169,24 +1168,44 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 	return ok && pricing != nil
 }
 
+// billingModelCandidates 返回按优先级排列的计费名候选：先用请求原名，
+// 仅当原名在价目表中缺失时才退回 Antigravity 内部名的公开等价名（#3701）。
+// canonicalize 表编码的是 Antigravity 的路由决策（如 haiku → sonnet），
+// 若无条件套用会让直连 Anthropic/Gemini/Bedrock 的同名公开模型被错价。
+func billingModelCandidates(model string) []string {
+	canonical := canonicalizeAntigravityBillingModel(model)
+	if canonical == model {
+		return []string{model}
+	}
+	return []string{model, canonical}
+}
+
+// lookupTokenPricing 从动态价格服务取 token 价；仅有图片价的条目视为缺失。
+func (s *BillingService) lookupTokenPricing(model string) *LiteLLMModelPricing {
+	if s.pricingService == nil {
+		return nil
+	}
+	litellmPricing := s.pricingService.GetModelPricing(model)
+	// 仅有图片价、无 token 价的条目（如 LiteLLM 的 imagen 类模型）不能用于
+	// token 计费：直接返回会把 token 流量按 $0 计费。跳过后走 fallback，
+	// 无 fallback 则 fail-closed（ErrModelPricingUnavailable）。
+	// 图片计费路径（getDefaultImagePrice / getImageUnitPrice）直接读
+	// PricingService，不受影响。
+	if litellmPricing != nil && litellmPricing.TokenPricingAbsent {
+		return nil
+	}
+	return litellmPricing
+}
+
 // GetModelPricing 获取模型价格配置
 func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	// 标准化模型名称（转小写）
 	model = strings.ToLower(model)
-	// Antigravity 上游映射名 → 可计费的公开模型 ID（#3701）
-	model = canonicalizeAntigravityBillingModel(model)
+	candidates := billingModelCandidates(model)
 
-	// 1. 优先从动态价格服务获取
-	if s.pricingService != nil {
-		litellmPricing := s.pricingService.GetModelPricing(model)
-		// 仅有图片价、无 token 价的条目（如 LiteLLM 的 imagen 类模型）不能用于
-		// token 计费：直接返回会把 token 流量按 $0 计费。跳过后走 fallback，
-		// 无 fallback 则 fail-closed（ErrModelPricingUnavailable）。
-		// 图片计费路径（getDefaultImagePrice / getImageUnitPrice）直接读
-		// PricingService，不受影响。
-		if litellmPricing != nil && litellmPricing.TokenPricingAbsent {
-			litellmPricing = nil
-		}
+	// 1. 优先从动态价格服务获取（原名优先，缺失时再试 Antigravity 公开等价名）
+	for _, model := range candidates {
+		litellmPricing := s.lookupTokenPricing(model)
 		if litellmPricing != nil {
 			// 启用 5m/1h 分类计费的条件：
 			// 1. 存在 1h 价格
@@ -1217,9 +1236,12 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 		}
 	}
 
-	// 2. 使用硬编码回退价格
-	fallback := s.getFallbackPricing(model)
-	if fallback != nil {
+	// 2. 使用硬编码回退价格（同样原名优先）
+	for _, model := range candidates {
+		fallback := s.getFallbackPricing(model)
+		if fallback == nil {
+			continue
+		}
 		// 按模型名去重:每个模型每进程最多打一条 warn,避免热路径每请求刷屏（issue #3394）。
 		// model 在函数入口已 ToLower,故 GLM-5.2 / glm-5.2 视为同一条目。
 		if _, seen := s.fallbackWarnSeen.LoadOrStore(model, struct{}{}); !seen {

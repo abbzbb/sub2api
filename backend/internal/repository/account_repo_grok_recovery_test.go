@@ -194,3 +194,39 @@ func TestClearGrokFreeRecoveryIfUnchanged_OutboxFailureRollsBackStatement(t *tes
 	require.ErrorIs(t, err, wantErr)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// 管理员逃生口：无条件移除 pending / probe / streak / proactive 全部闩锁键并清限流字段。
+func TestForceReleaseGrokFreeRecoveryClearsLatchUnconditionally(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	err := repo.ForceReleaseGrokFreeRecovery(context.Background(), 42)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, exec.execQueries)
+	normalized := normalizeSQLWhitespace(exec.execQueries[0])
+	require.Contains(t, normalized, "rate_limited_at = NULL")
+	require.Contains(t, normalized, "rate_limit_reset_at = NULL")
+	require.NotContains(t, normalized, "CASE", "force release must not be conditioned on the pending flag")
+	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
+	require.Len(t, exec.execArgs[0], 9)
+	require.Equal(t, int64(42), exec.execArgs[0][0])
+	require.Equal(t, service.SchedulerOutboxEventAccountChanged, exec.execArgs[0][8])
+	require.ElementsMatch(t, []any{
+		service.GrokFreeRecoveryPendingExtraKey,
+		service.GrokFreeRecoveryNextProbeAtExtraKey,
+		service.GrokFreeRecoveryLastProbeAtExtraKey,
+		service.GrokFreeRecoveryLastProbeResultExtraKey,
+		service.GrokFreeRecoveryLastResultAtExtraKey,
+		service.GrokFreeRecoveryLimitedStreakExtraKey,
+		service.GrokFreeProactiveNextProbeAtExtraKey,
+	}, exec.execArgs[0][1:8])
+}
+
+func TestForceReleaseGrokFreeRecoveryReturnsNotFoundOnZeroRows(t *testing.T) {
+	exec := &recordingSQLExecutor{result: rowsAffectedResult(0)}
+	repo := newAccountRepositoryWithSQL(nil, exec, nil)
+
+	err := repo.ForceReleaseGrokFreeRecovery(context.Background(), 42)
+	require.ErrorIs(t, err, service.ErrAccountNotFound)
+}

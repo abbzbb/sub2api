@@ -63,6 +63,31 @@ describe('accountStatus', () => {
     expect(isAccountRateLimited(account)).toBe(true)
   })
 
+  it('releases a Grok remaining=0 snapshot once its reset_at has passed', () => {
+    const account = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          tokens: { remaining: 0, reset_at: '2026-07-14T00:01:00Z' }
+        }
+      }
+    })
+
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:00:30Z'))).toBe(true)
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:02:00Z'))).toBe(false)
+  })
+
+  it('keeps a Grok remaining=0 snapshot without any reset_at rate limited', () => {
+    const account = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          requests: { remaining: 0 }
+        }
+      }
+    })
+
+    expect(isAccountRateLimited(account)).toBe(true)
+  })
+
   it('ignores a misplaced Grok recovery marker on another platform', () => {
     const account = makeAccount({
       platform: 'openai',

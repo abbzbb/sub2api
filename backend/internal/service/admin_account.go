@@ -1009,6 +1009,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// 影子账号 proxy/proxy_group 恒继承母账号(与单账号 UpdateAccount 守卫对齐——外审第4轮 P1):批量携带
 	// proxy 或 proxy_group 时目标不得含影子,否则影子会获得独立出站配置、破坏继承不变量。
 	// 含影子即整体拒绝,提示从选择中剔除影子。
+	if input.ProxyID != nil && input.ProxyGroupID != nil && *input.ProxyID > 0 && *input.ProxyGroupID > 0 {
+		return nil, ErrAccountProxyBindingConflict
+	}
 	if input.ProxyID != nil || input.ProxyGroupID != nil {
 		for _, acc := range cachedTargets {
 			if acc != nil && acc.IsCredentialShadow() {

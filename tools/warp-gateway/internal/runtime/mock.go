@@ -93,4 +93,3 @@ func (m *MockManager) Start(ctx context.Context, inst *store.Instance) (Handle, 
 
 	return h, nil
 }
-

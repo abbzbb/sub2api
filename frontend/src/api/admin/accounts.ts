@@ -373,11 +373,18 @@ export async function getBatchUsage(accountIds: number[], force?: boolean): Prom
 /**
  * Clear account rate limit status
  * @param id - Account ID
+ * @param options.force - also release the Grok Free recovery latch
+ *   (admin escape hatch when the recovery worker/Redis is unavailable)
  * @returns Updated account
  */
-export async function clearRateLimit(id: number): Promise<Account> {
+export async function clearRateLimit(
+  id: number,
+  options?: { force?: boolean }
+): Promise<Account> {
   const { data } = await apiClient.post<Account>(
-    `/admin/accounts/${id}/clear-rate-limit`
+    `/admin/accounts/${id}/clear-rate-limit`,
+    undefined,
+    options?.force ? { params: { force: 'true' } } : undefined
   )
   return data
 }

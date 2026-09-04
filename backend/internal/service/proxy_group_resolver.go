@@ -83,7 +83,15 @@ func (r *DefaultProxyGroupResolver) InvalidateGroup(groupID int64) {
 	r.mu.Unlock()
 	r.rrCounters.Delete(groupID)
 
-	if r.versions == nil || groupID <= 0 {
+	if groupID <= 0 {
+		return
+	}
+	// 组失效必须传播到调度快照：投递绑定账号的批量变更事件，让 outbox 消费者
+	// 重新 hydrate（重新按新成员/健康状态选代理）。否则快照里冻结的旧 Proxy 会
+	// 一直被使用，直到周期性全量重建。
+	r.enqueueBoundAccountsRebuild(groupID)
+
+	if r.versions == nil {
 		return
 	}
 
@@ -112,6 +120,27 @@ func (r *DefaultProxyGroupResolver) InvalidateGroup(groupID int64) {
 		until = time.Now()
 	}
 	r.bumpFailed.Store(groupID, until.Add(proxyGroupBumpFailForceTTL))
+}
+
+const proxyGroupRebuildEnqueueTimeout = 3 * time.Second
+
+func (r *DefaultProxyGroupResolver) enqueueBoundAccountsRebuild(groupID int64) {
+	rebuilder, ok := r.groupRepo.(ProxyGroupBoundAccountRebuilder)
+	if !ok || rebuilder == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyGroupRebuildEnqueueTimeout)
+	defer cancel()
+	n, err := rebuilder.EnqueueBoundAccountsRebuild(ctx, groupID)
+	if err != nil {
+		slog.Warn("proxy_group_bound_accounts_rebuild_enqueue_failed",
+			"group_id", groupID, "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("proxy_group_bound_accounts_rebuild_enqueued",
+			"group_id", groupID, "accounts", n)
+	}
 }
 
 func (r *DefaultProxyGroupResolver) ResolveProxy(ctx context.Context, groupID, accountID int64) (*Proxy, error) {

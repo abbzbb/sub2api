@@ -531,36 +531,7 @@ func (r *proxyRepository) UpdateStatusWithHealthIsolation(ctx context.Context, p
 	if isolatedBy != "" {
 		iso = isolatedBy
 	}
-	query := `
-		UPDATE proxies
-		SET status = $2,
-		    updated_at = NOW()`
-	if updateHealthCounters {
-		query += `
-		    health_fail_count = $3,
-		    last_health_at = $4,
-		    health_isolated_by = $5`
-	}
-	query += `
-		WHERE id = $1 AND deleted_at IS NULL`
-	args := []any{proxyID, status}
-	argN := 3
-	if updateHealthCounters {
-		args = append(args, failCount, last, iso)
-		argN += 3
-	}
-	if onlyIfStatus != "" {
-		query += fmt.Sprintf(" AND status = $%d", argN)
-		args = append(args, onlyIfStatus)
-		argN++
-	}
-	if onlyIfIsolatedBy != nil {
-		query += fmt.Sprintf(" AND COALESCE(health_isolated_by,'') = $%d", argN)
-		args = append(args, *onlyIfIsolatedBy)
-	}
-	// generation optimistic lock for Status Multi-Writer Fence
-	query += fmt.Sprintf(" AND COALESCE(generation, 0) = $%d", argN)
-	args = append(args, 0)
+	query, args := buildUpdateStatusWithHealthIsolationQuery(proxyID, status, failCount, last, iso, onlyIfStatus, onlyIfIsolatedBy, updateHealthCounters)
 	result, err := r.sql.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
@@ -570,6 +541,34 @@ func (r *proxyRepository) UpdateStatusWithHealthIsolation(ctx context.Context, p
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// buildUpdateStatusWithHealthIsolationQuery 拼装 UpdateStatusWithHealthIsolation
+// 的 SQL 与参数。独立成纯函数以便单测校验占位符与参数个数一一对应：
+// 该语句历史上曾因缺逗号 / 占位符复用 / 引用不存在的列而在生产中静默失效。
+func buildUpdateStatusWithHealthIsolationQuery(proxyID int64, status string, failCount int, lastHealthAt any, isolatedBy any, onlyIfStatus string, onlyIfIsolatedBy *string, updateHealthCounters bool) (string, []any) {
+	args := []any{proxyID, status}
+	setClauses := []string{"status = $2", "updated_at = NOW()"}
+	if updateHealthCounters {
+		setClauses = append(setClauses,
+			fmt.Sprintf("health_fail_count = $%d", len(args)+1),
+			fmt.Sprintf("last_health_at = $%d", len(args)+2),
+			fmt.Sprintf("health_isolated_by = $%d", len(args)+3),
+		)
+		args = append(args, failCount, lastHealthAt, isolatedBy)
+	}
+	where := []string{"id = $1", "deleted_at IS NULL"}
+	if onlyIfStatus != "" {
+		args = append(args, onlyIfStatus)
+		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if onlyIfIsolatedBy != nil {
+		args = append(args, *onlyIfIsolatedBy)
+		where = append(where, fmt.Sprintf("COALESCE(health_isolated_by,'') = $%d", len(args)))
+	}
+	query := "UPDATE proxies SET " + strings.Join(setClauses, ", ") +
+		" WHERE " + strings.Join(where, " AND ")
+	return query, args
 }
 
 // GetHealthAudit loads durable health snapshot columns.

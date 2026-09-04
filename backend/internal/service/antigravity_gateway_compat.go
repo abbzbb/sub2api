@@ -319,10 +319,7 @@ func enableMixedGeminiToolInvocations(body []byte) ([]byte, error) {
 }
 
 func antigravityCompatProxyURL(account *Account) string {
-	if account.ProxyID == nil || account.Proxy == nil {
-		return ""
-	}
-	return account.Proxy.URL()
+	return account.ProxyURL()
 }
 
 func (s *AntigravityGatewayService) handleAntigravityCompatTransportError(c *gin.Context, err error) error {

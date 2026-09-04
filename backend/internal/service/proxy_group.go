@@ -82,8 +82,20 @@ type ProxyGroupRepository interface {
 	SetGroupMembers(ctx context.Context, groupID int64, proxyIDs []int64) error
 }
 
+// ProxyGroupBoundAccountRebuilder 是 ProxyGroupRepository 的可选扩展：
+// 为绑定到组的全部账号投递批量变更事件，触发调度快照重建。
+// 组失效（成员变更 / 健康隔离与恢复 / 组元数据变更）时由 resolver 调用。
+type ProxyGroupBoundAccountRebuilder interface {
+	EnqueueBoundAccountsRebuild(ctx context.Context, groupID int64) (int, error)
+}
+
 // ProxyGroupResolver 在账号 hydration 时按组选出一个代理。
 // 实现 MUST NOT 写回 account.ProxyID。
+//
+// 注意调度快照语义：网关按 Redis 快照调度，账号的 Proxy 在 hydration 时选定并
+// 随快照持久化，直到该账号快照被重建（outbox 事件或周期性全量重建）。因此
+// round_robin / random 策略的"轮转"粒度是"每次快照重建"而非"每次请求"；
+// InvalidateGroup 必须同时触发绑定账号的快照重建，否则隔离/移出的代理仍会被使用。
 type ProxyGroupResolver interface {
 	// ResolveProxy 返回组内选出的代理；无健康成员时返回 (nil, nil)。
 	ResolveProxy(ctx context.Context, groupID, accountID int64) (*Proxy, error)

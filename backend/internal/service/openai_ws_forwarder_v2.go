@@ -189,7 +189,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		hasOpenAIWSHeader(wsHeaders, "authorization"),
 		hasOpenAIWSHeader(wsHeaders, "session_id"),
 		hasOpenAIWSHeader(wsHeaders, "conversation_id"),
-		account.ProxyID != nil && account.Proxy != nil,
+		account.Proxy != nil,
 	)
 
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
@@ -238,7 +238,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			forceNewConn,
 			wsHost,
 			wsPath,
-			account.ProxyID != nil && account.Proxy != nil,
+			account.Proxy != nil,
 		)
 		var dialErr *openAIWSDialError
 		if errors.As(err, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {

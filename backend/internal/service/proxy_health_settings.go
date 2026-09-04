@@ -313,10 +313,8 @@ func (s *ProxyHealthService) applySettings(settings ProxyHealthSettings) {
 	cp := settings
 	s.runtime = &cp
 	s.runtimeMu.Unlock()
-	// Keep process config in sync so worker interval/lock reads stay correct.
-	if s.cfg != nil {
-		s.cfg.ProxyHealth = settings.toConfig()
-	}
+	// 不再回写共享的 *config.Config：worker 与其它读者统一走 conf()（RWMutex 保护），
+	// 否则 HTTP goroutine 写 cfg.ProxyHealth 与 worker 循环读 IntervalSec 构成 data race。
 }
 
 func (s *ProxyHealthService) bootstrapRuntimeSettings() {

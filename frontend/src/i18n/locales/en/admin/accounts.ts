@@ -512,6 +512,11 @@ export default {
       recoverStateHint: 'Used to recover error, rate-limit, and temporary unschedulable runtime state.',
       recoverStateSuccess: 'Account state recovered successfully',
       recoverStateFailed: 'Failed to recover account state',
+      forceReleaseGrokRecovery: 'Force Release Recovery Latch',
+      forceReleaseGrokRecoveryConfirm:
+        "Force-release the Grok Free recovery latch for '{name}'? The account returns to scheduling immediately without a successful recovery probe and may hit 429 again.",
+      forceReleaseGrokRecoverySuccess: 'Recovery latch released; account is schedulable again',
+      forceReleaseGrokRecoveryFailed: 'Failed to release recovery latch',
       fallbackActive: 'Fallback',
       fallbackActiveTip: 'Origin proxy {origin} expired',
       revertProxy: 'Revert proxy',

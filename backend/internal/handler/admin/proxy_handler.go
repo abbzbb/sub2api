@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // ProxyHandler handles admin proxy management
@@ -284,10 +285,18 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		return
 	}
 	// Re-validate known shape (oneof / port range) via typed bind.
+	// json.Unmarshal 不会执行 binding 标签，必须显式跑一遍校验器，
+	// 否则 protocol=ftp / port=99999 / status=bogus 会原样写库。
 	var req UpdateProxyRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
+	}
+	if binding.Validator != nil {
+		if err := binding.Validator.ValidateStruct(&req); err != nil {
+			response.BadRequest(c, "Invalid request: "+err.Error())
+			return
+		}
 	}
 
 	input := &service.UpdateProxyInput{

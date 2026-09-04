@@ -2052,6 +2052,24 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 	return nil
 }
 
+// ForceClearRateLimit 是 ClearRateLimit 的管理员强制版本：除常规清理外，还无条件
+// 解除 Grok Free 恢复闩锁并立即通知调度器。用于 worker 关闭 / Redis 不可用 /
+// 探测长期失败导致账号被闩住却无人能放行的场景。非 Grok 账号行为与 ClearRateLimit 相同。
+func (s *RateLimitService) ForceClearRateLimit(ctx context.Context, accountID int64) error {
+	if releaser, ok := s.accountRepo.(GrokFreeRecoveryForceReleaser); ok {
+		if err := releaser.ForceReleaseGrokFreeRecovery(ctx, accountID); err != nil {
+			return err
+		}
+	}
+	if err := s.ClearRateLimit(ctx, accountID); err != nil {
+		return err
+	}
+	// ClearRateLimit 在 pending 时会抑制通知；闩锁已解除，这里兜底通知一次是幂等的。
+	s.notifyAccountSchedulingBlockCleared(accountID)
+	slog.Info("grok_free_recovery_force_released", "account_id", accountID)
+	return nil
+}
+
 // RecoverGrokFreeAfterSuccessfulProbe clears the durable latch only when the
 // repository confirms that no newer 429 generation replaced this probe.
 func (s *RateLimitService) RecoverGrokFreeAfterSuccessfulProbe(ctx context.Context, accountID int64, probeStartedAt, nextProbeAt time.Time) (bool, error) {

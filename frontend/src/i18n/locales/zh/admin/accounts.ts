@@ -598,6 +598,11 @@ export default {
       recoverStateHint: '用于恢复错误、限流和临时不可调度等可恢复状态。',
       recoverStateSuccess: '账号状态已恢复',
       recoverStateFailed: '恢复账号状态失败',
+      forceReleaseGrokRecovery: '强制解除恢复闩锁',
+      forceReleaseGrokRecoveryConfirm:
+        "确定强制解除账号 '{name}' 的 Grok Free 恢复闩锁？账号将不经探测立即恢复调度，可能再次触发 429。",
+      forceReleaseGrokRecoverySuccess: '恢复闩锁已解除，账号可重新调度',
+      forceReleaseGrokRecoveryFailed: '解除恢复闩锁失败',
       fallbackActive: '已回退',
       fallbackActiveTip: '原代理 {origin} 已到期，当前使用备用代理',
       revertProxy: '切回原代理',

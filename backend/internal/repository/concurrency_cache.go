@@ -335,16 +335,21 @@ var (
 	// KEYS[1]=slot ZSET；ARGV[1]=slotTTL；ARGV[2]=nowUnix。
 	// 返回 {清除数量, 剩余成员数}；Go 侧据剩余数决定索引 member 去留。
 	// 不再无条件删除 wait key：等待计数带 TTL，由过期自愈；避免多实例互清 wait 队列。
+	//
+	// 槽位 ZSET 的 score 是 acquire 时刻（见 acquireScript 的 ZADD key now），不是过期时刻，
+	// 因此"过期"判定必须与 acquireScript 的 expireBefore = now - ttl 同口径：
+	// score < now - slotTTL。若误用 score < now，会把所有在途槽位（含 peer 实例）一并删除。
 	startupCleanupSlotScript = redis.NewScript(`
 		local key = KEYS[1]
 		local slotTTL = tonumber(ARGV[1])
 		local now = tonumber(ARGV[2])
+		local expireBefore = now - slotTTL
 		local removed = 0
 		local members = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
 		for i = 1, #members, 2 do
 			local member = members[i]
 			local score = tonumber(members[i + 1])
-			if score ~= nil and score < now then
+			if score ~= nil and score < expireBefore then
 				removed = removed + redis.call('ZREM', key, member)
 			end
 		end

@@ -32,13 +32,13 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		Listen:           "127.0.0.1:19798",
-		Token:            "",
-		DataDir:          "./data/warp-gateway",
-		DefaultHost:      "127.0.0.1",
-		PortRangeStart:   41001,
-		PortRangeEnd:     41100,
-		HealthInterval:   30 * time.Second,
+		Listen:         "127.0.0.1:19798",
+		Token:          "",
+		DataDir:        "./data/warp-gateway",
+		DefaultHost:    "127.0.0.1",
+		PortRangeStart: 41001,
+		PortRangeEnd:   41100,
+		HealthInterval: 30 * time.Second,
 		// Use IP URL so health probes work even when local DNS is fake-ip hijacked.
 		ProbeURL:         "https://1.1.1.1/cdn-cgi/trace",
 		Runtime:          "mock",

@@ -50,6 +50,12 @@
               <Icon name="sync" size="sm" />
               {{ t('admin.accounts.recoverState') }}
             </button>
+            <!-- Grok Free 恢复闩锁的管理员逃生口：worker 关闭 / Redis 不可用 / 探测长期失败时手动放行。 -->
+            <div v-if="isGrokRecoveryPending" class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
+            <button v-if="isGrokRecoveryPending" @click="$emit('force-release-grok-recovery', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-amber-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+              <Icon name="sync" size="sm" />
+              {{ t('admin.accounts.forceReleaseGrokRecovery') }}
+            </button>
             <button v-if="hasQuotaLimit" @click="$emit('reset-quota', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-teal-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="refresh" size="sm" />
               {{ t('admin.accounts.resetQuota') }}
@@ -69,7 +75,7 @@ import type { Account } from '@/types'
 import { isAccountRateLimited, isGrokFreeRecoveryPending } from '@/utils/accountStatus'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'force-release-grok-recovery'])
 const { t } = useI18n()
 const canDuplicate = computed(() => {
   if (!props.account || props.account.parent_account_id != null) return false
@@ -90,8 +96,9 @@ const isRateLimited = computed(() => {
 })
 const isOverloaded = computed(() => props.account?.overload_until && new Date(props.account.overload_until) > new Date())
 const isTempUnschedulable = computed(() => props.account?.temp_unschedulable_until && new Date(props.account.temp_unschedulable_until) > new Date())
+const isGrokRecoveryPending = computed(() => isGrokFreeRecoveryPending(props.account))
 const hasRecoverableState = computed(() => {
-  if (isGrokFreeRecoveryPending(props.account)) return false
+  if (isGrokRecoveryPending.value) return false
   return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value)
 })
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')

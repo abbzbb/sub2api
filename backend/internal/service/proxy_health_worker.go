@@ -23,10 +23,23 @@ type ProxyHealthWorker struct {
 	instanceID string
 	log        *slog.Logger
 
-	mu   sync.Mutex
-	wg   sync.WaitGroup
-	stop chan struct{}
-	on   bool
+	mu     sync.Mutex
+	wg     sync.WaitGroup
+	stop   chan struct{}
+	cancel context.CancelFunc // cancels the in-flight tick so Stop() never waits a full scan
+	on     bool
+}
+
+// effectiveConf 读取生效配置：优先面板运行时设置，其次 YAML。
+// 统一经由 svc.conf()（RWMutex 保护），避免 worker 与 HTTP 侧并发读写共享 *config.Config。
+func (w *ProxyHealthWorker) effectiveConf() config.ProxyHealthConfig {
+	if w.svc != nil {
+		return w.svc.conf()
+	}
+	if w.cfg != nil {
+		return w.cfg.ProxyHealth
+	}
+	return config.ProxyHealthConfig{}
 }
 
 // ProvideProxyHealthWorker constructs and starts the worker when enabled.
@@ -68,16 +81,18 @@ func (w *ProxyHealthWorker) Start() {
 	if w.on {
 		return
 	}
-	if w.cfg == nil || !w.cfg.ProxyHealth.Enabled || w.svc == nil {
+	if w.svc == nil || !w.effectiveConf().Enabled {
 		w.log.Info("proxy health worker not started (disabled or service nil)")
 		return
 	}
 	if w.stop == nil {
 		w.stop = make(chan struct{})
 	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
 	w.on = true
 	w.wg.Add(1)
-	go w.run()
+	go w.run(runCtx)
 	w.log.Info("proxy health worker started", "interval_sec", w.intervalSec())
 }
 
@@ -96,6 +111,10 @@ func (w *ProxyHealthWorker) Stop() {
 	default:
 		close(w.stop)
 	}
+	if w.cancel != nil {
+		w.cancel()
+		w.cancel = nil
+	}
 	w.on = false
 	w.mu.Unlock()
 	w.wg.Wait()
@@ -105,12 +124,12 @@ func (w *ProxyHealthWorker) Stop() {
 	w.log.Info("proxy health worker stopped")
 }
 
-// Apply re-reads cfg.ProxyHealth.Enabled and starts or stops the loop.
+// Apply re-reads the effective Enabled flag and starts or stops the loop.
 func (w *ProxyHealthWorker) Apply() {
 	if w == nil {
 		return
 	}
-	enabled := w.cfg != nil && w.cfg.ProxyHealth.Enabled
+	enabled := w.svc != nil && w.effectiveConf().Enabled
 	if enabled {
 		// Restart so interval changes take effect promptly.
 		if w.Running() {
@@ -144,8 +163,8 @@ func (w *ProxyHealthWorker) InstanceID() string {
 
 func (w *ProxyHealthWorker) intervalSec() int {
 	sec := 60
-	if w.cfg != nil && w.cfg.ProxyHealth.IntervalSec > 0 {
-		sec = w.cfg.ProxyHealth.IntervalSec
+	if v := w.effectiveConf().IntervalSec; v > 0 {
+		sec = v
 	}
 	if sec < 10 {
 		sec = 10
@@ -153,7 +172,7 @@ func (w *ProxyHealthWorker) intervalSec() int {
 	return sec
 }
 
-func (w *ProxyHealthWorker) run() {
+func (w *ProxyHealthWorker) run(runCtx context.Context) {
 	defer w.wg.Done()
 	// Short boot delay so Redis/DB are ready.
 	timer := time.NewTimer(5 * time.Second)
@@ -162,8 +181,10 @@ func (w *ProxyHealthWorker) run() {
 		select {
 		case <-w.stop:
 			return
+		case <-runCtx.Done():
+			return
 		case <-timer.C:
-			w.tick()
+			w.tick(runCtx)
 			timer.Reset(time.Duration(w.intervalSec()) * time.Second)
 		}
 	}
@@ -203,20 +224,25 @@ func (w *ProxyHealthWorker) tickTimeout() time.Duration {
 	return timeout
 }
 
-func (w *ProxyHealthWorker) tick() {
+func (w *ProxyHealthWorker) tick(runCtx context.Context) {
 	if w.svc == nil {
 		return
 	}
 	// Bound whole tick: probes themselves use per-proxy timeout.
 	// Leader lock + process singleflight live inside RunOnce so admin RunScan
 	// shares the same gate (avoids double-acquire if we locked here too).
-	ctx, cancel := context.WithTimeout(context.Background(), w.tickTimeout())
+	// 派生自 runCtx：Stop()/Apply() 取消后立即中断扫描，而不是等满 tickTimeout（最长 15 分钟）。
+	ctx, cancel := context.WithTimeout(runCtx, w.tickTimeout())
 	defer cancel()
 
 	res, err := w.svc.RunOnce(ctx)
 	if err != nil {
 		if errors.Is(err, ErrProxyHealthScanBusy) {
 			w.log.Debug("proxy health tick skipped: scan already running")
+			return
+		}
+		if runCtx.Err() != nil {
+			w.log.Debug("proxy health tick interrupted by stop")
 			return
 		}
 		w.log.Warn("proxy health run failed", "err", err)

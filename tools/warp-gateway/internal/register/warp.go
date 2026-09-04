@@ -167,13 +167,19 @@ func Unregister(ctx context.Context, deviceID, accessToken string) error {
 	return fmt.Errorf("warp unregister HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
 }
 
+// MaxRegisterPerCall bounds one RegisterMany / CreatePool batch. Kept in one
+// place so the gateway pool cap and the registration cap cannot drift apart
+// (a 50-member pool used to fail with "max 20 per call" after the sub2api
+// backend had already accepted count<=50).
+const MaxRegisterPerCall = 50
+
 // RegisterMany registers n free WARP profiles (sequential to reduce rate limits).
 func RegisterMany(ctx context.Context, n int) ([]Result, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("count must be > 0")
 	}
-	if n > 20 {
-		return nil, fmt.Errorf("count too large (max 20 per call)")
+	if n > MaxRegisterPerCall {
+		return nil, fmt.Errorf("count too large (max %d per call)", MaxRegisterPerCall)
 	}
 	out := make([]Result, 0, n)
 	for i := 0; i < n; i++ {

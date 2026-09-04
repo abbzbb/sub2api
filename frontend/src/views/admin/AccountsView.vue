@@ -465,7 +465,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" @completed="handleAccountRuntimeStateChanged" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @force-release-grok-recovery="handleForceReleaseGrokRecovery" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -2479,6 +2479,18 @@ const handleRecoverState = async (a: Account) => {
     appStore.showError(error?.message || t('admin.accounts.recoverStateFailed'))
   }
 }
+const handleForceReleaseGrokRecovery = async (a: Account) => {
+  if (!confirm(t('admin.accounts.forceReleaseGrokRecoveryConfirm', { name: a.name }))) return
+  try {
+    const updated = await adminAPI.accounts.clearRateLimit(a.id, { force: true })
+    patchAccountInList(updated)
+    enterAutoRefreshSilentWindow()
+    appStore.showSuccess(t('admin.accounts.forceReleaseGrokRecoverySuccess'))
+  } catch (error: any) {
+    console.error('Failed to force release Grok recovery latch:', error)
+    appStore.showError(error?.message || t('admin.accounts.forceReleaseGrokRecoveryFailed'))
+  }
+}
 const handleResetQuota = async (a: Account) => {
   try {
     const updated = await adminAPI.accounts.resetAccountQuota(a.id)
@@ -2641,9 +2653,12 @@ onMounted(async () => {
 
   load()
   loadUpstreamBillingProbeGlobalState()
+  // proxyGroups 是本分支新增的 API：用 Promise.resolve().then 包裹，使同步抛错
+  //（如测试中未 mock adminAPI.proxyGroups）也落入 allSettled 的 rejected 分支，
+  // 而不是让整个 onMounted 中断。
   const [proxiesResult, proxyGroupsResult, groupsResult] = await Promise.allSettled([
     adminAPI.proxies.getAll(),
-    adminAPI.proxyGroups.getAll(),
+    Promise.resolve().then(() => adminAPI.proxyGroups.getAll()),
     adminAPI.groups.getAll()
   ])
   if (proxiesResult.status === 'fulfilled') {

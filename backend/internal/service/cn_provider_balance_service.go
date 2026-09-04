@@ -272,11 +272,15 @@ func validatePayGAccount(account *Account) error {
 }
 
 func (s *CNProviderBalanceService) resolveProxyURL(ctx context.Context, account *Account) string {
-	if account == nil || account.ProxyID == nil {
+	if account == nil {
 		return ""
 	}
-	if account.Proxy != nil {
-		return account.Proxy.URL()
+	// 代理池账号只有 Proxy、没有 ProxyID：先看已选中的 Proxy，再回退按 ProxyID 查库。
+	if url := account.ProxyURL(); url != "" {
+		return url
+	}
+	if account.ProxyID == nil {
+		return ""
 	}
 	if s != nil && s.proxyRepo != nil {
 		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {

@@ -227,6 +227,20 @@ WHERE id = $5`, status, nullInt64Ptr(resolverID), resolvedAt, now, id)
 	return err
 }
 
+func (r *connectionRiskRepository) UpdateActionTaken(ctx context.Context, id int64, action string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("nil connection risk repository")
+	}
+	if action == "" {
+		action = service.ConnectionRiskActionNone
+	}
+	_, err := r.db.ExecContext(ctx, `
+UPDATE connection_risk_events
+SET action_taken = $1, updated_at = $2
+WHERE id = $3`, truncateString(action, 64), time.Now().UTC(), id)
+	return err
+}
+
 func (r *connectionRiskRepository) Delete(ctx context.Context, id int64) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil connection risk repository")

@@ -127,8 +127,8 @@ func (m *Manager) CreatePool(ctx context.Context, req CreatePoolRequest) ([]stor
 	if req.Count <= 0 {
 		return nil, fmt.Errorf("count must be > 0")
 	}
-	if req.Count > 50 {
-		return nil, fmt.Errorf("count too large (max 50)")
+	if req.Count > register.MaxRegisterPerCall {
+		return nil, fmt.Errorf("count too large (max %d)", register.MaxRegisterPerCall)
 	}
 	prefix := req.NamePrefix
 	if prefix == "" {
@@ -139,18 +139,28 @@ func (m *Manager) CreatePool(ctx context.Context, req CreatePoolRequest) ([]stor
 	if !needRegister && m.runtime.Name() == "sing-box" && len(req.Profiles) < req.Count {
 		needRegister = true
 	}
+	// Index of the first auto-registered profile; profiles at or after this index
+	// that never made it into an instance are unregistered on partial failure so
+	// Cloudflare free devices do not leak.
+	autoRegisteredFrom := -1
 	if needRegister && len(req.Profiles) < req.Count {
 		missing := req.Count - len(req.Profiles)
 		regs, err := register.RegisterMany(ctx, missing)
 		if err != nil {
+			// RegisterMany returns the partial batch alongside the error; release it.
+			m.unregisterProfiles(regs)
 			return nil, fmt.Errorf("auto-register warp profiles: %w", err)
 		}
+		autoRegisteredFrom = len(req.Profiles)
 		for _, r := range regs {
 			req.Profiles = append(req.Profiles, r.Profile)
 		}
 	}
 	names, err := m.allocatePoolNames(prefix, req.Count)
 	if err != nil {
+		if autoRegisteredFrom >= 0 {
+			m.unregisterUnusedProfiles(req.Profiles, autoRegisteredFrom)
+		}
 		return nil, err
 	}
 	out := make([]store.Instance, 0, req.Count)
@@ -175,6 +185,14 @@ func (m *Manager) CreatePool(ctx context.Context, req CreatePoolRequest) ([]stor
 			AutoStart:  req.AutoStart,
 		})
 		if err != nil {
+			// Members i..Count-1 never got an instance: release their auto-registered devices.
+			if autoRegisteredFrom >= 0 {
+				from := i
+				if from < autoRegisteredFrom {
+					from = autoRegisteredFrom
+				}
+				m.unregisterUnusedProfiles(req.Profiles, from)
+			}
 			return out, fmt.Errorf("create pool member %d (%s): %w", i+1, names[i], err)
 		}
 		// Stagger real WARP handshakes.
@@ -184,6 +202,40 @@ func (m *Manager) CreatePool(ctx context.Context, req CreatePoolRequest) ([]stor
 		out = append(out, RedactInstance(*inst))
 	}
 	return out, nil
+}
+
+// unregisterProfiles best-effort deletes Cloudflare free devices for a partial
+// registration batch that will never be attached to an instance.
+func (m *Manager) unregisterProfiles(regs []register.Result) {
+	profiles := make([]store.Profile, 0, len(regs))
+	for _, r := range regs {
+		profiles = append(profiles, r.Profile)
+	}
+	m.unregisterUnusedProfiles(profiles, 0)
+}
+
+// unregisterUnusedProfiles best-effort deletes devices for profiles[from:] that
+// carry registration credentials. Uses a detached context: the caller's ctx may
+// already be cancelled, which is exactly when cleanup matters most.
+func (m *Manager) unregisterUnusedProfiles(profiles []store.Profile, from int) {
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < len(profiles); i++ {
+		p := profiles[i]
+		if p.DeviceID == "" || p.AccessToken == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := register.Unregister(ctx, p.DeviceID, p.AccessToken)
+		cancel()
+		if err != nil {
+			m.log.Warn("warp device cleanup after partial pool create failed",
+				"device_id", p.DeviceID, "err", err)
+			continue
+		}
+		m.log.Info("warp device released after partial pool create", "device_id", p.DeviceID)
+	}
 }
 
 // allocatePoolNames returns count unique names under prefix, skipping ones already
@@ -446,6 +498,12 @@ func (m *Manager) HealthCheck(ctx context.Context, id string) error {
 		timeout := 8 * time.Second
 		res = health.ProbeViaSOCKS(ctx, inst.ListenHost, inst.ListenPort, inst.SocksAuthUser, inst.SocksAuthPass, probeURL, timeout)
 	}
+	// A cancelled/expired caller context is not evidence about the instance:
+	// do not count it as a failure (would flip healthy members to unhealthy and
+	// trigger auto-detach when the backend's request deadline is simply too short).
+	if !res.OK && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	now := time.Now().UTC()
 	_, err = m.store.Update(id, func(i *store.Instance) {
 		i.LastHealthAt = &now
@@ -475,16 +533,50 @@ func isMockProbe(u string) bool {
 	return err == nil && parsed.Scheme == "mock"
 }
 
+// healthAllConcurrency bounds parallel probes in HealthAll. Sequential probing
+// of a 50-member pool at 8s/probe could take ~7 minutes and blow the backend's
+// request deadline; probes are independent SOCKS connections, so a small
+// worker pool is safe.
+const healthAllConcurrency = 8
+
 // HealthAll probes every instance; returns unhealthy IDs for auto-detach consumers.
+// Returns ctx.Err() when the caller deadline expired before all probes completed
+// so consumers do not treat a partial result as a complete health picture.
 func (m *Manager) HealthAll(ctx context.Context) (unhealthy []string, err error) {
+	ids := make([]string, 0)
 	for _, inst := range m.store.List() {
 		if inst.DesiredState != store.DesiredRunning {
 			continue
 		}
-		if e := m.HealthCheck(ctx, inst.ID); e != nil {
-			m.log.Warn("health check error", "id", inst.ID, "err", e)
+		ids = append(ids, inst.ID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	sem := make(chan struct{}, healthAllConcurrency)
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
 		}
-		cur, _ := m.store.Get(inst.ID)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if e := m.HealthCheck(ctx, id); e != nil && ctx.Err() == nil {
+				m.log.Warn("health check error", "id", id, "err", e)
+			}
+		}(id)
+	}
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	for _, id := range ids {
+		cur, _ := m.store.Get(id)
 		if cur != nil && cur.Status == store.StatusUnhealthy {
 			unhealthy = append(unhealthy, cur.ID)
 		}

@@ -824,7 +824,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		account.ID,
 		wsHost,
 		wsPath,
-		account.ProxyID != nil && account.Proxy != nil,
+		account.Proxy != nil,
 	)
 
 	isCodexCLI := false

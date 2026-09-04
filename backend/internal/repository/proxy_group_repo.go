@@ -258,6 +258,41 @@ func (r *proxyGroupRepository) CountAccountsByGroupID(ctx context.Context, group
 	return c, err
 }
 
+// EnqueueBoundAccountsRebuild 为绑定到该代理组的全部账号投递 scheduler_outbox
+// 批量变更事件，触发调度快照重建。网关按 Redis 快照调度、不逐请求 hydrate，
+// 快照里持久化了 hydration 时选出的 Proxy；若组成员/健康状态变化后不重建，
+// 账号会一直走已隔离或已移出组的代理，直到周期性全量重建。
+func (r *proxyGroupRepository) EnqueueBoundAccountsRebuild(ctx context.Context, groupID int64) (int, error) {
+	if r == nil || r.sql == nil || groupID <= 0 {
+		return 0, nil
+	}
+	rows, err := r.sql.QueryContext(ctx,
+		`SELECT id FROM accounts WHERE proxy_group_id=$1 AND deleted_at IS NULL ORDER BY id`,
+		groupID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	accountIDs := make([]int64, 0, 64)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		accountIDs = append(accountIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(accountIDs) == 0 {
+		return 0, nil
+	}
+	if err := enqueueProxyProbeAccountChanges(ctx, r.sql, accountIDs); err != nil {
+		return 0, err
+	}
+	return len(accountIDs), nil
+}
+
 // SetGroupMembers 全量替换组成员：先清空该组既有成员，再把 proxyIDs 写入 group_id。
 // Clear + assign run in one transaction when *sql.DB is available so a failed
 // second step cannot leave the group empty.

@@ -208,6 +208,13 @@ func (f *AntigravityQuotaFetcher) buildUsageInfo(modelsResp *antigravity.FetchAv
 
 // GetProxyURL 获取账户的代理 URL
 func (f *AntigravityQuotaFetcher) GetProxyURL(ctx context.Context, account *Account) string {
+	if account == nil {
+		return ""
+	}
+	// 代理池账号只有 Proxy、没有 ProxyID：优先使用已选中的 Proxy。
+	if url := account.ProxyURL(); url != "" {
+		return url
+	}
 	if account.ProxyID == nil || f.proxyRepo == nil {
 		return ""
 	}

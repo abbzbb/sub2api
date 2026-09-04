@@ -34,7 +34,9 @@ func (h *ConnectionRiskHandler) GetConfig(c *gin.Context) {
 
 // UpdateConfig PUT /api/v1/admin/connection-risk/config
 func (h *ConnectionRiskHandler) UpdateConfig(c *gin.Context) {
-	var req service.ConnectionRiskSettings
+	// 以默认值为底再绑定：客户端省略的布尔字段（worker_enabled 等）保持默认，
+	// 而不是被零值 struct 悄悄置为 false。与 GetConnectionRiskSettings 的读取口径一致。
+	req := *service.DefaultConnectionRiskSettings()
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request body")
 		return

@@ -71,6 +71,9 @@ type ConnectionRiskEventRepository interface {
 	GetByID(ctx context.Context, id int64) (*ConnectionRiskEvent, error)
 	List(ctx context.Context, filter *ConnectionRiskEventFilter) (*ConnectionRiskEventList, error)
 	UpdateStatus(ctx context.Context, id int64, status string, resolverID *int64) error
+	// UpdateActionTaken 持久化自动处置结果（throttled / disabled_key / disabled_user），
+	// 让事件本身成为自动处置的审计记录。
+	UpdateActionTaken(ctx context.Context, id int64, action string) error
 	Delete(ctx context.Context, id int64) error
 	// DeleteOlderThan removes events with last_seen_at before cutoff; returns rows deleted.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)

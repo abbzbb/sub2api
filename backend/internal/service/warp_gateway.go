@@ -216,13 +216,25 @@ func (c *WarpGatewayClient) PoolSnapshot(ctx context.Context) (*WarpPoolSnapshot
 	return &snap, nil
 }
 
+// warpHealthAllTimeout bounds POST /v1/health/all. The gateway probes each
+// running instance with an 8s SOCKS timeout (8 in parallel), so a 50-member
+// pool can take up to ~1 minute; the default 3–5s control timeout would
+// abort every call and either misreport or (with the old gateway) mark healthy
+// members unhealthy. Kept below the 90s sync tick / leader-lock floor so the
+// follow-up sync still has budget.
+const warpHealthAllTimeout = 60 * time.Second
+
 func (c *WarpGatewayClient) HealthAll(ctx context.Context) (*WarpPoolSnapshot, []string, map[string][]string, error) {
 	var resp struct {
 		UnhealthyIDs []string            `json:"unhealthy_ids"`
 		DuplicateIPs map[string][]string `json:"duplicate_exit_ips"`
 		Snapshot     WarpPoolSnapshot    `json:"snapshot"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/v1/health/all", map[string]any{}, &resp); err != nil {
+	timeout := c.cfg.Timeout
+	if timeout < warpHealthAllTimeout {
+		timeout = warpHealthAllTimeout
+	}
+	if err := c.doWithTimeout(ctx, http.MethodPost, "/v1/health/all", map[string]any{}, &resp, timeout); err != nil {
 		return nil, nil, nil, err
 	}
 	return &resp.Snapshot, resp.UnhealthyIDs, resp.DuplicateIPs, nil
