@@ -552,6 +552,26 @@ func TestReconcileGrokStreamFailedAccountStateHandlesBareErrorAndSkipsCyberPolic
 	})
 }
 
+func TestReconcileGrokStreamFailedUsesBoundModelForCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+	account := &Account{ID: 760, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	payload := []byte(`{"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"rate limited","status_code":429}}}`)
+
+	svc.reconcileGrokStreamFailedAccountState(c, account, payload, "rate limited")
+
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "model-scoped 429 must not latch the whole account")
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Zero(t, repo.errorCalls)
+	require.NotEmpty(t, repo.modelRateLimitCalls)
+	require.Contains(t, repo.modelRateLimitCalls[0].model, "grok-4.5")
+}
+
 func TestOpenAIStreamingNativeWriterDisconnectSkipsLateGrokReconciliation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

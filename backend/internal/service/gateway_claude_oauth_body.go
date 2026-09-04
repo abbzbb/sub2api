@@ -1154,8 +1154,8 @@ func injectAnthropicCacheControlTTL1h(body []byte) []byte {
 //   - 网关 OAuth 伪装在 system/tools 上注入 DefaultCacheControlTTL=5m
 //     → 上游 400 invalid_request_error
 //
-// 策略：若更靠后的断点声明了 1h，则把其前方所有 5m/缺省 ttl 的 ephemeral 断点升级为 1h，
-// 保留客户端长缓存意图，同时满足"1h 不得出现在 5m 之后"的约束。
+// 策略：若更靠后的断点声明了 1h，则把后面的 1h 降为 5m，
+// 而不是把客户端自己写的 5m 升级为 1h（避免 2× cache-write 价格）。
 // 1h 之后再出现 5m 是合法的（TTL 递减），不会被改写。
 func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 	if len(body) == 0 {
