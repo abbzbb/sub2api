@@ -315,10 +315,10 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 	}
 
 	// Stable open-event dedupe key (no time bucket): continuing signals refresh
-	// the same open/acknowledged row. Redis SETNX is a cross-instance hint for
-	// first-open actions only.
+	// the same open/acknowledged row. Automatic actions follow DB insert
+	// (first open or recurrence after resolve), not the Redis 24h SETNX hint.
 	dedupe := fmt.Sprintf("k:%d:%s", keyID, primaryRule(result))
-	isNew, _ := w.signals.TryDedupe(ctx, dedupe, 24*time.Hour)
+	_, _ = w.signals.TryDedupe(ctx, dedupe, 24*time.Hour)
 
 	uid := userID
 	kid := keyID
@@ -353,14 +353,14 @@ func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int6
 		ev.UserID = &uid
 	}
 
-	saved, err := w.events.UpsertOpen(ctx, ev)
+	saved, created, err := w.events.UpsertOpen(ctx, ev)
 	if err != nil {
 		slog.Warn("connection risk upsert failed", "error", err, "key_id", keyID)
 		return
 	}
 	w.metrics.EventsCreated.Add(1)
 
-	if w.policy != nil && saved != nil && isNew {
+	if w.policy != nil && saved != nil && created {
 		before := saved.ActionTaken
 		w.policy.HandleNewEvent(ctx, saved, s)
 		// 自动处置结果必须落库并留日志：策略只改内存字段，不写回会让 action_taken

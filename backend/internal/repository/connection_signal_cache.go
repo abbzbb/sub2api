@@ -281,8 +281,6 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 		}
 		nowUnix = t.Unix()
 	}
-	_ = c.TrimUAWindow(ctx, keyID, nowUnix)
-
 	win := nowUnix / 60
 	m := &service.ConnectionRiskSubjectMetrics{
 		APIKeyID: keyID,
@@ -299,6 +297,7 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	}
 
 	pipe := c.rdb.Pipeline()
+	pipe.ZRemRangeByScore(ctx, crKeyUAs1h(keyID), "-inf", strconv.FormatInt(nowUnix-crUAWindowSeconds, 10))
 	prefixCmd := pipe.Get(ctx, crKeyPrefix(keyID))
 	ownerCmd := pipe.Get(ctx, crKeyOwner(keyID))
 	sunion := pipe.SUnion(ctx, ipKeys...)
