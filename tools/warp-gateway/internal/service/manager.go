@@ -352,16 +352,10 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}()
 
 	_, _ = m.store.Update(id, func(i *store.Instance) {
-		if i.DesiredState == store.DesiredStopped {
-			return
-		}
 		i.Status = store.StatusStarting
 		i.DesiredState = store.DesiredRunning
 		i.LastError = ""
 	})
-	if current, getErr := m.store.Get(id); getErr == nil && current.DesiredState == store.DesiredStopped {
-		return nil
-	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	h, err := m.runtime.Start(runCtx, inst)
@@ -587,6 +581,16 @@ func (m *Manager) unregisterCloudflare(ctx context.Context, p store.Profile) err
 		return nil // nothing to unregister (mock or legacy instance)
 	}
 	return register.Unregister(ctx, p.DeviceID, p.AccessToken)
+}
+
+func (m *Manager) HasRuntimeHandle(id string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.handles[id]
+	return ok
 }
 
 func (m *Manager) Get(id string) (*store.Instance, error) {

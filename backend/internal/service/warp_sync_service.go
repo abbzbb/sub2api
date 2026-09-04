@@ -107,17 +107,21 @@ func ProvideWarpGatewayClient(cfg *config.Config) (*WarpGatewayClient, error) {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	return NewWarpGatewayClient(WarpGatewayConfig{
-		Enabled:               cfg.Warp.Enabled,
-		BaseURL:               cfg.Warp.Gateway.BaseURL,
-		Token:                 cfg.Warp.Gateway.Token,
-		Timeout:               timeout,
-		ReconcileInterval:     time.Duration(cfg.Warp.Gateway.ReconcileInterval) * time.Second,
-		TLSCAFile:             cfg.Warp.Gateway.TLSCAFile,
-		TLSCertFile:           cfg.Warp.Gateway.TLSCertFile,
-		TLSKeyFile:            cfg.Warp.Gateway.TLSKeyFile,
-		TLSInsecureSkipVerify: cfg.Warp.Gateway.TLSInsecureSkipVerify,
-	})
+	wgCfg := WarpGatewayConfig{
+		Enabled:           cfg.Warp.Enabled,
+		BaseURL:           cfg.Warp.Gateway.BaseURL,
+		Token:             cfg.Warp.Gateway.Token,
+		Timeout:           timeout,
+		ReconcileInterval: time.Duration(cfg.Warp.Gateway.ReconcileInterval) * time.Second,
+	}
+	// Disabled WARP must not fail process startup on leftover TLS paths.
+	if cfg.Warp.Enabled {
+		wgCfg.TLSCAFile = cfg.Warp.Gateway.TLSCAFile
+		wgCfg.TLSCertFile = cfg.Warp.Gateway.TLSCertFile
+		wgCfg.TLSKeyFile = cfg.Warp.Gateway.TLSKeyFile
+		wgCfg.TLSInsecureSkipVerify = cfg.Warp.Gateway.TLSInsecureSkipVerify
+	}
+	return NewWarpGatewayClient(wgCfg)
 }
 
 // WarpSyncResult is returned by SyncFromGateway / CreatePoolAndSync.

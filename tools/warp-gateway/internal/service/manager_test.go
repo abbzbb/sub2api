@@ -326,6 +326,57 @@ func (d *delayedRuntime) Start(ctx context.Context, inst *store.Instance) (runti
 	return d.inner.Start(ctx, inst)
 }
 
+func TestStartAfterCompletedStopBringsInstanceBack(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.PortRangeStart = 42401
+	cfg.PortRangeEnd = 42440
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := service.NewManager(cfg, st, runtime.NewMockManager(), nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "stop-then-start", Profile: store.Profile{MockExitIP: "203.0.113.32"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Stop(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := mgr.Get(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.DesiredState != store.DesiredStopped || stopped.Status != store.StatusStopped {
+		t.Fatalf("after stop desired=%s status=%s", stopped.DesiredState, stopped.Status)
+	}
+	if mgr.HasRuntimeHandle(inst.ID) {
+		t.Fatal("expected no handle after stop")
+	}
+	if err := mgr.Start(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.Get(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DesiredState != store.DesiredRunning {
+		t.Fatalf("desired=%s want running", got.DesiredState)
+	}
+	if got.Status != store.StatusRunning {
+		t.Fatalf("status=%s want running", got.Status)
+	}
+	if !mgr.HasRuntimeHandle(inst.ID) {
+		t.Fatal("expected runtime handle after start")
+	}
+}
+
 func TestRotateRejectsEmptyProfile(t *testing.T) {
 	mgr := testManager(t)
 	ctx := context.Background()

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 func mustWarpClient(t *testing.T, cfg WarpGatewayConfig) *WarpGatewayClient {
@@ -142,5 +144,23 @@ func TestNewWarpGatewayClientRejectsBadTLS(t *testing.T) {
 	_, err := NewWarpGatewayClient(WarpGatewayConfig{TLSCAFile: ca})
 	if err == nil {
 		t.Fatal("expected TLS CA parse error")
+	}
+
+	disabled := &config.Config{}
+	disabled.Warp.Enabled = false
+	disabled.Warp.Gateway.TLSCAFile = ca
+	client, err := ProvideWarpGatewayClient(disabled)
+	if err != nil {
+		t.Fatalf("disabled warp must skip leftover TLS path: %v", err)
+	}
+	if client == nil || client.Enabled() {
+		t.Fatal("expected disabled warp client")
+	}
+
+	enabled := &config.Config{}
+	enabled.Warp.Enabled = true
+	enabled.Warp.Gateway.TLSCAFile = ca
+	if _, err := ProvideWarpGatewayClient(enabled); err == nil {
+		t.Fatal("enabled warp must still reject bad TLS")
 	}
 }
