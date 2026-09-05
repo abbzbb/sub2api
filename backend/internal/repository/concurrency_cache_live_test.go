@@ -162,6 +162,7 @@ func TestAcquireAccountSlotDoesNotReapWhenNotFull(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
 	require.True(t, ok)
+	hooks := cache.attachTestHooks()
 	ctx := context.Background()
 	accountID := int64(48)
 	key := accountSlotKey(accountID)
@@ -174,8 +175,8 @@ func TestAcquireAccountSlotDoesNotReapWhenNotFull(t *testing.T) {
 	members, err := client.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rdead02-1", "rlive02-1"}, members, "reap only runs when the slot is full")
-	require.Equal(t, 0, cache.reapCalls)
-	require.Equal(t, 1, cache.acquireScripts)
+	require.Equal(t, 0, hooks.reapCalls)
+	require.Equal(t, 1, hooks.acquireScripts)
 }
 
 func TestAcquireAccountSlotDoesNotRetryWhenFullWithoutDead(t *testing.T) {
@@ -183,6 +184,7 @@ func TestAcquireAccountSlotDoesNotRetryWhenFullWithoutDead(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
 	require.True(t, ok)
+	hooks := cache.attachTestHooks()
 	ctx := context.Background()
 	accountID := int64(49)
 	key := accountSlotKey(accountID)
@@ -192,8 +194,8 @@ func TestAcquireAccountSlotDoesNotRetryWhenFullWithoutDead(t *testing.T) {
 	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rnew03-1")
 	require.NoError(t, err)
 	require.False(t, acquired)
-	require.Equal(t, 1, cache.reapCalls)
-	require.Equal(t, 1, cache.acquireScripts, "full slot with no dead peers must not retry acquire")
+	require.Equal(t, 1, hooks.reapCalls)
+	require.Equal(t, 1, hooks.acquireScripts, "full slot with no dead peers must not retry acquire")
 	members, err := client.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rlive03-1"}, members)

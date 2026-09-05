@@ -380,8 +380,14 @@ type concurrencyCache struct {
 	hbStop context.CancelFunc
 	hbWG   sync.WaitGroup
 
-	acquireScripts int // test: acquire Lua invocations
-	reapCalls      int // test: reapDeadInstanceSlots invocations
+	// testHooks is nil in production; tests attach via export_test.go.
+	testHooks concurrencySlotTestHooks
+}
+
+// concurrencySlotTestHooks is implemented only by test hooks (export_test.go).
+type concurrencySlotTestHooks interface {
+	onAcquireScript()
+	onReap()
 }
 
 // NewConcurrencyCache 创建并发控制缓存
@@ -723,8 +729,20 @@ func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, ma
 	return c.acquireSlot(ctx, userSlotKey(userID), liveUserSlotKey(userID), userActiveIndexKey, userID, maxConcurrency, requestID)
 }
 
+func (c *concurrencyCache) noteAcquireScript() {
+	if h := c.testHooks; h != nil {
+		h.onAcquireScript()
+	}
+}
+
+func (c *concurrencyCache) noteReap() {
+	if h := c.testHooks; h != nil {
+		h.onReap()
+	}
+}
+
 func (c *concurrencyCache) acquireSlot(ctx context.Context, key, liveKey, indexKey string, ownerID int64, maxConcurrency int, requestID string) (bool, error) {
-	c.acquireScripts++
+	c.noteAcquireScript()
 	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
 		return false, err
@@ -737,7 +755,7 @@ func (c *concurrencyCache) acquireSlot(ctx context.Context, key, liveKey, indexK
 	if c.reapDeadInstanceSlots(ctx, key, requestIDInstancePrefix(requestID), now) <= 0 {
 		return false, nil
 	}
-	c.acquireScripts++
+	c.noteAcquireScript()
 	result, now, err = runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
 		return false, err
@@ -1371,7 +1389,7 @@ func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, c
 	if c == nil || c.rdb == nil || slotKey == "" {
 		return 0
 	}
-	c.reapCalls++
+	c.noteReap()
 	currentPrefix = normalizeInstancePrefix(currentPrefix)
 	members, err := c.rdb.ZRangeWithScores(ctx, slotKey, 0, -1).Result()
 	if err != nil || len(members) == 0 {
