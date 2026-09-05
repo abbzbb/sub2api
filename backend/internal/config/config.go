@@ -149,7 +149,8 @@ type WarpConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	// Gateway control plane (tools/warp-gateway).
 	Gateway WarpGatewayConfig `mapstructure:"gateway"`
-	// AutoDetachUnhealthy marks mapped proxies inactive when gateway reports unhealthy (Phase 3).
+	// AutoDetachUnhealthy, when true, reports unhealthy warp proxies in detached_ids
+	// and marks them status=error so they stay in the group but are not scheduled.
 	AutoDetachUnhealthy bool `mapstructure:"auto_detach_unhealthy"`
 	// AlertDuplicateExitIP logs/alerts when multiple instances share an exit IP (Phase 3).
 	AlertDuplicateExitIP bool `mapstructure:"alert_duplicate_exit_ip"`

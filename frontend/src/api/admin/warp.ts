@@ -47,6 +47,7 @@ export interface WarpSyncResult {
   deleted_proxies?: { id: number; name: string; status: string; password_set?: boolean }[]
   group?: { id: number; name: string; proxy_count?: number }
   member_ids?: number[]
+  /** Still in the group; status=error and excluded from scheduling. */
   detached_ids?: number[]
   alerts?: string[]
 }

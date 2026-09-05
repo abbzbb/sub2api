@@ -133,8 +133,10 @@ type WarpSyncResult struct {
 	DeletedProxies []Proxy                `json:"deleted_proxies,omitempty"`
 	Group          *ProxyGroupWithProxies `json:"group,omitempty"`
 	MemberIDs      []int64                `json:"member_ids"`
-	DetachedIDs    []int64                `json:"detached_ids"`
-	Alerts         []string               `json:"alerts,omitempty"`
+	// DetachedIDs lists unhealthy warp members that remain in the group
+	// (status=error, not scheduled). Field name is historical.
+	DetachedIDs []int64  `json:"detached_ids"`
+	Alerts      []string `json:"alerts,omitempty"`
 }
 
 func (s *WarpSyncService) Enabled() bool {

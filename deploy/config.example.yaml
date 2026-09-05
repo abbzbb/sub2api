@@ -781,7 +781,8 @@ warp:
     tls_cert_file: ""
     tls_key_file: ""
     tls_insecure_skip_verify: false
-  # Phase 3: mark mapped proxies inactive when gateway reports unhealthy
+  # Phase 3: mark mapped proxies status=error (stay in group, skip scheduling)
+  # when the gateway reports them unhealthy. Does not set group_id=NULL.
   auto_detach_unhealthy: true
   # Phase 3: alert when multiple instances share the same exit IP
   alert_duplicate_exit_ip: true
