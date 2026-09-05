@@ -729,17 +729,14 @@ func (s *WarpSyncService) syncFromGatewayLocked(ctx context.Context, groupName s
 			byName[spec.Name] = *created
 		}
 
-		// Healthy/running members stay in group; unhealthy optionally excluded.
-		include := p.Status == StatusActive
-		if !s.cfg.AutoDetachUnhealthy {
-			include = true
+		// Keep every warp proxy in the managed group, including auto-detached
+		// error rows. SetMembers would otherwise NULL group_id and hide the
+		// row from orphan prune after the gateway instance is deleted.
+		if _, dup := seenMember[p.ID]; !dup {
+			seenMember[p.ID] = struct{}{}
+			memberIDs = append(memberIDs, p.ID)
 		}
-		if include {
-			if _, dup := seenMember[p.ID]; !dup {
-				seenMember[p.ID] = struct{}{}
-				memberIDs = append(memberIDs, p.ID)
-			}
-		} else {
+		if s.cfg.AutoDetachUnhealthy && p.Status != StatusActive {
 			result.DetachedIDs = append(result.DetachedIDs, p.ID)
 		}
 	}

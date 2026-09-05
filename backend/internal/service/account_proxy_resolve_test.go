@@ -63,7 +63,18 @@ func TestResolveAccountProxyURL(t *testing.T) {
 	placeholder := &Proxy{}
 	url, err = resolveAccountProxyURL(ctx, nil, &Account{ProxyID: &proxyID, Proxy: placeholder})
 	require.NoError(t, err)
-	require.Equal(t, placeholder.URL(), url)
+	require.Empty(t, url)
+}
+
+func TestApplyCRSProxyBindingClearsGroup(t *testing.T) {
+	t.Parallel()
+	gid := int64(3)
+	pid := int64(9)
+	acc := &Account{ProxyGroupID: &gid, ProxyGroupExhausted: true}
+	applyCRSProxyBinding(acc, &pid)
+	require.Equal(t, &pid, acc.ProxyID)
+	require.Nil(t, acc.ProxyGroupID)
+	require.False(t, acc.ProxyGroupExhausted)
 }
 
 func TestRejectUnschedulableHydratedProxyAccount(t *testing.T) {
@@ -116,4 +127,26 @@ func TestResolveAccountProxyURL_RepoError(t *testing.T) {
 	proxyID := int64(4)
 	_, err := resolveAccountProxyURL(context.Background(), &resolveProxyRepoStub{err: errors.New("db down")}, &Account{ProxyID: &proxyID})
 	require.EqualError(t, err, "db down")
+}
+
+func TestResolvePrivacyAccountProxyURLReloadsGroupBoundAccount(t *testing.T) {
+	t.Parallel()
+	gid := int64(3)
+	svc := &adminServiceImpl{
+		accountRepo: &mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{
+				11: {
+					ID:           11,
+					ProxyGroupID: &gid,
+					Proxy:        &Proxy{Protocol: "http", Host: "pool.example", Port: 1080},
+				},
+			},
+		},
+	}
+	url, err := svc.resolvePrivacyAccountProxyURL(context.Background(), &Account{
+		ID:           11,
+		ProxyGroupID: &gid,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "http://pool.example:1080", url)
 }

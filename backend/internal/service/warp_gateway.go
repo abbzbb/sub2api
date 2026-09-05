@@ -342,15 +342,8 @@ func BuildAttachPlan(snap *WarpPoolSnapshot, groupName string) WarpPoolAttachPla
 			name = fmt.Sprintf("%s-%s", name, short)
 		}
 		usedNames[name] = struct{}{}
-		if inst.Status != "running" {
-			status = StatusError
-			plan.DetachProxyNames = append(plan.DetachProxyNames, name)
-		}
-		if inst.Status == "unhealthy" || inst.Status == "error" {
-			status = StatusError
-			plan.DetachProxyNames = append(plan.DetachProxyNames, name)
-		}
-		if _, bad := unhealthy[inst.ID]; bad {
+		_, inUnhealthy := unhealthy[inst.ID]
+		if inst.Status != "running" || inUnhealthy {
 			status = StatusError
 			plan.DetachProxyNames = append(plan.DetachProxyNames, name)
 		}

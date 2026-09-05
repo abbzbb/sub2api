@@ -1660,7 +1660,7 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 
-	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	proxyURL, err := s.resolvePrivacyAccountProxyURL(ctx, account)
 	if err != nil {
 		return ""
 	}
@@ -1692,7 +1692,7 @@ func (s *adminServiceImpl) ForceOpenAIPrivacy(ctx context.Context, account *Acco
 		return ""
 	}
 
-	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	proxyURL, err := s.resolvePrivacyAccountProxyURL(ctx, account)
 	if err != nil {
 		return ""
 	}
@@ -1733,7 +1733,7 @@ func (s *adminServiceImpl) EnsureAntigravityPrivacy(ctx context.Context, account
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	proxyURL, err := s.resolvePrivacyAccountProxyURL(ctx, account)
 	if err != nil {
 		return ""
 	}
@@ -1764,7 +1764,7 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 
 	projectID, _ := account.Credentials["project_id"].(string)
 
-	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, account)
+	proxyURL, err := s.resolvePrivacyAccountProxyURL(ctx, account)
 	if err != nil {
 		return ""
 	}
@@ -1780,4 +1780,24 @@ func (s *adminServiceImpl) ForceAntigravityPrivacy(ctx context.Context, account 
 	}
 	applyAntigravityPrivacyMode(account, mode)
 	return mode
+}
+
+func (s *adminServiceImpl) resolvePrivacyAccountProxyURL(ctx context.Context, account *Account) (string, error) {
+	if account == nil {
+		return "", nil
+	}
+	acc := account
+	if account.ProxyGroupID != nil && account.Proxy == nil && s != nil && s.accountRepo != nil && account.ID > 0 {
+		loaded, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err != nil {
+			slog.Warn("privacy reload account for proxy resolve failed", "account_id", account.ID, "err", err)
+		} else if loaded != nil {
+			acc = loaded
+		}
+	}
+	proxyURL, err := resolveAccountProxyURL(ctx, s.proxyRepo, acc)
+	if err != nil {
+		slog.Warn("privacy proxy resolve skipped", "account_id", acc.ID, "err", err)
+	}
+	return proxyURL, err
 }

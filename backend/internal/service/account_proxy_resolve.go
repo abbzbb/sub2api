@@ -29,9 +29,12 @@ func resolveAccountProxyURL(ctx context.Context, proxyRepo accountProxyLookup, a
 		return "", nil
 	}
 	if proxyRepo == nil {
-		// 占位 Proxy（无 host）表示绑定已配置，eligibility 放行，真正查库留给带 repo 的刷新路径。
-		if account.Proxy != nil {
+		if account.Proxy != nil && strings.TrimSpace(account.Proxy.Host) != "" {
 			return account.ProxyURL(), nil
+		}
+		if account.Proxy != nil {
+			// 占位 Proxy（无 host）：eligibility 放行，且不要返回 //:0 垃圾 URL。
+			return "", nil
 		}
 		return "", infraerrors.New(http.StatusServiceUnavailable, "ACCOUNT_PROXY_UNAVAILABLE", "proxy repository is not available")
 	}

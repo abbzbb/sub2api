@@ -313,9 +313,12 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 	if res.Group == nil || res.Group.Name != "warp-pool" {
 		t.Fatalf("group=%+v", res.Group)
 	}
-	// only healthy member should be in group when auto-detach
-	if len(res.MemberIDs) != 1 {
+	// Unhealthy members stay in the group so later orphan prune still sees them.
+	if len(res.MemberIDs) != 2 {
 		t.Fatalf("members=%v detached=%v", res.MemberIDs, res.DetachedIDs)
+	}
+	if len(res.DetachedIDs) != 1 {
+		t.Fatalf("detached=%v want 1", res.DetachedIDs)
 	}
 	if len(res.Alerts) == 0 {
 		t.Fatal("expected duplicate ip alert")
@@ -328,6 +331,70 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 	}
 	if len(res2.CreatedProxies) != 0 {
 		t.Fatalf("expected 0 creates, got %d", len(res2.CreatedProxies))
+	}
+}
+
+func TestWarpSyncService_DetachedUnhealthyThenDeletedInstanceIsPruned(t *testing.T) {
+	var phase atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/pools/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		if phase.Load() == 0 {
+			_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+				Instances: []WarpInstance{
+					{ID: "i1", Name: "01", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running", ExitIP: "1.2.3.4"},
+					{ID: "i2", Name: "02", ListenHost: "127.0.0.1", ListenPort: 41002, Status: "unhealthy", ExitIP: "5.6.7.8"},
+				},
+				UnhealthyIDs: []string{"i2"},
+				HealthyCount: 1,
+				TotalCount:   2,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+			Instances: []WarpInstance{
+				{ID: "i1", Name: "01", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running", ExitIP: "1.2.3.4"},
+			},
+			HealthyCount: 1,
+			TotalCount:   1,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	proxyRepo := newMemProxyRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
+	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	cfg := &config.Config{Warp: config.WarpConfig{
+		Enabled:             true,
+		AutoDetachUnhealthy: true,
+		DefaultGroupName:    "warp-pool",
+		Gateway:             config.WarpGatewayConfig{BaseURL: srv.URL},
+	}}
+	svc := NewWarpSyncService(cfg, client, proxyRepo, groupSvc, nil)
+
+	res, err := svc.SyncFromGateway(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.CreatedProxies) != 2 || len(res.MemberIDs) != 2 || len(res.DetachedIDs) != 1 {
+		t.Fatalf("first sync created=%d members=%v detached=%v", len(res.CreatedProxies), res.MemberIDs, res.DetachedIDs)
+	}
+	detachedID := res.DetachedIDs[0]
+	if _, ok := proxyRepo.proxies[detachedID]; !ok {
+		t.Fatal("detached proxy should remain until gateway deletes the instance")
+	}
+
+	phase.Store(1)
+	res2, err := svc.SyncFromGateway(context.Background(), "warp-pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.DeletedProxies) != 1 || res2.DeletedProxies[0].ID != detachedID {
+		t.Fatalf("deleted=%+v want id=%d", res2.DeletedProxies, detachedID)
+	}
+	if _, ok := proxyRepo.proxies[detachedID]; ok {
+		t.Fatal("detached-then-deleted instance should be pruned")
 	}
 }
 

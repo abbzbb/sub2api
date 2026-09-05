@@ -19,6 +19,15 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
+func applyCRSProxyBinding(existing *Account, proxyID *int64) {
+	if existing == nil || proxyID == nil {
+		return
+	}
+	existing.ProxyID = proxyID
+	existing.ProxyGroupID = nil
+	existing.ProxyGroupExhausted = false
+}
+
 type CRSSyncService struct {
 	accountRepo        AccountRepository
 	proxyRepo          ProxyRepository
@@ -425,7 +434,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = targetType
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
@@ -554,7 +563,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
@@ -704,7 +713,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = AccountTypeOAuth
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
@@ -861,7 +870,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
@@ -993,7 +1002,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = AccountTypeOAuth
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = 3
 		existing.Priority = clampPriority(src.Priority)
@@ -1120,7 +1129,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = credentials
 		if proxyID != nil {
-			existing.ProxyID = proxyID
+			applyCRSProxyBinding(existing, proxyID)
 		}
 		existing.Concurrency = 3
 		existing.Priority = clampPriority(src.Priority)

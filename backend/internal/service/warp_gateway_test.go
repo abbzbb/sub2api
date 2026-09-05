@@ -71,8 +71,22 @@ func TestBuildAttachPlan_NonRunningStatusesDetach(t *testing.T) {
 			t.Fatalf("spec %d status=%s want error", i+1, spec.Status)
 		}
 	}
-	if len(plan.DetachProxyNames) < 3 {
+	if len(plan.DetachProxyNames) != 3 {
 		t.Fatalf("detach=%v", plan.DetachProxyNames)
+	}
+}
+
+func TestBuildAttachPlan_DetachProxyNamesDeduped(t *testing.T) {
+	snap := &WarpPoolSnapshot{
+		Instances: []WarpInstance{
+			{ID: "bad", Name: "01", ListenHost: "127.0.0.1", ListenPort: 41002, Status: "unhealthy"},
+		},
+		UnhealthyIDs: []string{"bad"},
+		TotalCount:   1,
+	}
+	plan := BuildAttachPlan(snap, "warp-pool")
+	if len(plan.DetachProxyNames) != 1 {
+		t.Fatalf("detach=%v want 1", plan.DetachProxyNames)
 	}
 }
 
