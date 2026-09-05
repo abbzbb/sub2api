@@ -1321,6 +1321,7 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 				pendingInjected = append(pendingInjected, ref.ttlPath)
 			} else if !ref.injected {
 				hasClient5m = true
+				pendingInjected = pendingInjected[:0]
 			}
 			continue
 		}
@@ -1331,10 +1332,11 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 			if next, err := sjson.SetBytes(out, ref.ttlPath, cacheTTLTarget5m); err == nil {
 				out = next
 			}
-		}
-		for _, path := range pendingInjected {
-			if next, err := sjson.SetBytes(out, path, cacheTTLTarget1h); err == nil {
-				out = next
+		} else {
+			for _, path := range pendingInjected {
+				if next, err := sjson.SetBytes(out, path, cacheTTLTarget1h); err == nil {
+					out = next
+				}
 			}
 		}
 		pendingInjected = pendingInjected[:0]

@@ -240,6 +240,20 @@ func TestNormalizeAnthropicCacheControlTTLOrder_DowngradesLater1hWhenEarlier5m(t
 	require.Equal(t, "5m", gjson.GetBytes(result, "messages.2.content.0.cache_control.ttl").String())
 }
 
+func TestNormalizeAnthropicCacheControlTTLOrder_Client5mClearsPendingInjected(t *testing.T) {
+	// 网关 5m 之后出现客户端 5m，再出现客户端 1h：只降 1h，不得回升网关断点。
+	body := []byte(`{
+		"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"5m","_gw":true}}],
+		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"5m"}}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"q","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]
+	}`)
+
+	result := normalizeAnthropicCacheControlTTLOrder(body)
+	require.Equal(t, "5m", gjson.GetBytes(result, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
+}
+
 func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesInjected5mWhenLaterClient1h(t *testing.T) {
 	// 网关注入的 5m（_gw）+ 客户端后面的 1h：升注入断点，保留客户端 1h。
 	body := []byte(`{
