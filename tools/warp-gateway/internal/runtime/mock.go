@@ -36,8 +36,8 @@ func (h *mockHandle) Done() <-chan error { return h.done }
 
 func (h *mockHandle) Err() error { return h.waitErr }
 
-// ForceExit closes Done and records err for Err(). Used by tests.
-func ForceExit(h Handle, err error) {
+// MockForceExit closes Done and records err for Err(). Test-only helper.
+func MockForceExit(h Handle, err error) {
 	mh, ok := h.(*mockHandle)
 	if !ok || mh == nil {
 		return
