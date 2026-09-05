@@ -82,7 +82,7 @@ func TestClearRateLimitPreservesGrokFreeRecoveryPendingInSQL(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	repo := newAccountRepositoryWithSQL(client, db, nil)
 
-	mock.ExpectExec(`(?s)UPDATE accounts.*rate_limited_at = CASE.*COALESCE\(extra ->> \$2, 'false'\) = 'true' THEN rate_limited_at.*rate_limit_reset_at = CASE.*THEN rate_limit_reset_at.*extra = CASE.*THEN COALESCE\(extra, '\{\}'::jsonb\)`).
+	mock.ExpectExec(`(?s)UPDATE accounts.*rate_limited_at = CASE.*COALESCE\(extra ->> \$2, 'false'\) = 'true' THEN rate_limited_at.*rate_limit_reset_at = CASE.*THEN rate_limit_reset_at.*extra = CASE.*provider_error_code.*`).
 		WithArgs(
 			int64(73),
 			service.GrokFreeRecoveryPendingExtraKey,

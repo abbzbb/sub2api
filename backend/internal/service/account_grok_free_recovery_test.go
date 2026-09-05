@@ -72,6 +72,25 @@ func TestGrokQuotaSnapshotBlocksSchedulingFreeUsageCodeWithoutReset(t *testing.T
 	require.True(t, account.IsRateLimited())
 }
 
+func TestGrokQuotaSnapshotStaleFreeUsageCodeDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	account := &Account{
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			grokQuotaSnapshotExtraKey: &xai.QuotaSnapshot{
+				ProviderErrorCode: grokFreeUsageExhaustedErrorCode,
+				UpdatedAt:         time.Now().Add(-7 * time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	require.False(t, grokStoredFreeUsageExhaustionStillActive(account.Extra[grokQuotaSnapshotExtraKey].(*xai.QuotaSnapshot)))
+	require.False(t, grokQuotaSnapshotBlocksScheduling(account))
+	require.True(t, account.IsSchedulable())
+}
+
 func TestGrokQuotaSnapshotStaleDoesNotBlockScheduling(t *testing.T) {
 	t.Parallel()
 	remaining := int64(0)

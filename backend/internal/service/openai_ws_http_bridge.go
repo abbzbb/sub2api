@@ -505,6 +505,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 	if account.Platform == PlatformGrok {
 		upstreamModel := resolveGrokWSUpstreamModel(account, body, originalModel)
+		ctx = bindGrokMappedModel(c, ctx, upstreamModel)
 		body, err = patchGrokResponsesBody(body, upstreamModel)
 		if err != nil {
 			return nil, err

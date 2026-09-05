@@ -572,6 +572,87 @@ func TestReconcileGrokStreamFailedUsesBoundModelForCooldown(t *testing.T) {
 	require.Contains(t, repo.modelRateLimitCalls[0].model, "grok-4.5")
 }
 
+func grokStream429FailedSSE() string {
+	return "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\",\"status_code\":429}}}\n\n"
+}
+
+func newGrokStream429Context(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	return c, rec
+}
+
+func assertGrokStream429ModelCooldown(t *testing.T, repo *grokQuotaAccountRepo, account *Account, svc *OpenAIGatewayService) {
+	t.Helper()
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "model-scoped 429 must not latch the whole account")
+	require.Zero(t, repo.rateLimitedCalls)
+	require.NotEmpty(t, repo.modelRateLimitCalls)
+	require.Contains(t, repo.modelRateLimitCalls[0].model, "grok-4.5")
+}
+
+func TestHandleChatStreamingGrok429UsesBoundModel(t *testing.T) {
+	c, _ := newGrokStream429Context(t)
+	account := &Account{ID: 770, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(grokStream429FailedSSE())),
+	}
+	_, _ = svc.handleChatStreamingResponse(resp, c, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", time.Now(), 16)
+	assertGrokStream429ModelCooldown(t, repo, account, svc)
+}
+
+func TestStreamRawChatGrok429UsesBoundModel(t *testing.T) {
+	c, _ := newGrokStream429Context(t)
+	account := &Account{ID: 771, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}}\n\n")),
+	}
+	_, _ = svc.streamRawChatCompletions(c, resp, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", nil, nil, time.Now(), 16)
+	assertGrokStream429ModelCooldown(t, repo, account, svc)
+}
+
+func TestHandleAnthropicStreamingGrok429UsesBoundModel(t *testing.T) {
+	c, _ := newGrokStream429Context(t)
+	account := &Account{ID: 772, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(grokStream429FailedSSE())),
+	}
+	_, _ = svc.handleAnthropicStreamingResponse(resp, c, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", time.Now())
+	assertGrokStream429ModelCooldown(t, repo, account, svc)
+}
+
+func TestHandleAnthropicBufferedGrok429UsesBoundModel(t *testing.T) {
+	c, _ := newGrokStream429Context(t)
+	account := &Account{ID: 773, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(grokStream429FailedSSE())),
+	}
+	_, _ = svc.handleAnthropicBufferedStreamingResponse(resp, c, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", time.Now())
+	assertGrokStream429ModelCooldown(t, repo, account, svc)
+}
+
 func TestOpenAIStreamingNativeWriterDisconnectSkipsLateGrokReconciliation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

@@ -74,6 +74,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// 2. Model mapping
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if account != nil && account.Platform == PlatformGrok {
+		ctx = bindGrokMappedModel(c, ctx, upstreamModel)
+	}
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	apiKeyID := getAPIKeyIDFromContext(c)
 	anthropicDigestChain := ""
@@ -720,6 +723,10 @@ func openAICompatTerminalResponse(event *apicompat.ResponsesStreamEvent, payload
 		return nil
 	}
 	if event.Response != nil {
+		if strings.TrimSpace(event.Response.Status) == "" &&
+			(strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" || event.Response.Error != nil) {
+			event.Response.Status = "failed"
+		}
 		return event.Response
 	}
 	switch strings.TrimSpace(event.Type) {

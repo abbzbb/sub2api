@@ -2515,11 +2515,36 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 			overload_until = NULL,
 			extra = CASE
 				WHEN COALESCE(extra ->> $2, 'false') = 'true' THEN COALESCE(extra, '{}'::jsonb)
-				ELSE COALESCE(extra, '{}'::jsonb)
-					- $2::text
-					- $3::text
-					- $4::text
-					- $5::text
+				ELSE (
+					SELECT CASE
+						WHEN NOT (cleaned.e ? $5) THEN cleaned.e
+						ELSE jsonb_set(
+							cleaned.e,
+							ARRAY[$5],
+							(
+								SELECT COALESCE(jsonb_object_agg(key, value), '{}'::jsonb)
+								FROM (
+									SELECT key,
+										CASE
+											WHEN key = 'provider_error_code' THEN NULL
+											WHEN key IN ('requests', 'tokens')
+												AND jsonb_typeof(value) = 'object'
+												AND (value ->> 'remaining') IS NOT NULL
+												AND (value ->> 'remaining') ~ '^-?[0-9]+(\.[0-9]+)?$'
+												AND (value ->> 'remaining')::numeric <= 0
+											THEN (value - 'remaining' - 'reset_at' - 'reset_unix')
+											ELSE value
+										END AS value
+									FROM jsonb_each(COALESCE(cleaned.e -> $5, '{}'::jsonb))
+								) parts
+								WHERE value IS NOT NULL
+							)
+						)
+					END
+					FROM (
+						SELECT COALESCE(extra, '{}'::jsonb) - $2::text - $3::text - $4::text AS e
+					) cleaned
+				)
 			END,
 			updated_at = NOW()
 		WHERE id = $1

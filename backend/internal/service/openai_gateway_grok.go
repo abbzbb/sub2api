@@ -51,11 +51,11 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if strings.TrimSpace(upstreamModel) == "" {
 		upstreamModel = grokDefaultResponsesModel
 	}
-	ctx = bindGrokMappedModel(c, ctx, upstreamModel)
 	// Account mappings are optional. Canonicalize client aliases even when the
 	// account has no model_mapping, matching the Chat Completions path and xAI's
 	// actual Responses model IDs.
 	upstreamModel = xai.ResolveGrokTextResponsesModelID(upstreamModel, grokDefaultResponsesModel)
+	ctx = bindGrokMappedModel(c, ctx, upstreamModel)
 	if isGrokImageGenerationModel(upstreamModel) {
 		return nil, fmt.Errorf("model %s is an image model and is not available on the Responses endpoint; use /v1/images/generations instead", upstreamModel)
 	}
@@ -1869,6 +1869,9 @@ func grokQuotaSnapshotIsStale(snapshot *xai.QuotaSnapshot, now time.Time) bool {
 
 func grokStoredFreeUsageExhaustionStillActive(snapshot *xai.QuotaSnapshot) bool {
 	if snapshot == nil {
+		return false
+	}
+	if grokQuotaSnapshotIsStale(snapshot, time.Now()) {
 		return false
 	}
 	code := strings.ToLower(strings.TrimSpace(snapshot.ProviderErrorCode))
