@@ -43,7 +43,7 @@ export default {
     autoRecover: '自动恢复',
     leaderLockTtl: 'Leader 锁 TTL（秒）',
     skipNamePrefix: '跳过名称前缀',
-    skipNamePrefixHint: '逗号分隔，例如 warp-',
+    skipNamePrefixHint: '额外前缀，逗号分隔；warp- 为固定只读前缀',
     recentTitle: '最近测活隔离',
     recentEmpty: '当前没有被测活隔离的代理',
     colName: '名称',

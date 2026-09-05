@@ -103,7 +103,7 @@ describe('ProxyGroupsView edit detail failure', () => {
   })
 
   it('shows an error and does not open the form when group detail fails', async () => {
-    getGroupById.mockRejectedValue(new Error('detail failed'))
+    getGroupById.mockRejectedValue({ status: 500, code: 'GROUP_DETAIL_FAILED', message: 'detail failed' })
     const wrapper = mountView()
     await flushPromises()
 

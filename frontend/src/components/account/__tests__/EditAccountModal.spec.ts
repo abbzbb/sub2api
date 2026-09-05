@@ -1418,6 +1418,55 @@ describe('EditAccountModal', () => {
   })
 
 
+  it('keeps proxy group when account has both proxy_id and proxy_group_id', async () => {
+    const account = buildAccount()
+    account.proxy_id = 3
+    account.proxy_group_id = 5
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mount(EditAccountModal, {
+      props: {
+        show: true,
+        account,
+        proxies: [{ id: 3, name: 'p3', protocol: 'http', host: 'p.example', port: 8080, status: 'active' }],
+        proxyGroups: [
+          {
+            id: 5,
+            name: 'grok-pool',
+            strategy: 'sticky',
+            sticky_by_account: true,
+            status: 'active',
+            created_at: '',
+            updated_at: ''
+          }
+        ],
+        groups: []
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          Icon: true,
+          ProxyAdBanner: true,
+          ProxySelector: ExclusiveProxySelectorStub,
+          GroupSelector: GroupSelectorStub,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('5')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.proxy_group_id).toBe(5)
+    expect(payload.proxy_id).toBe(0)
+    wrapper.unmount()
+  })
+
   it('hydrates proxy_group_id from account props', async () => {
     const account = buildAccount()
     account.proxy_group_id = 5

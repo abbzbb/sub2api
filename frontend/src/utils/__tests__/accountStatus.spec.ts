@@ -63,17 +63,67 @@ describe('accountStatus', () => {
     expect(isAccountRateLimited(account)).toBe(true)
   })
 
-  it('releases a Grok remaining=0 snapshot once its reset_at has passed', () => {
+  it('keeps a free Grok remaining=0 snapshot blocked after a past reset_at', () => {
     const account = makeAccount({
       extra: {
         grok_usage_snapshot: {
-          tokens: { remaining: 0, reset_at: '2026-07-14T00:01:00Z' }
+          tokens: { remaining: 0, reset_at: '2026-07-14T00:01:00Z' },
+          updated_at: '2026-07-14T00:00:00Z'
         }
       }
     })
 
     expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:00:30Z'))).toBe(true)
-    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:02:00Z'))).toBe(false)
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:02:00Z'))).toBe(true)
+  })
+
+  it('honors a future reset_unix and retry_after_seconds on a Grok snapshot', () => {
+    const unixAccount = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          tokens: { remaining: 0, reset_unix: Math.floor(Date.parse('2026-07-14T00:03:00Z') / 1000) }
+        }
+      }
+    })
+    expect(isAccountRateLimited(unixAccount, Date.parse('2026-07-14T00:02:00Z'))).toBe(true)
+    expect(isAccountRateLimited(unixAccount, Date.parse('2026-07-14T00:04:00Z'))).toBe(true)
+
+    const retryAccount = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          tokens: { remaining: 0 },
+          retry_after_seconds: 120,
+          updated_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+    expect(isAccountRateLimited(retryAccount, Date.parse('2026-07-14T00:01:00Z'))).toBe(true)
+    expect(isAccountRateLimited(retryAccount, Date.parse('2026-07-14T00:03:00Z'))).toBe(true)
+  })
+
+  it('treats grok_billing_snapshot paid evidence as not rate limited for remaining=0', () => {
+    const account = makeAccount({
+      extra: {
+        grok_billing_snapshot: { plan: 'supergrok', monthly_limit_cents: 2000 },
+        grok_usage_snapshot: {
+          tokens: { remaining: 0 },
+          updated_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:01:00Z'))).toBe(false)
+  })
+
+  it('releases a stale free-usage-exhausted snapshot older than 6 hours', () => {
+    const account = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          provider_error_code: 'subscription:free-usage-exhausted',
+          updated_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T07:00:00Z'))).toBe(false)
   })
 
   it('keeps a Grok remaining=0 snapshot without any reset_at rate limited', () => {

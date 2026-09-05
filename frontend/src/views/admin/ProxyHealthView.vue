@@ -144,12 +144,18 @@
 
               <div>
                 <label class="input-label">{{ t('admin.proxyHealth.skipNamePrefix') }}</label>
-                <input
-                  v-model="skipPrefixText"
-                  type="text"
-                  class="input"
-                  :placeholder="t('admin.proxyHealth.skipNamePrefixHint')"
-                />
+                <div class="flex items-center gap-2">
+                  <span
+                    class="shrink-0 rounded border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-sm text-gray-600 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-300"
+                    data-testid="skip-prefix-fixed"
+                  >warp-</span>
+                  <input
+                    v-model="skipPrefixExtraText"
+                    type="text"
+                    class="input"
+                    :placeholder="t('admin.proxyHealth.skipNamePrefixHint')"
+                  />
+                </div>
                 <p class="mt-1 text-xs text-gray-500">{{ t('admin.proxyHealth.skipNamePrefixHint') }}</p>
               </div>
 
@@ -256,7 +262,7 @@ const loading = ref(false)
 const saving = ref(false)
 const scanning = ref(false)
 const runtime = ref<ProxyHealthRuntime | null>(null)
-const skipPrefixText = ref('warp-')
+const skipPrefixExtraText = ref('')
 
 const form = reactive<ProxyHealthSettings>({
   enabled: false,
@@ -340,7 +346,9 @@ function applySettings(s: ProxyHealthSettings) {
     ...s,
     skip_name_prefix: [...(s.skip_name_prefix || [])]
   })
-  skipPrefixText.value = (s.skip_name_prefix || []).join(', ')
+  skipPrefixExtraText.value = (s.skip_name_prefix || [])
+    .filter((p) => p !== 'warp-')
+    .join(', ')
 }
 
 function formatUnix(ts?: number) {
@@ -379,13 +387,13 @@ async function loadAll() {
 async function saveConfig() {
   saving.value = true
   try {
-    const prefixes = skipPrefixText.value
+    const extras = skipPrefixExtraText.value
       .split(/[,，\s]+/)
       .map((s) => s.trim())
-      .filter(Boolean)
+      .filter((s) => s && s !== 'warp-')
     const payload: ProxyHealthSettings = {
       ...form,
-      skip_name_prefix: prefixes
+      skip_name_prefix: ['warp-', ...extras]
     }
     const saved = await adminAPI.proxies.updateHealthConfig(payload)
     applySettings(saved)

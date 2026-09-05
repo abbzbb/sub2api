@@ -3614,12 +3614,14 @@ const form = reactive({
 watch(
   () => form.proxy_id,
   (id) => {
+    if (syncingForm.value) return
     if (id) form.proxy_group_id = null
   }
 )
 watch(
   () => form.proxy_group_id,
   (id) => {
+    if (syncingForm.value) return
     if (id) form.proxy_id = null
   }
 )
@@ -3722,8 +3724,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedChannelWarningAction.value = null
   form.name = newAccount.name
   form.notes = newAccount.notes || ''
-  form.proxy_id = newAccount.proxy_id
-  form.proxy_group_id = newAccount.proxy_group_id ?? null
+  if (newAccount.proxy_group_id) {
+    form.proxy_group_id = newAccount.proxy_group_id
+    form.proxy_id = null
+  } else {
+    form.proxy_id = newAccount.proxy_id
+    form.proxy_group_id = null
+  }
   form.concurrency = newAccount.concurrency
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority

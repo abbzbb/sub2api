@@ -135,17 +135,18 @@ describe('ProxyHealthView', () => {
     wrapper.unmount()
   })
 
-  it('saves an empty skip-prefix as an empty list instead of defaulting to warp-', async () => {
+  it('always submits the fixed warp- skip prefix', async () => {
     const wrapper = mountView()
     await flushPromises()
 
+    expect(wrapper.get('[data-testid="skip-prefix-fixed"]').text()).toBe('warp-')
     const skipInput = wrapper.get('input[placeholder="admin.proxyHealth.skipNamePrefixHint"]')
     await skipInput.setValue('')
     await wrapper.findAll('button').find((btn) => btn.text() === 'admin.proxyHealth.save')?.trigger('click')
     await flushPromises()
 
     expect(updateHealthConfig).toHaveBeenCalledTimes(1)
-    expect(updateHealthConfig.mock.calls[0]?.[0]?.skip_name_prefix).toEqual([])
+    expect(updateHealthConfig.mock.calls[0]?.[0]?.skip_name_prefix).toEqual(['warp-'])
     wrapper.unmount()
   })
 })
