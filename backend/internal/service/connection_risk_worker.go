@@ -131,8 +131,8 @@ func (w *ConnectionRiskWorker) Stop() {
 		close(w.stopCh)
 	}
 	w.started = false
-	w.mu.Unlock()
 	w.wg.Wait()
+	w.mu.Unlock()
 }
 
 func (w *ConnectionRiskWorker) run() {
@@ -396,10 +396,12 @@ func (w *ConnectionRiskWorker) maybeWriteBaseline(ctx context.Context, keyID int
 	}
 	now := time.Now().UTC()
 	day := now.Format("20060102")
-	_ = w.signals.SnapshotBaselineDay(ctx, keyID, day, hll24h)
-	// Recompute p95 from the previous 7 days. 今天必须排除：R3 用当前 24h HLL 与
-	// p95 比较，若样本含今天，p95 >= 今日值（n<=19 时 nearest-rank p95 就是 max），
-	// 规则永远不可能触发。
+	created, err := w.signals.SnapshotBaselineDay(ctx, keyID, day, hll24h)
+	if err != nil || !created {
+		return
+	}
+	// First snapshot of the day: p95 uses previous 7 days (yesterday already
+	// holds the last observation from the prior day's SET updates).
 	days := make([]string, 0, 7)
 	for i := 1; i <= 7; i++ {
 		days = append(days, now.AddDate(0, 0, -i).Format("20060102"))

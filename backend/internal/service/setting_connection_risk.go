@@ -237,6 +237,12 @@ func normalizeConnectionRiskSettings(s *ConnectionRiskSettings) {
 	default:
 		s.MinNotifySeverity = connectionRiskSeverityHigh
 	}
+	switch strings.ToLower(strings.TrimSpace(s.Actions.ThrottleMinSeverity)) {
+	case connectionRiskSeverityLow, connectionRiskSeverityMedium, connectionRiskSeverityHigh, connectionRiskSeverityCritical:
+		s.Actions.ThrottleMinSeverity = strings.ToLower(strings.TrimSpace(s.Actions.ThrottleMinSeverity))
+	default:
+		s.Actions.ThrottleMinSeverity = connectionRiskSeverityHigh
+	}
 	if s.RetentionDays <= 0 {
 		s.RetentionDays = 120
 	}

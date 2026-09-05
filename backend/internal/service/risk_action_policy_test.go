@@ -44,6 +44,7 @@ func TestConnectionRiskService_ClearEventThrottle(t *testing.T) {
 type clearThrottleStub struct {
 	cleared   []int64
 	throttled []int64
+	exempts   []string
 }
 
 func (f *clearThrottleStub) EmitAlwaysOn(context.Context, ConnectionSignal, int, int, uint64) (int, error) {
@@ -62,7 +63,8 @@ func (f *clearThrottleStub) TryDedupe(context.Context, string, time.Duration) (b
 	return true, nil
 }
 func (f *clearThrottleStub) IsExempt(context.Context, string, int64) (bool, error) { return false, nil }
-func (f *clearThrottleStub) SetExempt(context.Context, string, int64, string, time.Duration) error {
+func (f *clearThrottleStub) SetExempt(_ context.Context, scope string, id int64, reason string, _ time.Duration) error {
+	f.exempts = append(f.exempts, fmt.Sprintf("%s:%d:%s", scope, id, reason))
 	return nil
 }
 func (f *clearThrottleStub) ClearExempt(context.Context, string, int64) error { return nil }
@@ -87,8 +89,8 @@ func (f *clearThrottleStub) GetThrottle(context.Context, int64) (int, int64, boo
 	return 0, 0, false, nil
 }
 func (f *clearThrottleStub) IncrThrottleCount(context.Context, int64) (int, error) { return 0, nil }
-func (f *clearThrottleStub) SnapshotBaselineDay(context.Context, int64, string, int64) error {
-	return nil
+func (f *clearThrottleStub) SnapshotBaselineDay(context.Context, int64, string, int64) (bool, error) {
+	return false, nil
 }
 func (f *clearThrottleStub) LoadBaselineSamples(context.Context, int64, []string) ([]int64, error) {
 	return nil, nil
@@ -210,6 +212,19 @@ func TestRiskActionPolicy_SoftThrottleRequiresEnabledAndHighSeverity(t *testing.
 	require.Equal(t, "throttled", high.ActionTaken)
 }
 
+func TestThrottleMinSeverityUnknownDefaultsHigh(t *testing.T) {
+	require.Equal(t, connectionRiskSeverityHigh, throttleMinSeverity(ConnectionRiskSettings{}))
+	require.Equal(t, connectionRiskSeverityHigh, throttleMinSeverity(ConnectionRiskSettings{
+		Actions: ConnectionRiskActionSettings{ThrottleMinSeverity: "urgent"},
+	}))
+	require.Equal(t, connectionRiskSeverityMedium, throttleMinSeverity(ConnectionRiskSettings{
+		Actions: ConnectionRiskActionSettings{ThrottleMinSeverity: "medium"},
+	}))
+	require.False(t, severityAtLeast(connectionRiskSeverityLow, throttleMinSeverity(ConnectionRiskSettings{
+		Actions: ConnectionRiskActionSettings{ThrottleMinSeverity: "nope"},
+	})))
+}
+
 func TestMergeWhitelistSamples(t *testing.T) {
 	_, err := mergeWhitelistSamples(nil, []string{"2001:db8:1:2::"}, false)
 	require.ErrorIs(t, err, ErrConnectionRiskWhitelistRestrictsAllowAll)
@@ -223,7 +238,34 @@ func TestMergeWhitelistSamples(t *testing.T) {
 	require.Equal(t, []string{"10.0.0.1", "2001:db8:1:2::/64"}, merged)
 }
 
-func TestConnectionRiskDedupeKeyHasNoTimeBucket(t *testing.T) {
-	res := ConnectionRiskScoreResult{RulesFired: []ConnectionRiskRuleHit{{RuleID: "R1", Weight: 1, Confidence: 1}}}
-	require.Equal(t, "k:7:R1", fmt.Sprintf("k:%d:%s", 7, primaryRule(res)))
+func TestConnectionRiskService_SuppressEventSetsKeyExempt(t *testing.T) {
+	kid := int64(9)
+	fake := &clearThrottleStub{}
+	svc := &ConnectionRiskService{
+		signals: fake,
+		events: &suppressEventRepoStub{ev: &ConnectionRiskEvent{ID: 3, APIKeyID: &kid}},
+	}
+	require.NoError(t, svc.SuppressEvent(context.Background(), 3, nil))
+	require.Equal(t, []int64{9}, fake.cleared)
+	require.Equal(t, []string{"k:9:suppressed"}, fake.exempts)
+}
+
+type suppressEventRepoStub struct {
+	ev *ConnectionRiskEvent
+}
+
+func (s *suppressEventRepoStub) UpsertOpen(context.Context, *ConnectionRiskEvent) (*ConnectionRiskEvent, bool, error) {
+	return nil, false, nil
+}
+func (s *suppressEventRepoStub) GetByID(context.Context, int64) (*ConnectionRiskEvent, error) {
+	return s.ev, nil
+}
+func (s *suppressEventRepoStub) List(context.Context, *ConnectionRiskEventFilter) (*ConnectionRiskEventList, error) {
+	return &ConnectionRiskEventList{}, nil
+}
+func (s *suppressEventRepoStub) UpdateStatus(context.Context, int64, string, *int64) error { return nil }
+func (s *suppressEventRepoStub) UpdateActionTaken(context.Context, int64, string) error    { return nil }
+func (s *suppressEventRepoStub) Delete(context.Context, int64) error                       { return nil }
+func (s *suppressEventRepoStub) DeleteOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }

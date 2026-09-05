@@ -60,7 +60,8 @@ type ConnectionSignalCache interface {
 	// IncrThrottleCount increments per-key throttle counter for current minute.
 	IncrThrottleCount(ctx context.Context, keyID int64) (int, error)
 	// SnapshotBaselineDay stores PFCOUNT 24h for Phase B R3 (day key YYYYMMDD).
-	SnapshotBaselineDay(ctx context.Context, keyID int64, day string, count int64) error
+	// created is true when this is the first snapshot of that day.
+	SnapshotBaselineDay(ctx context.Context, keyID int64, day string, count int64) (created bool, err error)
 	// LoadBaselineSamples returns last N day PFCOUNT snapshots for a key.
 	LoadBaselineSamples(ctx context.Context, keyID int64, days []string) ([]int64, error)
 	// SetBaselineP95 stores computed p95.

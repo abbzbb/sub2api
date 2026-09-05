@@ -299,7 +299,6 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	pipe := c.rdb.Pipeline()
 	pipe.ZRemRangeByScore(ctx, crKeyUAs1h(keyID), "-inf", strconv.FormatInt(nowUnix-crUAWindowSeconds, 10))
 	prefixCmd := pipe.Get(ctx, crKeyPrefix(keyID))
-	ownerCmd := pipe.Get(ctx, crKeyOwner(keyID))
 	sunion := pipe.SUnion(ctx, ipKeys...)
 	cntCmds := make([]*redis.StringCmd, len(cntKeys))
 	for i, k := range cntKeys {
@@ -319,15 +318,14 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	// evidence samples (optional)
 	sampleIPs := pipe.ZRevRange(ctx, crKeyIPSet(keyID), 0, 19)
 	sampleUAs := pipe.ZRevRange(ctx, crKeyUASet(keyID), 0, 19)
+	pipe.ZRemRangeByRank(ctx, crKeyIPSet(keyID), 0, int64(-(crEvidenceIPCap + 1)))
+	pipe.ZRemRangeByRank(ctx, crKeyUASet(keyID), 0, int64(-(crEvidenceUACap + 1)))
 
 	// Pipeline may surface redis.Nil for missing GET keys; per-cmd Result() handles misses.
 	_, _ = pipe.Exec(ctx)
 
 	if prefix, err := prefixCmd.Result(); err == nil {
 		m.APIKeyPrefix = prefix
-	}
-	if owner, err := ownerCmd.Int64(); err == nil && owner > 0 && m.UserID <= 0 {
-		m.UserID = owner
 	}
 
 	if ips, err := sunion.Result(); err == nil {
@@ -380,10 +378,6 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	if uas, err := sampleUAs.Result(); err == nil {
 		m.SampleUAHashes = uas
 	}
-
-	// Worker-side evidence cap (non hot-path)
-	_ = c.rdb.ZRemRangeByRank(ctx, crKeyIPSet(keyID), 0, int64(-(crEvidenceIPCap + 1))).Err()
-	_ = c.rdb.ZRemRangeByRank(ctx, crKeyUASet(keyID), 0, int64(-(crEvidenceUACap + 1))).Err()
 
 	return m, nil
 }
@@ -523,11 +517,7 @@ func (c *connectionSignalCache) IncrThrottleCount(ctx context.Context, keyID int
 	if c == nil || c.rdb == nil {
 		return 0, nil
 	}
-	t, err := c.redisNow(ctx)
-	if err != nil {
-		return 0, err
-	}
-	win := t.Unix() / 60
+	win := time.Now().Unix() / 60
 	key := crThrottleCnt(keyID, win)
 	pipe := c.rdb.TxPipeline()
 	incr := pipe.Incr(ctx, key)
@@ -538,12 +528,19 @@ func (c *connectionSignalCache) IncrThrottleCount(ctx context.Context, keyID int
 	return int(incr.Val()), nil
 }
 
-func (c *connectionSignalCache) SnapshotBaselineDay(ctx context.Context, keyID int64, day string, count int64) error {
+func (c *connectionSignalCache) SnapshotBaselineDay(ctx context.Context, keyID int64, day string, count int64) (bool, error) {
 	if c == nil || c.rdb == nil || keyID <= 0 || day == "" {
-		return nil
+		return false, nil
 	}
-	_, err := c.rdb.SetNX(ctx, crBaselineDay(keyID, day), count, 14*24*time.Hour).Result()
-	return err
+	key := crBaselineDay(keyID, day)
+	created, err := c.rdb.SetNX(ctx, key, count, 14*24*time.Hour).Result()
+	if err != nil {
+		return false, err
+	}
+	if !created {
+		_ = c.rdb.Set(ctx, key, count, 14*24*time.Hour).Err()
+	}
+	return created, nil
 }
 
 func (c *connectionSignalCache) LoadBaselineSamples(ctx context.Context, keyID int64, days []string) ([]int64, error) {

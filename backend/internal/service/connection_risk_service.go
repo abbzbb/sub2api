@@ -110,6 +110,9 @@ func (s *ConnectionRiskService) SuppressEvent(ctx context.Context, id int64, res
 		return err
 	}
 	s.clearEventThrottle(ctx, ev)
+	if s.signals != nil && ev != nil && ev.APIKeyID != nil {
+		_ = s.signals.SetExempt(ctx, "k", *ev.APIKeyID, "suppressed", 24*time.Hour)
+	}
 	return nil
 }
 

@@ -95,6 +95,22 @@ func TestConnectionSignalCache_Dedupe(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestSnapshotBaselineDayReturnsCreatedOnlyOnFirstWrite(t *testing.T) {
+	cache, _ := newConnectionSignalTestCache(t)
+	ctx := context.Background()
+	created, err := cache.SnapshotBaselineDay(ctx, 7, "20260905", 10)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	created, err = cache.SnapshotBaselineDay(ctx, 7, "20260905", 42)
+	require.NoError(t, err)
+	require.False(t, created)
+
+	samples, err := cache.LoadBaselineSamples(ctx, 7, []string{"20260905"})
+	require.NoError(t, err)
+	require.Equal(t, []int64{42}, samples)
+}
+
 func TestConnectionSignalCache_ActivePruneCap(t *testing.T) {
 	cache, _ := newConnectionSignalTestCache(t)
 	ctx := context.Background()

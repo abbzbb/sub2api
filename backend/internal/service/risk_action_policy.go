@@ -111,10 +111,12 @@ func (p *RiskActionPolicy) autoDisable(ctx context.Context, event *ConnectionRis
 
 func throttleMinSeverity(settings ConnectionRiskSettings) string {
 	need := strings.ToLower(strings.TrimSpace(settings.Actions.ThrottleMinSeverity))
-	if need == "" {
+	switch need {
+	case connectionRiskSeverityLow, connectionRiskSeverityMedium, connectionRiskSeverityHigh, connectionRiskSeverityCritical:
+		return need
+	default:
 		return connectionRiskSeverityHigh
 	}
-	return need
 }
 
 func severityAtLeast(have, need string) bool {

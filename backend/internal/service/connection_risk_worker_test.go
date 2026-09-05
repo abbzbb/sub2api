@@ -85,3 +85,58 @@ func TestConnectionRiskWorkerStopCancelsEvaluateOnce(t *testing.T) {
 	}
 	require.Less(t, time.Since(start), 2*time.Second)
 }
+
+type recordingCREvents struct {
+	noopCREvents
+	events  []*ConnectionRiskEvent
+	created []bool
+}
+
+func (r *recordingCREvents) UpsertOpen(_ context.Context, ev *ConnectionRiskEvent) (*ConnectionRiskEvent, bool, error) {
+	cp := *ev
+	created := len(r.events) == 0
+	r.events = append(r.events, &cp)
+	r.created = append(r.created, created)
+	cp.ID = int64(len(r.events))
+	return &cp, created, nil
+}
+
+type scoreKeySignals struct {
+	clearThrottleStub
+}
+
+func (s *scoreKeySignals) ReadKeyWindowMetrics(context.Context, int64, int64, int64) (*ConnectionRiskSubjectMetrics, error) {
+	return &ConnectionRiskSubjectMetrics{APIKeyID: 7, DistinctIP5m: 8, ReqCount5m: 20}, nil
+}
+
+func TestConnectionRiskWorkerScoreKeyDedupeAndCreatedOnlyPolicy(t *testing.T) {
+	settings := *DefaultConnectionRiskSettings()
+	settings.Enabled = true
+	settings.Phase = connectionRiskPhaseSoftThrottle
+	settings.Actions.SoftThrottleEnabled = true
+	settings.Actions.ThrottleMinSeverity = connectionRiskSeverityLow
+
+	signals := &scoreKeySignals{}
+	events := &recordingCREvents{}
+	w := NewConnectionRiskWorker(
+		&config.Config{},
+		nil,
+		signals,
+		events,
+		nil,
+		nil,
+		nil,
+		nil,
+		&ConnectionRiskMetrics{},
+		&RiskActionPolicy{signals: signals},
+	)
+	now := time.Now().Unix()
+	w.scoreKey(context.Background(), 7, now, settings)
+	w.scoreKey(context.Background(), 7, now, settings)
+	require.Len(t, events.events, 2)
+	require.Equal(t, "k:7:R1", events.events[0].DedupeKey)
+	require.Equal(t, "k:7:R1", events.events[1].DedupeKey)
+	require.True(t, events.created[0])
+	require.False(t, events.created[1])
+	require.Equal(t, []int64{7}, signals.throttled)
+}
