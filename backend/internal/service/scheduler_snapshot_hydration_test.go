@@ -161,6 +161,31 @@ func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *test
 	}
 }
 
+func TestGatewayNewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *testing.T) {
+	cache := &snapshotHydrationCache{
+		accounts: map[int64]*Account{},
+	}
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, stubOpenAIAccountRepo{}, nil, nil)
+	svc := &GatewayService{
+		schedulerSnapshot: schedulerSnapshot,
+	}
+	releaseCalls := 0
+
+	selection, err := svc.newAcquiredSelectionResult(context.Background(), &Account{ID: 1001}, func() {
+		releaseCalls++
+	})
+
+	if err == nil {
+		t.Fatalf("expected hydration error")
+	}
+	if selection != nil {
+		t.Fatalf("expected nil selection on hydration error")
+	}
+	if releaseCalls != 1 {
+		t.Fatalf("expected release to be called once, got %d", releaseCalls)
+	}
+}
+
 func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedulerSnapshot(t *testing.T) {
 	cache := &snapshotHydrationCache{
 		snapshot: []*Account{

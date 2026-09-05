@@ -182,7 +182,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					localExcluded[account.ID] = struct{}{} // 排除此账号
 					continue                               // 重新选择
 				}
-				return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+				return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 			}
 
 			// 对于等待计划的情况，也需要先检查会话限制
@@ -370,7 +370,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 									if s.debugModelRoutingEnabled() {
 										logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), stickyAccountID)
 									}
-									return s.newSelectionResult(ctx, stickyAccount, true, result.ReleaseFunc, nil)
+									return s.newAcquiredSelectionResult(ctx, stickyAccount, result.ReleaseFunc)
 								}
 							}
 
@@ -481,7 +481,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						if s.debugModelRoutingEnabled() {
 							logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
 						}
-						return s.newSelectionResult(ctx, item.account, true, result.ReleaseFunc, nil)
+						return s.newAcquiredSelectionResult(ctx, item.account, result.ReleaseFunc)
 					}
 				}
 
@@ -571,7 +571,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if s.cache != nil {
 								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
 							}
-							return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+							return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 						}
 					} else {
 						slog.Debug("sticky.layer1_5_no_routing_slot_busy",
@@ -733,7 +733,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					if sessionHash != "" && s.cache != nil {
 						_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, selected.account.ID)
 					}
-					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					return s.newAcquiredSelectionResult(ctx, selected.account, result.ReleaseFunc)
 				}
 			}
 
@@ -781,7 +781,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 			if sessionHash != "" && s.cache != nil {
 				_ = s.bindGatewayStickySessionDuringSelection(ctx, groupID, sessionHash, acc.ID)
 			}
-			selection, err := s.newSelectionResult(ctx, acc, true, result.ReleaseFunc, nil)
+			selection, err := s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
 			if err != nil {
 				return nil, false, err
 			}
@@ -1510,6 +1510,14 @@ func (s *GatewayService) newSelectionResult(ctx context.Context, account *Accoun
 		ReleaseFunc: release,
 		WaitPlan:    waitPlan,
 	}), nil
+}
+
+func (s *GatewayService) newAcquiredSelectionResult(ctx context.Context, account *Account, release func()) (*AccountSelectionResult, error) {
+	selection, err := s.newSelectionResult(ctx, account, true, release, nil)
+	if err != nil && release != nil {
+		release()
+	}
+	return selection, err
 }
 
 // filterByMinPriority 过滤出优先级最小的账号集合

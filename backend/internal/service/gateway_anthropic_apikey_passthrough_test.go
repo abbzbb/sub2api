@@ -850,7 +850,7 @@ func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *te
 			body:                       `{"model":"claude-haiku-4-5","metadata":{"user_id":"pi-session-metadata"},"system":[{"type":"text","text":"Pi project instructions","cache_control":{"type":"ephemeral","ttl":"1h"}}],"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
 			wantModel:                  "claude-haiku-4-5-20251001",
 			wantOriginalSystem:         "Pi project instructions",
-			wantOriginalSystemCacheTTL: "5m",
+			wantOriginalSystemCacheTTL: "1h",
 			wantMetadataUserID:         "pi-session-metadata",
 		},
 	}
@@ -935,6 +935,9 @@ func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *te
 
 			require.Equal(t, claudeCodeSystemPromptExpansion, arr[2].Get("text").String())
 			require.Equal(t, "ephemeral", arr[2].Get("cache_control.type").String())
+			if tt.wantOriginalSystemCacheTTL == "1h" {
+				require.Equal(t, "1h", arr[2].Get("cache_control.ttl").String(), "gateway-injected 5m must rise to match client 1h")
+			}
 
 			// 原始 system prompt 应迁移至 messages 中。
 			messages := gjson.GetBytes(upstream.lastBody, "messages")
