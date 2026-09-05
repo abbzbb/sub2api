@@ -1558,8 +1558,16 @@ func (s *OpenAIGatewayService) reconcileGrokStreamFailedAccountState(
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
 	}
+	model := grokRequestedModelFromCtx(ctx)
+	if model == "" && c != nil {
+		if v, ok := c.Get(ginKeyGrokMappedModel); ok {
+			if s, ok := v.(string); ok {
+				model = strings.TrimSpace(s)
+			}
+		}
+	}
 	body := openAIStreamFailedEventPassthroughBody(payload, message)
-	s.handleGrokAccountUpstreamError(ctx, account, statusCode, nil, body)
+	s.handleGrokAccountUpstreamError(ctx, account, statusCode, nil, body, model)
 }
 
 // applyOpenAIStreamFailedErrorPassthroughRule 对 response.failed 事件应用错误透传规则：

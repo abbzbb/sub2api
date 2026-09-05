@@ -186,8 +186,8 @@ func TestGrokRecoveryProbeEligibilityOnlyBypassesPendingAndRateLimit(t *testing.
 		RateLimitResetAt: &future,
 		Extra:            map[string]any{GrokFreeRecoveryPendingExtraKey: true},
 	}
-	require.NoError(t, grokOAuthRequestAccountEligibilityErrorForMode(&base, true))
-	require.Error(t, grokOAuthRequestAccountEligibilityErrorForMode(&base, false))
+	require.NoError(t, grokOAuthRequestAccountEligibilityErrorForMode(context.Background(), &base, true))
+	require.Error(t, grokOAuthRequestAccountEligibilityErrorForMode(context.Background(), &base, false))
 
 	tests := []struct {
 		name   string
@@ -204,7 +204,7 @@ func TestGrokRecoveryProbeEligibilityOnlyBypassesPendingAndRateLimit(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			account := base
 			tt.mutate(&account)
-			require.Error(t, grokOAuthRequestAccountEligibilityErrorForMode(&account, true))
+			require.Error(t, grokOAuthRequestAccountEligibilityErrorForMode(context.Background(), &account, true))
 		})
 	}
 }

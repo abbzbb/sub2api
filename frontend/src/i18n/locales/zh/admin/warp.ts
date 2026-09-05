@@ -46,6 +46,7 @@ export default {
     created: '新建 {n}',
     updated: '更新 {n}',
     members: '组成员 {n}',
+    unhealthyIsolated: '不健康（已隔离）{n}',
     group: '代理组'
   }
 }

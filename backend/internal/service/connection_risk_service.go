@@ -110,6 +110,9 @@ func (s *ConnectionRiskService) SuppressEvent(ctx context.Context, id int64, res
 		return err
 	}
 	s.clearEventThrottle(ctx, ev)
+	if s.signals != nil && ev != nil && ev.APIKeyID != nil {
+		_ = s.signals.SetExempt(ctx, "k", *ev.APIKeyID, "suppressed", 24*time.Hour)
+	}
 	return nil
 }
 
@@ -151,14 +154,14 @@ func (s *ConnectionRiskService) ClearExempt(ctx context.Context, scope string, i
 }
 
 // WhitelistIPs merges IPs onto the API key whitelist (Phase B) and clears throttle.
-func (s *ConnectionRiskService) WhitelistIPs(ctx context.Context, keyID int64, ips []string) (*APIKey, error) {
+func (s *ConnectionRiskService) WhitelistIPs(ctx context.Context, keyID int64, ips []string, confirmRestrictAllowAll bool) (*APIKey, error) {
 	if s == nil {
 		return nil, fmt.Errorf("service unavailable")
 	}
 	if s.policy == nil {
 		return nil, fmt.Errorf("policy unavailable")
 	}
-	key, err := s.policy.ApplyWhitelistIPs(ctx, keyID, ips)
+	key, err := s.policy.ApplyWhitelistIPs(ctx, keyID, ips, confirmRestrictAllowAll)
 	if err != nil {
 		return nil, err
 	}

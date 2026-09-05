@@ -73,6 +73,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if account != nil && account.Platform == PlatformGrok {
+		ctx = bindGrokMappedModel(c, ctx, upstreamModel)
+	}
 	SetOpsUpstreamModel(c, upstreamModel)
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
@@ -332,10 +335,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					statusCode := openAIStreamFailedEventSemanticStatus(normalized, message)
 					switch statusCode {
 					case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+						s.reconcileGrokStreamFailedAccountState(c, account, normalized, message)
 						if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 							return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, normalized, message)
 						}
-						s.reconcileGrokStreamFailedAccountState(c, account, normalized, message)
 					}
 				}
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)

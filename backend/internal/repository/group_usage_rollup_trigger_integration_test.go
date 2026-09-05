@@ -129,11 +129,12 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 
 	schema := createGroupUsageRollupTriggerTestSchema(t, ctx, false)
 	seedTx := beginGroupUsageRollupTriggerTestTx(t, ctx, schema)
+	require.NoError(t, setGroupUsageRollupTriggerTimeZone(ctx, seedTx, "Asia/Shanghai"))
 	_, err := seedTx.ExecContext(ctx, `
 		INSERT INTO groups (id) VALUES (10);
 		INSERT INTO users (id) VALUES (1);
 		UPDATE usage_group_rollup_state
-		SET closed_before = CURRENT_DATE
+		SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
 		WHERE id = 1;
 	`)
 	require.NoError(t, err)
@@ -141,6 +142,7 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 
 	syncTx := beginGroupUsageRollupTriggerTestTx(t, ctx, schema)
 	defer func() { _ = syncTx.Rollback() }()
+	require.NoError(t, setGroupUsageRollupTriggerTimeZone(ctx, syncTx, "Asia/Shanghai"))
 	var stateID int16
 	require.NoError(t, syncTx.QueryRowContext(ctx, `
 		SELECT id
@@ -174,7 +176,7 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 
 	_, err = syncTx.ExecContext(ctx, `
 		UPDATE usage_group_rollup_state
-		SET closed_before = CURRENT_DATE + 1
+		SET closed_before = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date + 1
 		WHERE id = 1
 	`)
 	require.NoError(t, err)
@@ -190,7 +192,7 @@ func TestGroupUsageRollupTriggerSerializesInsertTransactionAcrossMidnight(t *tes
 
 	var currentDate string
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `
-		SELECT CURRENT_DATE::text
+		SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text
 	`).Scan(&currentDate))
 	var closedBefore string
 	err = integrationDB.QueryRowContext(ctx, fmt.Sprintf(

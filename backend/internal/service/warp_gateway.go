@@ -66,7 +66,7 @@ type WarpGatewayClient struct {
 	client *http.Client
 }
 
-func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
+func NewWarpGatewayClient(cfg WarpGatewayConfig) (*WarpGatewayClient, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
@@ -79,17 +79,24 @@ func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.TLSInsecureSkipVerify}
 		if cfg.TLSCAFile != "" {
 			pem, err := os.ReadFile(cfg.TLSCAFile)
-			if err == nil {
-				pool := x509.NewCertPool()
-				if pool.AppendCertsFromPEM(pem) {
-					tlsCfg.RootCAs = pool
-				}
+			if err != nil {
+				return nil, fmt.Errorf("warp gateway tls ca load failed: %w", err)
 			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("warp gateway tls ca parse failed: %s", cfg.TLSCAFile)
+			}
+			tlsCfg.RootCAs = pool
 		}
-		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
-			if cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile); err == nil {
-				tlsCfg.Certificates = []tls.Certificate{cert}
+		if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+			if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+				return nil, fmt.Errorf("warp gateway tls requires both cert and key")
 			}
+			cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("warp gateway tls cert load failed: %w", err)
+			}
+			tlsCfg.Certificates = []tls.Certificate{cert}
 		}
 		transport.TLSClientConfig = tlsCfg
 	}
@@ -99,7 +106,7 @@ func NewWarpGatewayClient(cfg WarpGatewayConfig) *WarpGatewayClient {
 			Timeout:   cfg.Timeout,
 			Transport: transport,
 		},
-	}
+	}, nil
 }
 
 func (c *WarpGatewayClient) Enabled() bool {
@@ -172,7 +179,7 @@ func (c *WarpGatewayClient) CreatePoolEx(ctx context.Context, namePrefix string,
 	}
 	// Real WARP registration can take a while (count * handshake).
 	timeout := c.cfg.Timeout
-	if register && timeout < 120*time.Second {
+	if timeout < 120*time.Second {
 		timeout = time.Duration(30+count*25) * time.Second
 	}
 	err := c.doWithTimeout(ctx, http.MethodPost, "/v1/pools", map[string]any{
@@ -223,6 +230,15 @@ func (c *WarpGatewayClient) PoolSnapshot(ctx context.Context) (*WarpPoolSnapshot
 // members unhealthy. Kept below the 90s sync tick / leader-lock floor so the
 // follow-up sync still has budget.
 const warpHealthAllTimeout = 60 * time.Second
+const warpMutatingTimeout = 90 * time.Second
+
+func (c *WarpGatewayClient) mutatingTimeout() time.Duration {
+	timeout := c.cfg.Timeout
+	if timeout < warpMutatingTimeout {
+		timeout = warpMutatingTimeout
+	}
+	return timeout
+}
 
 func (c *WarpGatewayClient) HealthAll(ctx context.Context) (*WarpPoolSnapshot, []string, map[string][]string, error) {
 	var resp struct {
@@ -242,7 +258,7 @@ func (c *WarpGatewayClient) HealthAll(ctx context.Context) (*WarpPoolSnapshot, [
 
 func (c *WarpGatewayClient) Rotate(ctx context.Context, id string) (*WarpInstance, error) {
 	var inst WarpInstance
-	if err := c.do(ctx, http.MethodPost, "/v1/instances/"+id+"/rotate", map[string]any{}, &inst); err != nil {
+	if err := c.doWithTimeout(ctx, http.MethodPost, "/v1/instances/"+id+"/rotate", map[string]any{}, &inst, c.mutatingTimeout()); err != nil {
 		return nil, err
 	}
 	return &inst, nil
@@ -254,9 +270,9 @@ func (c *WarpGatewayClient) DeleteInstance(ctx context.Context, id string, dereg
 	if !deregisterCloudflare {
 		path += "?deregister_cloudflare=false"
 	}
-	return c.do(ctx, http.MethodDelete, path, map[string]any{
+	return c.doWithTimeout(ctx, http.MethodDelete, path, map[string]any{
 		"deregister_cloudflare": deregisterCloudflare,
-	}, nil)
+	}, nil, c.mutatingTimeout())
 }
 
 // WarpPoolAttachPlan is a Phase-3 plan to sync gateway instances into Proxy rows/group.
@@ -326,12 +342,10 @@ func BuildAttachPlan(snap *WarpPoolSnapshot, groupName string) WarpPoolAttachPla
 			name = fmt.Sprintf("%s-%s", name, short)
 		}
 		usedNames[name] = struct{}{}
-		if inst.Status == "unhealthy" || inst.Status == "error" {
+		_, inUnhealthy := unhealthy[inst.ID]
+		if inst.Status != "running" || inUnhealthy {
 			status = StatusError
 			plan.DetachProxyNames = append(plan.DetachProxyNames, name)
-		}
-		if _, bad := unhealthy[inst.ID]; bad {
-			status = StatusError
 		}
 		host := inst.ListenHost
 		if host == "" {

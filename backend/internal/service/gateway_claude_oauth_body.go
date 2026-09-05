@@ -21,8 +21,9 @@ import (
 )
 
 type anthropicCacheControlPayload struct {
-	Type string `json:"type"`
-	TTL  string `json:"ttl,omitempty"`
+	Type     string `json:"type"`
+	TTL      string `json:"ttl,omitempty"`
+	Injected bool   `json:"_gw,omitempty"`
 }
 
 type anthropicSystemTextBlockPayload struct {
@@ -72,8 +73,9 @@ func marshalAnthropicSystemTextBlock(text string, includeCacheControl bool) ([]b
 	}
 	if includeCacheControl {
 		block.CacheControl = &anthropicCacheControlPayload{
-			Type: "ephemeral",
-			TTL:  claude.DefaultCacheControlTTL,
+			Type:     "ephemeral",
+			TTL:      claude.DefaultCacheControlTTL,
+			Injected: true,
 		}
 	}
 	return json.Marshal(block)
@@ -750,9 +752,10 @@ func decodeClaudeOAuthSystemPromptCacheControl(raw json.RawMessage) (any, error)
 		return nil, nil
 	}
 	if bytes.Equal(trimmed, []byte("true")) {
-		return map[string]string{
+		return map[string]any{
 			"type": "ephemeral",
 			"ttl":  claude.DefaultCacheControlTTL,
+			"_gw":  true,
 		}, nil
 	}
 	var value any
@@ -799,12 +802,10 @@ func defaultClaudeOAuthSystemPromptBlockConfig() []claudeOAuthSystemPromptBlockC
 			Text:    "{claude_code_system_prompt}",
 		},
 		{
-			Enabled: &enabled,
-			Type:    "text",
-			Text:    "{claude_code_expansion_prompt}",
-			CacheControl: json.RawMessage(
-				fmt.Sprintf(`{"type":"ephemeral","ttl":%q}`, claude.DefaultCacheControlTTL),
-			),
+			Enabled:      &enabled,
+			Type:         "text",
+			Text:         "{claude_code_expansion_prompt}",
+			CacheControl: json.RawMessage(gatewayInjectedEphemeralCacheControlJSON()),
 		},
 	}
 }
@@ -844,6 +845,11 @@ func buildClaudeOAuthSystemPromptBlocksJSON(body []byte, expansionPrompt string,
 		raw, err := marshalAnthropicSystemTextBlockWithCacheControl(text, cacheControl)
 		if err != nil {
 			return nil, err
+		}
+		if cacheControl != nil {
+			if next, err := sjson.SetBytes(raw, "cache_control._gw", true); err == nil {
+				raw = next
+			}
 		}
 		items = append(items, raw)
 	}
@@ -1143,6 +1149,76 @@ func injectAnthropicCacheControlTTL1h(body []byte) []byte {
 	return forceEphemeralCacheControlTTL(body, cacheTTLTarget1h)
 }
 
+const gatewayInjectedCacheControlKey = "_gw"
+
+func gatewayInjectedEphemeralCacheControlJSON() string {
+	return fmt.Sprintf(`{"type":"ephemeral","ttl":%q,"%s":true}`, claude.DefaultCacheControlTTL, gatewayInjectedCacheControlKey)
+}
+
+func isGatewayInjectedCacheControl(cc gjson.Result) bool {
+	return cc.Get(gatewayInjectedCacheControlKey).Bool()
+}
+
+func stripGatewayInjectedCacheControlMarks(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	out := body
+	walkAnthropicCacheControlNodes(body, func(basePath string, cc gjson.Result) {
+		if !cc.Get(gatewayInjectedCacheControlKey).Exists() {
+			return
+		}
+		if next, err := sjson.DeleteBytes(out, basePath+".cache_control."+gatewayInjectedCacheControlKey); err == nil {
+			out = next
+		}
+	})
+	return out
+}
+
+func walkAnthropicCacheControlNodes(body []byte, fn func(basePath string, cc gjson.Result)) {
+	visit := func(basePath string, node gjson.Result) {
+		cc := node.Get("cache_control")
+		if !cc.Exists() || cc.Get("type").String() != "ephemeral" {
+			return
+		}
+		fn(basePath, cc)
+	}
+	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
+		idx := -1
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			idx++
+			visit(fmt.Sprintf("tools.%d", idx), tool)
+			return true
+		})
+	}
+	if system := gjson.GetBytes(body, "system"); system.IsArray() {
+		idx := -1
+		system.ForEach(func(_, block gjson.Result) bool {
+			idx++
+			visit(fmt.Sprintf("system.%d", idx), block)
+			return true
+		})
+	} else if system := gjson.GetBytes(body, "system"); system.IsObject() {
+		visit("system", system)
+	}
+	if messages := gjson.GetBytes(body, "messages"); messages.IsArray() {
+		msgIdx := -1
+		messages.ForEach(func(_, msg gjson.Result) bool {
+			msgIdx++
+			content := msg.Get("content")
+			if content.IsArray() {
+				cIdx := -1
+				content.ForEach(func(_, block gjson.Result) bool {
+					cIdx++
+					visit(fmt.Sprintf("messages.%d.content.%d", msgIdx, cIdx), block)
+					return true
+				})
+			}
+			return true
+		})
+	}
+}
+
 // normalizeAnthropicCacheControlTTLOrder 修复 Anthropic 对 cache_control.ttl 的顺序约束。
 //
 // Anthropic 按 tools → system → messages 处理缓存断点，且禁止出现：
@@ -1154,8 +1230,10 @@ func injectAnthropicCacheControlTTL1h(body []byte) []byte {
 //   - 网关 OAuth 伪装在 system/tools 上注入 DefaultCacheControlTTL=5m
 //     → 上游 400 invalid_request_error
 //
-// 策略：若更靠后的断点声明了 1h，则把其前方所有 5m/缺省 ttl 的 ephemeral 断点升级为 1h，
-// 保留客户端长缓存意图，同时满足"1h 不得出现在 5m 之后"的约束。
+// 策略：
+//   - 后面存在客户端 1h、前面只有网关注入的 5m：把网关注入的 5m 升为 1h，保留客户端 1h。
+//   - 前面的 5m 是客户端自己写的：把后面的 1h 降为 5m（避免 2× cache-write）。
+//
 // 1h 之后再出现 5m 是合法的（TTL 递减），不会被改写。
 func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 	if len(body) == 0 {
@@ -1163,8 +1241,9 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 	}
 
 	type ccRef struct {
-		ttlPath string
-		ttl     string // "" means omitted (Anthropic defaults to 5m)
+		ttlPath  string
+		ttl      string // "" means omitted (Anthropic defaults to 5m)
+		injected bool
 	}
 
 	var refs []ccRef
@@ -1177,7 +1256,11 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 		if t := cc.Get("ttl"); t.Exists() {
 			ttl = t.String()
 		}
-		refs = append(refs, ccRef{ttlPath: basePath + ".cache_control.ttl", ttl: ttl})
+		refs = append(refs, ccRef{
+			ttlPath:  basePath + ".cache_control.ttl",
+			ttl:      ttl,
+			injected: isGatewayInjectedCacheControl(cc),
+		})
 	}
 
 	// Process order required by Anthropic: tools → system → messages.
@@ -1217,10 +1300,6 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 		})
 	}
 
-	if len(refs) < 2 {
-		return body
-	}
-
 	effective := func(ttl string) string {
 		if ttl == "" || ttl == cacheTTLTarget5m {
 			return cacheTTLTarget5m
@@ -1232,40 +1311,37 @@ func normalizeAnthropicCacheControlTTLOrder(body []byte) []byte {
 		return cacheTTLTarget5m
 	}
 
-	// Has a later 1h after this index?
-	hasLater1h := make([]bool, len(refs))
-	seen1h := false
-	for i := len(refs) - 1; i >= 0; i-- {
-		hasLater1h[i] = seen1h
-		if effective(refs[i].ttl) == cacheTTLTarget1h {
-			seen1h = true
-		}
-	}
-
 	out := body
-	modified := false
-	for i, ref := range refs {
-		if !hasLater1h[i] {
+	hasClient5m := false
+	pendingInjected := make([]string, 0)
+	for _, ref := range refs {
+		eff := effective(ref.ttl)
+		if eff == cacheTTLTarget5m {
+			if ref.injected && !hasClient5m {
+				pendingInjected = append(pendingInjected, ref.ttlPath)
+			} else if !ref.injected {
+				hasClient5m = true
+				pendingInjected = pendingInjected[:0]
+			}
 			continue
 		}
-		if effective(ref.ttl) != cacheTTLTarget5m {
+		if eff != cacheTTLTarget1h {
 			continue
 		}
-		// Upgrade 5m / omitted ttl → 1h so a later 1h is legal.
-		if ref.ttl == cacheTTLTarget1h {
-			continue
+		if hasClient5m {
+			if next, err := sjson.SetBytes(out, ref.ttlPath, cacheTTLTarget5m); err == nil {
+				out = next
+			}
+		} else {
+			for _, path := range pendingInjected {
+				if next, err := sjson.SetBytes(out, path, cacheTTLTarget1h); err == nil {
+					out = next
+				}
+			}
 		}
-		next, err := sjson.SetBytes(out, ref.ttlPath, cacheTTLTarget1h)
-		if err != nil {
-			continue
-		}
-		out = next
-		modified = true
+		pendingInjected = pendingInjected[:0]
 	}
-	if modified {
-		return out
-	}
-	return body
+	return stripGatewayInjectedCacheControlMarks(out)
 }
 
 func forceEphemeralCacheControlTTL(body []byte, ttl string) []byte {

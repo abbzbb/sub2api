@@ -154,6 +154,16 @@ export default {
       saveConfig: 'Failed to save config',
       action: 'Action failed',
       noSampleIPs: 'No sample_ips in evidence',
+      whitelistRestrictsAllowAll: 'This key currently allows all IPs. Confirm to restrict it to the listed samples.',
+    },
+    confirm: {
+      deleteTitle: 'Delete event',
+      deleteMessage: 'Permanently delete this connection-risk event?',
+      retentionTitle: 'Run retention',
+      retentionMessage: 'Delete expired connection-risk events now?',
+      whitelistTitle: 'Merge sample IPs into whitelist',
+      whitelistMessage: 'Add these IPs to the API key whitelist: {ips}',
+      whitelistAllowAllMessage: 'This key currently allows all IPs. Restrict it to: {ips}?',
     },
   },
 }

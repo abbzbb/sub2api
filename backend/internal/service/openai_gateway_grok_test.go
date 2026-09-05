@@ -3733,6 +3733,26 @@ func TestHandleGrokAccountUpstreamError429FreeCodeOverridesStalePaidMetadata(t *
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
+func TestHandleGrokAccountUpstreamErrorPoolModeDoesNotPermanentlyDisableOn403(t *testing.T) {
+	account := &Account{
+		ID: 640, Platform: PlatformGrok, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "k", "pool_mode": true},
+	}
+	require.True(t, account.IsPoolMode())
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	body := []byte(`{"error":{"code":"account_suspended","message":"account suspended"}}`)
+
+	permanentlyDisabled := svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusForbidden, nil, body)
+
+	require.False(t, permanentlyDisabled)
+	require.Zero(t, repo.errorCalls)
+	require.Zero(t, repo.credentialErrorCalls)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Zero(t, repo.rateLimitedCalls)
+}
+
 func TestHandleGrokAccountUpstreamErrorSoft402RecoversAfterCooldownExpiry(t *testing.T) {
 	// Soft billing 402 uses temp cooldown; after expiry the account becomes schedulable again.
 	account := &Account{
@@ -4344,7 +4364,7 @@ func TestFailoverOpenAIUpstreamHTTPErrorGrokEndpoint404FailsOverWithoutDisabling
 	require.Equal(t, "grok-4.5", repo.modelRateLimitCalls[0].model)
 }
 
-func TestFailoverOpenAIUpstreamHTTPErrorPermanentGrokFailureDisablesPoolSameAccountRetry(t *testing.T) {
+func TestFailoverOpenAIUpstreamHTTPErrorPermanentGrokFailureKeepsPoolSameAccountRetry(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
@@ -4367,10 +4387,9 @@ func TestFailoverOpenAIUpstreamHTTPErrorPermanentGrokFailureDisablesPoolSameAcco
 	)
 
 	require.NotNil(t, failoverErr)
-	require.False(t, failoverErr.RetryableOnSameAccount)
-	require.Equal(t, 1, repo.errorCalls)
+	require.Zero(t, repo.errorCalls)
 	require.Zero(t, repo.tempUnschedCalls)
-	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestFailoverOpenAIUpstreamHTTPErrorSoftEntitlementKeepsPoolSameAccountRetry(t *testing.T) {
@@ -4398,8 +4417,8 @@ func TestFailoverOpenAIUpstreamHTTPErrorSoftEntitlementKeepsPoolSameAccountRetry
 	require.NotNil(t, failoverErr)
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.Zero(t, repo.errorCalls)
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 func TestPatchGrokResponsesBody_StripsReasoningContentNull(t *testing.T) {
 	t.Parallel()

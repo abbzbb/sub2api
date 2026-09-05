@@ -34,14 +34,16 @@ func TestConnectionRiskUpsertOpenRefreshesAcknowledgedRow(t *testing.T) {
 		}
 	}
 
-	first, err := repo.UpsertOpen(ctx, newEvent(10))
+	first, created, err := repo.UpsertOpen(ctx, newEvent(10))
 	require.NoError(t, err)
+	require.True(t, created)
 	require.Equal(t, service.ConnectionRiskStatusOpen, first.Status)
 
 	require.NoError(t, repo.UpdateStatus(ctx, first.ID, service.ConnectionRiskStatusAcknowledged, nil))
 
-	second, err := repo.UpsertOpen(ctx, newEvent(20))
+	second, created, err := repo.UpsertOpen(ctx, newEvent(20))
 	require.NoError(t, err)
+	require.False(t, created, "refresh of acknowledged row is not a new event")
 	require.Equal(t, first.ID, second.ID, "continuing signal must refresh the acknowledged row")
 	require.Equal(t, service.ConnectionRiskStatusAcknowledged, second.Status, "refresh must not reopen an acknowledged event")
 	require.Equal(t, 20.0, second.Score)
@@ -53,8 +55,9 @@ func TestConnectionRiskUpsertOpenRefreshesAcknowledgedRow(t *testing.T) {
 
 	require.NoError(t, repo.UpdateStatus(ctx, first.ID, service.ConnectionRiskStatusResolved, nil))
 
-	third, err := repo.UpsertOpen(ctx, newEvent(5))
+	third, created, err := repo.UpsertOpen(ctx, newEvent(5))
 	require.NoError(t, err)
+	require.True(t, created, "recurrence after resolve must create a new event so auto-actions can run")
 	require.NotEqual(t, first.ID, third.ID, "a recurrence after resolve must open a new event")
 	require.Equal(t, service.ConnectionRiskStatusOpen, third.Status)
 }

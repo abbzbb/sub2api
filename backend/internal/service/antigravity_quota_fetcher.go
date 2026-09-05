@@ -206,23 +206,13 @@ func (f *AntigravityQuotaFetcher) buildUsageInfo(modelsResp *antigravity.FetchAv
 	return info
 }
 
-// GetProxyURL 获取账户的代理 URL
-func (f *AntigravityQuotaFetcher) GetProxyURL(ctx context.Context, account *Account) string {
-	if account == nil {
-		return ""
+// GetProxyURL 获取账户的代理 URL。组绑定未 hydrate / 组耗尽时返回错误，禁止直连。
+func (f *AntigravityQuotaFetcher) GetProxyURL(ctx context.Context, account *Account) (string, error) {
+	var repo accountProxyLookup
+	if f != nil {
+		repo = f.proxyRepo
 	}
-	// 代理池账号只有 Proxy、没有 ProxyID：优先使用已选中的 Proxy。
-	if url := account.ProxyURL(); url != "" {
-		return url
-	}
-	if account.ProxyID == nil || f.proxyRepo == nil {
-		return ""
-	}
-	proxy, err := f.proxyRepo.GetByID(ctx, *account.ProxyID)
-	if err != nil || proxy == nil {
-		return ""
-	}
-	return proxy.URL()
+	return resolveAccountProxyURL(ctx, repo, account)
 }
 
 // classifyForbiddenType 根据 403 响应体判断禁止类型

@@ -193,7 +193,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	proxyExitInfoProber := repository.NewProxyExitInfoProber(configConfig)
 	proxyLatencyCache := repository.NewProxyLatencyCache(redisClient)
 	proxyHealthCache := repository.NewProxyHealthCache(redisClient)
-	adminService := service.ProvideAdminService(userRepository, adminGroupRepository, adminAccountRepository, proxyRepository, apiKeyRepository, redeemCodeRepository, userGroupRateRepository, userRPMCache, billingCacheService, proxyExitInfoProber, proxyLatencyCache, apiKeyAuthCacheInvalidator, client, settingService, subscriptionService, userSubscriptionRepository, privacyClientFactory, openAIGatewayService, affiliateService, compositeModelRouteRepository, compositeRouteResolver, defaultProxyGroupResolver, proxyHealthCache, channelService)
+	adminService := service.ProvideAdminService(userRepository, adminGroupRepository, adminAccountRepository, proxyRepository, apiKeyRepository, redeemCodeRepository, userGroupRateRepository, userRPMCache, billingCacheService, proxyExitInfoProber, proxyLatencyCache, apiKeyAuthCacheInvalidator, client, settingService, subscriptionService, userSubscriptionRepository, privacyClientFactory, openAIGatewayService, affiliateService, compositeModelRouteRepository, compositeRouteResolver, defaultProxyGroupResolver, proxyHealthCache, proxyGroupRepository, channelService)
 	adminUserHandler := admin.NewUserHandler(adminService, concurrencyService, serviceUserPlatformQuotaRepository, billingCache, totpService, userService, settingService)
 	groupCapacityService := service.NewGroupCapacityService(accountRepository, groupRepository, concurrencyService, sessionLimitCache, rpmCache)
 	groupHandler := admin.NewGroupHandler(adminService, dashboardService, groupCapacityService)
@@ -297,7 +297,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	riskActionPolicy := service.ProvideRiskActionPolicy(connectionSignalCache, apiKeyService, userRepository)
 	connectionRiskService := service.NewConnectionRiskService(settingService, connectionRiskEventRepository, connectionSignalCache, connectionSignalEmitter, riskActionPolicy, configConfig)
 	connectionRiskHandler := admin.NewConnectionRiskHandler(connectionRiskService)
-	warpGatewayClient := service.ProvideWarpGatewayClient(configConfig)
+	warpGatewayClient, err := service.ProvideWarpGatewayClient(configConfig)
+	if err != nil {
+		return nil, err
+	}
 	warpSyncService := service.NewWarpSyncService(configConfig, warpGatewayClient, proxyRepository, proxyGroupService, accountRepository)
 	warpHandler := admin.NewWarpHandler(warpSyncService)
 	upstreamBillingProbeService := service.ProvideUpstreamBillingProbeService(accountRepository, accountTestService, settingService, leaderLockCache, db)

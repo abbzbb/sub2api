@@ -935,6 +935,9 @@ func TestGatewayService_AnthropicOAuthMimic_RewritesSystemWithBillingBlock(t *te
 
 			require.Equal(t, claudeCodeSystemPromptExpansion, arr[2].Get("text").String())
 			require.Equal(t, "ephemeral", arr[2].Get("cache_control.type").String())
+			if tt.wantOriginalSystemCacheTTL == "1h" {
+				require.Equal(t, "1h", arr[2].Get("cache_control.ttl").String(), "gateway-injected 5m must rise to match client 1h")
+			}
 
 			// 原始 system prompt 应迁移至 messages 中。
 			messages := gjson.GetBytes(upstream.lastBody, "messages")

@@ -48,23 +48,28 @@ func main() {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if cfg.Runtime == "mock" && os.Getenv("WARP_GATEWAY_ALLOW_MOCK") != "1" {
+		log.Error("mock runtime requires WARP_GATEWAY_ALLOW_MOCK=1")
+		os.Exit(1)
+	}
 	if err := cfg.Validate(); err != nil {
 		log.Error("invalid config", "err", err)
 		os.Exit(1)
 	}
+	if err := config.EnsureProfileKey(&cfg); err != nil {
+		log.Error("profile key", "err", err)
+		os.Exit(1)
+	}
 
 	var cipher store.ProfileKeyCipher
-	if secret := cfg.ProfileSecret(); secret != "" {
-		c, err := profcrypto.NewProfileCipher(secret)
-		if err != nil {
-			log.Error("profile cipher", "err", err)
-			os.Exit(1)
-		}
-		cipher = c
-		log.Info("profile encryption enabled (AES-256-GCM at rest)")
-	} else {
-		log.Warn("profile encryption disabled: set WARP_GATEWAY_PROFILE_KEY or token to encrypt private keys at rest")
+	secret := cfg.ProfileSecret()
+	c, err := profcrypto.NewProfileCipher(secret)
+	if err != nil {
+		log.Error("profile cipher", "err", err)
+		os.Exit(1)
 	}
+	cipher = c
+	log.Info("profile encryption enabled (AES-256-GCM at rest)")
 
 	st, err := store.NewWithCipher(cfg.DataDir, cfg.PortRangeStart, cfg.PortRangeEnd, cipher)
 	if err != nil {

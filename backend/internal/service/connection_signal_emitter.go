@@ -99,6 +99,7 @@ func (e *ConnectionSignalEmitter) EmitWithPrefix(ctx context.Context, userID, ap
 		IP:        normIP,
 		UAHash:    HashUserAgent(userAgent),
 		KeyPrefix: maskAPIKeyPrefix(rawKey),
+		NowUnix:   time.Now().Unix(),
 	}
 
 	timeout := e.emitTimeout()
@@ -155,8 +156,10 @@ func (e *ConnectionSignalEmitter) CheckThrottle(ctx context.Context, apiKeyID in
 	if !e.masterEnabled() {
 		return false, ""
 	}
-	// Soft-throttle marks are honored even when soft_throttle_enabled is later
-	// turned off, so active caps continue until TTL expiry or resolve/exempt.
+	s := e.cachedSettings(ctx)
+	if !s.Enabled || !s.Actions.SoftThrottleEnabled {
+		return false, ""
+	}
 	timeout := e.emitTimeout()
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

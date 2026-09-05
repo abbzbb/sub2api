@@ -44,7 +44,7 @@ export default {
     autoRecover: 'Auto recover',
     leaderLockTtl: 'Leader lock TTL (sec)',
     skipNamePrefix: 'Skip name prefixes',
-    skipNamePrefixHint: 'Comma-separated, e.g. warp-',
+    skipNamePrefixHint: 'Extra prefixes, comma-separated; warp- is a fixed prefix',
     recentTitle: 'Recently health-isolated',
     recentEmpty: 'No proxies are currently isolated by health poller',
     colName: 'Name',

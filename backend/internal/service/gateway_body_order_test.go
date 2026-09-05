@@ -222,8 +222,8 @@ func TestGatewayCacheTTLGlobalSetting_RequestInjectionScope(t *testing.T) {
 	require.False(t, svc.shouldInjectAnthropicCacheTTL1h(context.Background(), &Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth}))
 }
 
-func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesEarlier5mWhenLater1h(t *testing.T) {
-	// tools(5m) → system(5m) → messages(1h) 是 Pi long-cache + 网关默认 5m 的典型冲突。
+func TestNormalizeAnthropicCacheControlTTLOrder_DowngradesLater1hWhenEarlier5m(t *testing.T) {
+	// 客户端自己在前面写了 5m、后面写了 1h：只能把后面的 1h 降为 5m。
 	body := []byte(`{
 		"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"5m"}}],
 		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"5m"}}],
@@ -235,12 +235,44 @@ func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesEarlier5mWhenLater1h(t *
 	}`)
 
 	result := normalizeAnthropicCacheControlTTLOrder(body)
-	require.Equal(t, "1h", gjson.GetBytes(result, "tools.0.cache_control.ttl").String())
-	require.Equal(t, "1h", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
-	require.Equal(t, "1h", gjson.GetBytes(result, "messages.2.content.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "messages.2.content.0.cache_control.ttl").String())
 }
 
-func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesOmittedTTLTreatedAs5m(t *testing.T) {
+func TestNormalizeAnthropicCacheControlTTLOrder_Client5mClearsPendingInjected(t *testing.T) {
+	// 网关 5m 之后出现客户端 5m，再出现客户端 1h：只降 1h，不得回升网关断点。
+	body := []byte(`{
+		"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"5m","_gw":true}}],
+		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"5m"}}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"q","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]
+	}`)
+
+	result := normalizeAnthropicCacheControlTTLOrder(body)
+	require.Equal(t, "5m", gjson.GetBytes(result, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
+}
+
+func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesInjected5mWhenLaterClient1h(t *testing.T) {
+	// 网关注入的 5m（_gw）+ 客户端后面的 1h：升注入断点，保留客户端 1h。
+	body := []byte(`{
+		"tools":[{"name":"a","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"5m","_gw":true}}],
+		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"5m","_gw":true}}],
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"q2","cache_control":{"type":"ephemeral","ttl":"1h"}}]}
+		]
+	}`)
+
+	result := normalizeAnthropicCacheControlTTLOrder(body)
+	require.Equal(t, "1h", gjson.GetBytes(result, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
+	require.False(t, gjson.GetBytes(result, "tools.0.cache_control._gw").Exists())
+	require.False(t, gjson.GetBytes(result, "system.0.cache_control._gw").Exists())
+}
+
+func TestNormalizeAnthropicCacheControlTTLOrder_DowngradesLater1hAfterOmittedTTL(t *testing.T) {
 	// 省略 ttl 的 ephemeral 按 Anthropic 默认视为 5m，后面不能再出现 1h。
 	body := []byte(`{
 		"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],
@@ -251,9 +283,9 @@ func TestNormalizeAnthropicCacheControlTTLOrder_UpgradesOmittedTTLTreatedAs5m(t 
 	}`)
 
 	result := normalizeAnthropicCacheControlTTLOrder(body)
-	require.Equal(t, "1h", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
-	require.Equal(t, "1h", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
-	require.Equal(t, "1h", gjson.GetBytes(result, "messages.0.content.1.cache_control.ttl").String())
+	require.Equal(t, "", gjson.GetBytes(result, "system.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(result, "messages.0.content.1.cache_control.ttl").String())
 }
 
 func TestNormalizeAnthropicCacheControlTTLOrder_KeepsDecreasing1hThen5m(t *testing.T) {

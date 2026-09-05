@@ -141,7 +141,10 @@ func (s *CNProviderBalanceService) queryBalanceForAccount(ctx context.Context, a
 		return nil, infraerrors.New(http.StatusForbidden, "CN_BALANCE_URL_REJECTED", err.Error())
 	}
 	targetURL = validatedURL
-	proxyURL := s.resolveProxyURL(ctx, account)
+	proxyURL, err := s.resolveProxyURL(ctx, account)
+	if err != nil {
+		return nil, err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, cnBalanceUpstreamTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, targetURL, nil)
@@ -271,24 +274,12 @@ func validatePayGAccount(account *Account) error {
 	return nil
 }
 
-func (s *CNProviderBalanceService) resolveProxyURL(ctx context.Context, account *Account) string {
-	if account == nil {
-		return ""
+func (s *CNProviderBalanceService) resolveProxyURL(ctx context.Context, account *Account) (string, error) {
+	var repo accountProxyLookup
+	if s != nil {
+		repo = s.proxyRepo
 	}
-	// 代理池账号只有 Proxy、没有 ProxyID：先看已选中的 Proxy，再回退按 ProxyID 查库。
-	if url := account.ProxyURL(); url != "" {
-		return url
-	}
-	if account.ProxyID == nil {
-		return ""
-	}
-	if s != nil && s.proxyRepo != nil {
-		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
-			account.Proxy = proxy
-			return proxy.URL()
-		}
-	}
-	return ""
+	return resolveAccountProxyURL(ctx, repo, account)
 }
 
 // cnBalanceURL 解析账号的余额端点。

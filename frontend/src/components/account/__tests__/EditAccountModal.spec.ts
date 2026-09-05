@@ -118,6 +118,27 @@ const SelectStub = defineComponent({
   `
 })
 
+const ExclusiveProxySelectorStub = defineComponent({
+  name: 'ProxySelector',
+  props: {
+    modelValue: { type: [Number, String, null], default: null },
+    mode: { type: String, default: 'proxy' },
+    proxies: { type: Array, default: () => [] },
+    groups: { type: Array, default: () => [] }
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div>
+      <button
+        type="button"
+        :data-testid="mode === 'group' ? 'select-proxy-group' : 'select-proxy'"
+        @click="$emit('update:modelValue', mode === 'group' ? 7 : 3)"
+      >select</button>
+      <span :data-testid="mode === 'group' ? 'proxy-group-value' : 'proxy-value'">{{ modelValue ?? '' }}</span>
+    </div>
+  `
+})
+
 const GroupSelectorStub = defineComponent({
   name: 'GroupSelector',
   props: {
@@ -1397,6 +1418,55 @@ describe('EditAccountModal', () => {
   })
 
 
+  it('keeps proxy group when account has both proxy_id and proxy_group_id', async () => {
+    const account = buildAccount()
+    account.proxy_id = 3
+    account.proxy_group_id = 5
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mount(EditAccountModal, {
+      props: {
+        show: true,
+        account,
+        proxies: [{ id: 3, name: 'p3', protocol: 'http', host: 'p.example', port: 8080, status: 'active' }],
+        proxyGroups: [
+          {
+            id: 5,
+            name: 'grok-pool',
+            strategy: 'sticky',
+            sticky_by_account: true,
+            status: 'active',
+            created_at: '',
+            updated_at: ''
+          }
+        ],
+        groups: []
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          Icon: true,
+          ProxyAdBanner: true,
+          ProxySelector: ExclusiveProxySelectorStub,
+          GroupSelector: GroupSelectorStub,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('5')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.proxy_group_id).toBe(5)
+    expect(payload.proxy_id).toBe(0)
+    wrapper.unmount()
+  })
+
   it('hydrates proxy_group_id from account props', async () => {
     const account = buildAccount()
     account.proxy_group_id = 5
@@ -1509,6 +1579,106 @@ describe('EditAccountModal', () => {
     const payload = updateAccountMock.mock.calls[0]?.[1]
     // 后端约定：null 在提交前被规范为 0 表示清除
     expect(payload.proxy_group_id).toBe(0)
+  })
+
+  it('clears proxy_group_id when a single proxy is selected', async () => {
+    const account = buildAccount()
+    account.proxy_group_id = 5
+    account.proxy_id = null
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mount(EditAccountModal, {
+      props: {
+        show: true,
+        account,
+        proxies: [{ id: 3, name: 'p3', protocol: 'http', host: 'p.example', port: 8080, status: 'active' }],
+        proxyGroups: [
+          {
+            id: 5,
+            name: 'grok-pool',
+            strategy: 'sticky',
+            sticky_by_account: true,
+            status: 'active',
+            created_at: '',
+            updated_at: ''
+          }
+        ],
+        groups: []
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          Icon: true,
+          ProxyAdBanner: true,
+          ProxySelector: ExclusiveProxySelectorStub,
+          GroupSelector: GroupSelectorStub,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('5')
+    await wrapper.get('[data-testid="select-proxy"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('3')
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.proxy_id).toBe(3)
+    expect(payload.proxy_group_id).toBe(0)
+  })
+
+  it('clears proxy_id when a proxy group is selected', async () => {
+    const account = buildAccount()
+    account.proxy_id = 3
+    account.proxy_group_id = null
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mount(EditAccountModal, {
+      props: {
+        show: true,
+        account,
+        proxies: [{ id: 3, name: 'p3', protocol: 'http', host: 'p.example', port: 8080, status: 'active' }],
+        proxyGroups: [
+          {
+            id: 7,
+            name: 'pool-b',
+            strategy: 'round_robin',
+            sticky_by_account: false,
+            status: 'active',
+            created_at: '',
+            updated_at: ''
+          }
+        ],
+        groups: []
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          Icon: true,
+          ProxyAdBanner: true,
+          ProxySelector: ExclusiveProxySelectorStub,
+          GroupSelector: GroupSelectorStub,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('3')
+    await wrapper.get('[data-testid="select-proxy-group"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('7')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.proxy_id).toBe(0)
+    expect(payload.proxy_group_id).toBe(7)
   })
 
 })

@@ -951,7 +951,7 @@ export default {
       noProxy: 'No Proxy',
       proxyGroup: 'Proxy Pool',
       noProxyGroup: 'No proxy pool',
-      proxyGroupHint: 'Used when no single proxy is set; single proxy wins. Prefer sticky strategy for Grok.',
+      proxyGroupHint: 'Choose either a single proxy or a proxy group, not both. Prefer sticky strategy for Grok.',
       concurrency: 'Concurrency',
       loadFactor: 'Load Factor',
       loadFactorHint: 'Higher load factor increases scheduling frequency',

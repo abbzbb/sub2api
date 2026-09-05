@@ -20,6 +20,7 @@ type memGenStore struct {
 	bumpErr   error // when set, BumpGeneration returns this error (retry/force-miss path)
 	getCalls  int
 	bumpCalls int
+	onBump    func()
 }
 
 func newMemGenStore() *memGenStore {
@@ -30,6 +31,9 @@ func (s *memGenStore) BumpGeneration(_ context.Context, groupID int64) (int64, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bumpCalls++
+	if s.onBump != nil {
+		s.onBump()
+	}
 	if s.bumpErr != nil {
 		return 0, s.bumpErr
 	}
@@ -385,7 +389,11 @@ func TestAdminService_UpdateProxy_StatusChangeClearsHealthAudit(t *testing.T) {
 	}}
 	svc := &adminServiceImpl{proxyRepo: repo, proxyHealth: health}
 
-	_, err := svc.UpdateProxy(context.Background(), 5, &UpdateProxyInput{Status: StatusInactive})
+	_, err := svc.UpdateProxy(context.Background(), 5, &UpdateProxyInput{Status: StatusActive, Name: "still-active"})
+	require.NoError(t, err)
+	require.Empty(t, repo.healthAuditCalls, "same-status update must not clear health isolation")
+
+	_, err = svc.UpdateProxy(context.Background(), 5, &UpdateProxyInput{Status: StatusInactive})
 	require.NoError(t, err)
 	require.Len(t, repo.healthAuditCalls, 1)
 	require.Equal(t, int64(5), repo.healthAuditCalls[0].proxyID)
@@ -491,12 +499,14 @@ type rebuildingStubProxyGroupRepo struct {
 	stubProxyGroupRepo
 	mu       sync.Mutex
 	rebuilds []int64
+	order    []string
 }
 
 func (s *rebuildingStubProxyGroupRepo) EnqueueBoundAccountsRebuild(_ context.Context, groupID int64) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rebuilds = append(s.rebuilds, groupID)
+	s.order = append(s.order, "enqueue")
 	return 2, nil
 }
 
@@ -505,7 +515,13 @@ func (s *rebuildingStubProxyGroupRepo) EnqueueBoundAccountsRebuild(_ context.Con
 func TestDefaultProxyGroupResolver_InvalidateGroupEnqueuesBoundAccountsRebuild(t *testing.T) {
 	t.Parallel()
 	repo := &rebuildingStubProxyGroupRepo{}
-	r := NewDefaultProxyGroupResolverWithVersions(repo, &stubProxyRepoForGroup{}, newMemGenStore())
+	versions := newMemGenStore()
+	versions.onBump = func() {
+		repo.mu.Lock()
+		repo.order = append(repo.order, "bump")
+		repo.mu.Unlock()
+	}
+	r := NewDefaultProxyGroupResolverWithVersions(repo, &stubProxyRepoForGroup{}, versions)
 
 	r.InvalidateGroup(9)
 	r.InvalidateGroup(0) // invalid id: no enqueue
@@ -513,6 +529,7 @@ func TestDefaultProxyGroupResolver_InvalidateGroupEnqueuesBoundAccountsRebuild(t
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 	require.Equal(t, []int64{9}, repo.rebuilds)
+	require.Equal(t, []string{"bump", "enqueue"}, repo.order)
 }
 
 // 仓库未实现扩展接口时 InvalidateGroup 仍必须安全（不 panic、不阻塞）。

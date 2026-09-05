@@ -30,10 +30,15 @@ type singBoxHandle struct {
 	addr    string
 	dir     string
 	logFile *os.File
-	waitCh  chan error
+	done    chan error
+	waitErr error
 }
 
 func (h *singBoxHandle) LocalAddr() string { return h.addr }
+
+func (h *singBoxHandle) Done() <-chan error { return h.done }
+
+func (h *singBoxHandle) Err() error { return h.waitErr }
 
 func (h *singBoxHandle) Stop(ctx context.Context) error {
 	if h.cmd == nil || h.cmd.Process == nil {
@@ -48,11 +53,11 @@ func (h *singBoxHandle) Stop(ctx context.Context) error {
 			_ = h.logFile.Close()
 		}
 		return err
-	case err := <-h.waitCh:
+	case <-h.done:
 		if h.logFile != nil {
 			_ = h.logFile.Close()
 		}
-		return err
+		return h.waitErr
 	case <-time.After(5 * time.Second):
 		_ = h.cmd.Process.Kill()
 		if h.logFile != nil {
@@ -98,29 +103,31 @@ func (m *SingBoxManager) Start(ctx context.Context, inst *store.Instance) (Handl
 		_ = logFile.Close()
 		return nil, fmt.Errorf("start sing-box: %w", err)
 	}
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
+	h := &singBoxHandle{cmd: cmd, addr: fmt.Sprintf("%s:%d", inst.ListenHost, inst.ListenPort), dir: instDir, logFile: logFile, done: make(chan error)}
+	go func() {
+		h.waitErr = cmd.Wait()
+		close(h.done)
+	}()
 
-	addr := fmt.Sprintf("%s:%d", inst.ListenHost, inst.ListenPort)
 	// WARP handshake can take a moment; wait for SOCKS listen.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		c, err := netDialTimeout(addr, 200*time.Millisecond)
+		c, err := netDialTimeout(h.addr, 200*time.Millisecond)
 		if err == nil {
 			_ = c.Close()
 			break
 		}
 		// Fail fast if process already exited
 		select {
-		case werr := <-waitCh:
+		case <-h.done:
 			_ = logFile.Close()
-			return nil, fmt.Errorf("sing-box exited early: %v (see %s)", werr, logPath)
+			return nil, fmt.Errorf("sing-box exited early: %v (see %s)", h.waitErr, logPath)
 		default:
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return &singBoxHandle{cmd: cmd, addr: addr, dir: instDir, logFile: logFile, waitCh: waitCh}, nil
+	return h, nil
 }
 
 func netDialTimeout(addr string, d time.Duration) (interface{ Close() error }, error) {

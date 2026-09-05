@@ -116,6 +116,7 @@ type ConnectionRiskActionSettings struct {
 	SoftThrottleEnabled       bool    `json:"soft_throttle_enabled"`
 	ThrottleAbsRPM            int     `json:"throttle_abs_rpm"`
 	ThrottleConcurrencyFactor float64 `json:"throttle_concurrency_factor"`
+	ThrottleMinSeverity       string  `json:"throttle_min_severity,omitempty"`
 	AutoDisableEnabled        bool    `json:"auto_disable_enabled"`
 }
 
@@ -235,6 +236,12 @@ func normalizeConnectionRiskSettings(s *ConnectionRiskSettings) {
 		s.MinNotifySeverity = strings.ToLower(strings.TrimSpace(s.MinNotifySeverity))
 	default:
 		s.MinNotifySeverity = connectionRiskSeverityHigh
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Actions.ThrottleMinSeverity)) {
+	case connectionRiskSeverityLow, connectionRiskSeverityMedium, connectionRiskSeverityHigh, connectionRiskSeverityCritical:
+		s.Actions.ThrottleMinSeverity = strings.ToLower(strings.TrimSpace(s.Actions.ThrottleMinSeverity))
+	default:
+		s.Actions.ThrottleMinSeverity = connectionRiskSeverityHigh
 	}
 	if s.RetentionDays <= 0 {
 		s.RetentionDays = 120

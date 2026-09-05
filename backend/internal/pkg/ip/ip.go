@@ -202,6 +202,32 @@ func NormalizeClientIPForSecurity(raw string) string {
 	return addr.String()
 }
 
+// WhitelistPatternFromSecuritySample converts a connection-risk sample IP into a
+// whitelist pattern. IPv6 security samples are /64 bases without a suffix;
+// CompileIPRules would treat those as a single address and never match the
+// real client, so we emit a /64 CIDR. IPv4 is unchanged.
+func WhitelistPatternFromSecuritySample(sample string) string {
+	sample = strings.TrimSpace(sample)
+	if sample == "" {
+		return ""
+	}
+	if strings.Contains(sample, "/") {
+		if _, _, err := net.ParseCIDR(sample); err == nil {
+			return sample
+		}
+		return ""
+	}
+	addr, err := netip.ParseAddr(sample)
+	if err != nil {
+		return ""
+	}
+	addr = addr.Unmap()
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64).Masked().String()
+	}
+	return addr.String()
+}
+
 // normalizeValidIP 规范化并验证代理头中的候选值，避免把 unknown、主机名等非法值传给安全服务。
 func normalizeValidIP(value string) string {
 	normalized := normalizeIP(value)

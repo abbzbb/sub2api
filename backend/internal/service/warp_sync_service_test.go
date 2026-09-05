@@ -160,10 +160,17 @@ type memGroupRepo struct {
 	nextID  int64
 	groups  map[int64]*ProxyGroup
 	members map[int64][]int64
+	proxies *memProxyRepo
 }
 
 func newMemGroupRepo() *memGroupRepo {
 	return &memGroupRepo{nextID: 1, groups: map[int64]*ProxyGroup{}, members: map[int64][]int64{}}
+}
+
+func newMemGroupRepoFor(proxies *memProxyRepo) *memGroupRepo {
+	r := newMemGroupRepo()
+	r.proxies = proxies
+	return r
 }
 func (m *memGroupRepo) Create(ctx context.Context, group *ProxyGroup) error {
 	group.ID = m.nextID
@@ -210,6 +217,19 @@ func (m *memGroupRepo) CountAccountsByGroupID(ctx context.Context, groupID int64
 }
 func (m *memGroupRepo) SetGroupMembers(ctx context.Context, groupID int64, proxyIDs []int64) error {
 	m.members[groupID] = append([]int64(nil), proxyIDs...)
+	if m.proxies != nil {
+		for _, p := range m.proxies.proxies {
+			if p.GroupID != nil && *p.GroupID == groupID {
+				p.GroupID = nil
+			}
+		}
+		gid := groupID
+		for _, id := range proxyIDs {
+			if p := m.proxies.proxies[id]; p != nil {
+				p.GroupID = &gid
+			}
+		}
+	}
 	return nil
 }
 
@@ -270,9 +290,9 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:              true,
@@ -293,9 +313,12 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 	if res.Group == nil || res.Group.Name != "warp-pool" {
 		t.Fatalf("group=%+v", res.Group)
 	}
-	// only healthy member should be in group when auto-detach
-	if len(res.MemberIDs) != 1 {
+	// Unhealthy members stay in the group so later orphan prune still sees them.
+	if len(res.MemberIDs) != 2 {
 		t.Fatalf("members=%v detached=%v", res.MemberIDs, res.DetachedIDs)
+	}
+	if len(res.DetachedIDs) != 1 {
+		t.Fatalf("detached=%v want 1", res.DetachedIDs)
 	}
 	if len(res.Alerts) == 0 {
 		t.Fatal("expected duplicate ip alert")
@@ -308,6 +331,70 @@ func TestWarpSyncService_SyncFromGateway(t *testing.T) {
 	}
 	if len(res2.CreatedProxies) != 0 {
 		t.Fatalf("expected 0 creates, got %d", len(res2.CreatedProxies))
+	}
+}
+
+func TestWarpSyncService_DetachedUnhealthyThenDeletedInstanceIsPruned(t *testing.T) {
+	var phase atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/pools/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		if phase.Load() == 0 {
+			_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+				Instances: []WarpInstance{
+					{ID: "i1", Name: "01", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running", ExitIP: "1.2.3.4"},
+					{ID: "i2", Name: "02", ListenHost: "127.0.0.1", ListenPort: 41002, Status: "unhealthy", ExitIP: "5.6.7.8"},
+				},
+				UnhealthyIDs: []string{"i2"},
+				HealthyCount: 1,
+				TotalCount:   2,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+			Instances: []WarpInstance{
+				{ID: "i1", Name: "01", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running", ExitIP: "1.2.3.4"},
+			},
+			HealthyCount: 1,
+			TotalCount:   1,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	proxyRepo := newMemProxyRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
+	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	cfg := &config.Config{Warp: config.WarpConfig{
+		Enabled:             true,
+		AutoDetachUnhealthy: true,
+		DefaultGroupName:    "warp-pool",
+		Gateway:             config.WarpGatewayConfig{BaseURL: srv.URL},
+	}}
+	svc := NewWarpSyncService(cfg, client, proxyRepo, groupSvc, nil)
+
+	res, err := svc.SyncFromGateway(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.CreatedProxies) != 2 || len(res.MemberIDs) != 2 || len(res.DetachedIDs) != 1 {
+		t.Fatalf("first sync created=%d members=%v detached=%v", len(res.CreatedProxies), res.MemberIDs, res.DetachedIDs)
+	}
+	detachedID := res.DetachedIDs[0]
+	if _, ok := proxyRepo.proxies[detachedID]; !ok {
+		t.Fatal("detached proxy should remain until gateway deletes the instance")
+	}
+
+	phase.Store(1)
+	res2, err := svc.SyncFromGateway(context.Background(), "warp-pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.DeletedProxies) != 1 || res2.DeletedProxies[0].ID != detachedID {
+		t.Fatalf("deleted=%+v want id=%d", res2.DeletedProxies, detachedID)
+	}
+	if _, ok := proxyRepo.proxies[detachedID]; ok {
+		t.Fatal("detached-then-deleted instance should be pruned")
 	}
 }
 
@@ -329,9 +416,9 @@ func TestWarpSyncFromGateway_DuplicateNamesDifferentPortsCreateBoth(t *testing.T
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:             true,
@@ -394,7 +481,7 @@ func TestWarpSync_OrphanDeleteUnbindsAccounts(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	// Pre-seed an orphan warp proxy still referenced by accounts.
 	orphan := &Proxy{Name: "warp-old", Protocol: "socks5", Host: "127.0.0.1", Port: 41999, Status: StatusActive}
@@ -403,8 +490,17 @@ func TestWarpSync_OrphanDeleteUnbindsAccounts(t *testing.T) {
 	}
 	proxyRepo.accountCounts[orphan.ID] = 3
 
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
+		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: []int64{orphan.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := createdGroup.ID
+	orphan.GroupID = &gid
+	_ = proxyRepo.Update(context.Background(), orphan)
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled:          true,
 		DefaultGroupName: "warp-pool",
@@ -437,9 +533,55 @@ func TestWarpSync_OrphanDeleteUnbindsAccounts(t *testing.T) {
 	}
 }
 
+func TestWarpSync_DoesNotDeleteOperatorWarpHome(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/pools/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(WarpPoolSnapshot{
+			Instances: []WarpInstance{
+				{ID: "i-new", Name: "new", ListenHost: "127.0.0.1", ListenPort: 42001, Status: "running"},
+			},
+			HealthyCount: 1,
+			TotalCount:   1,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	proxyRepo := newMemProxyRepo()
+	home := &Proxy{Name: "warp-home", Protocol: "socks5", Host: "10.0.0.8", Port: 1080, Status: StatusActive}
+	if err := proxyRepo.Create(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	groupRepo := newMemGroupRepoFor(proxyRepo)
+	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
+	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
+		Name: "warp-pool", Strategy: ProxyGroupStrategySticky,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Warp: config.WarpConfig{
+		Enabled: true, DefaultGroupName: "warp-pool",
+		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL},
+	}}
+	svc := NewWarpSyncService(cfg, client, proxyRepo, groupSvc, nil)
+	res, err := svc.SyncFromGateway(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proxyRepo.proxies[home.ID]; !ok {
+		t.Fatal("operator warp-home must not be pruned")
+	}
+	for _, d := range res.DeletedProxies {
+		if d.ID == home.ID {
+			t.Fatal("warp-home deleted")
+		}
+	}
+}
+
 func TestWarpSync_ProcessSingleflightBusy(t *testing.T) {
 	cfg := &config.Config{Warp: config.WarpConfig{Enabled: true, Gateway: config.WarpGatewayConfig{BaseURL: "http://127.0.0.1:1"}}}
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
 	svc := NewWarpSyncService(cfg, client, newMemProxyRepo(), nil, nil)
 	svc.syncMu.Lock()
 	svc.syncActive = true
@@ -468,7 +610,7 @@ func TestWarpSync_LeaderLockContended(t *testing.T) {
 		t.Fatalf("seed lock: ok=%v err=%v", ok, err)
 	}
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	svc := NewWarpSyncService(&config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
 		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL, ReconcileInterval: 15},
@@ -487,7 +629,7 @@ func TestWarpSync_LeaderLockContended(t *testing.T) {
 // Redis acquire error → 503 ServiceUnavailable, not 409 Busy.
 func TestWarpSync_LeaderLockUnavailable(t *testing.T) {
 	lock := &fakeLeaderLockCache{acquireErr: context.DeadlineExceeded}
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
 	svc := NewWarpSyncService(&config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
 		Gateway: config.WarpGatewayConfig{BaseURL: "http://127.0.0.1:1"},
@@ -521,13 +663,13 @@ func TestWarpSync_EmptyGatewaySnapshotRefusesPrune(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	existing := &Proxy{Name: "warp-keep-me", Protocol: "socks5", Host: "127.0.0.1", Port: 43001, Status: StatusActive}
 	if err := proxyRepo.Create(context.Background(), existing); err != nil {
 		t.Fatal(err)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
@@ -580,7 +722,7 @@ func TestWarpSync_SyncLockTTLMin90s(t *testing.T) {
 
 func TestWarpSync_CreatePoolCountCap(t *testing.T) {
 	cfg := &config.Config{Warp: config.WarpConfig{Enabled: true, Gateway: config.WarpGatewayConfig{BaseURL: "http://127.0.0.1:1"}}}
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", Timeout: time.Millisecond})
 	svc := NewWarpSyncService(cfg, client, newMemProxyRepo(), nil, nil)
 	_, err := svc.CreatePoolAndSyncEx(context.Background(), "warp", 51, "warp-pool", false)
 	if err == nil {
@@ -617,7 +759,7 @@ func TestWarpSync_CreatePoolBusyBeforeMutate(t *testing.T) {
 		t.Fatalf("seed lock: ok=%v err=%v", ok, err)
 	}
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	svc := NewWarpSyncService(&config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
 		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL},
@@ -673,7 +815,7 @@ func TestWarpSync_DrasticDropRefusesOrphanPrune(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	// Seed 6 local warp-* proxies (isDrasticWarpDrop: 1*2 < 6, drop 5 >= 2).
 	seedIDs := make([]int64, 0, 6)
@@ -690,7 +832,7 @@ func TestWarpSync_DrasticDropRefusesOrphanPrune(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	// Pre-seed managed group with all 6 members so we can assert SetMembers is not shrunk.
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
@@ -758,7 +900,7 @@ func TestWarpSync_DrasticDropSmallPoolRefuses(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	seedIDs := make([]int64, 0, 3)
 	for i := 1; i <= 3; i++ {
@@ -774,7 +916,7 @@ func TestWarpSync_DrasticDropSmallPoolRefuses(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -830,7 +972,7 @@ func TestWarpSync_DrasticDropConfirmedAllowsPrune(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	seedIDs := make([]int64, 0, 6)
 	for i := 1; i <= 6; i++ {
@@ -846,7 +988,7 @@ func TestWarpSync_DrasticDropConfirmedAllowsPrune(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -935,7 +1077,7 @@ func TestWarpSync_DrasticDropConfirmMismatchRefuses(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	seedIDs := make([]int64, 0, 6)
 	for i := 1; i <= 6; i++ {
@@ -951,7 +1093,7 @@ func TestWarpSync_DrasticDropConfirmMismatchRefuses(t *testing.T) {
 		}
 		seedIDs = append(seedIDs, p.ID)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	createdGroup, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky, ProxyIDs: seedIDs,
@@ -1018,7 +1160,7 @@ func TestWarpSync_DrasticDropInconsistentTotalCountRefuses(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	for i := 1; i <= 6; i++ {
 		p := &Proxy{
@@ -1029,7 +1171,7 @@ func TestWarpSync_DrasticDropInconsistentTotalCountRefuses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool", AutoDetachUnhealthy: false,
@@ -1078,13 +1220,13 @@ func TestWarpSync_InconsistentEmptyTotalCountRefusesPrune(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
 	existing := &Proxy{Name: "warp-keep-inconsistent", Protocol: "socks5", Host: "127.0.0.1", Port: 46001, Status: StatusActive}
 	if err := proxyRepo.Create(context.Background(), existing); err != nil {
 		t.Fatal(err)
 	}
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	cfg := &config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
@@ -1124,9 +1266,9 @@ func TestWarpSync_BindAccountsToGroup_SyncFailClosed(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	// Pre-create group so ensureGroup succeeds before sync fails.
 	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
@@ -1172,9 +1314,9 @@ func TestWarpSync_BindAccountsToGroup_SyncBusyFailClosed(t *testing.T) {
 		t.Fatalf("seed lock: ok=%v err=%v", ok, err)
 	}
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	proxyRepo := newMemProxyRepo()
-	groupRepo := newMemGroupRepo()
+	groupRepo := newMemGroupRepoFor(proxyRepo)
 	groupSvc := NewProxyGroupService(groupRepo, proxyRepo, noopResolver{})
 	if _, err := groupSvc.Create(context.Background(), CreateProxyGroupInput{
 		Name: "warp-pool", Strategy: ProxyGroupStrategySticky,
@@ -1215,7 +1357,7 @@ func TestWarpSync_CreatePoolAndSyncEx_SyncFailWrapped(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	svc := NewWarpSyncService(&config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
 		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL},
@@ -1255,7 +1397,7 @@ func TestWarpSync_HealthAllAndSyncBusyBeforeHealth(t *testing.T) {
 		t.Fatalf("seed lock: ok=%v err=%v", ok, err)
 	}
 
-	client := NewWarpGatewayClient(WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
+	client := mustWarpClient(t, WarpGatewayConfig{Enabled: true, BaseURL: srv.URL, Timeout: time.Second})
 	svc := NewWarpSyncService(&config.Config{Warp: config.WarpConfig{
 		Enabled: true, DefaultGroupName: "warp-pool",
 		Gateway: config.WarpGatewayConfig{BaseURL: srv.URL},

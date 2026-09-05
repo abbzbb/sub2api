@@ -552,6 +552,31 @@ func TestBuildSchedulerMetadataAccount_KeepsModelRateLimits(t *testing.T) {
 	require.Nil(t, got.Extra["unused_large_field"])
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsProxyGroupExhaustion(t *testing.T) {
+	groupID := int64(77)
+	account := service.Account{
+		ID:                  901,
+		Platform:            service.PlatformOpenAI,
+		Type:                service.AccountTypeAPIKey,
+		Status:              service.StatusActive,
+		Schedulable:         true,
+		ProxyGroupID:        &groupID,
+		ProxyGroupExhausted: true,
+	}
+	require.False(t, account.IsSchedulable())
+
+	meta := buildSchedulerMetadataAccount(account)
+	payload, err := json.Marshal(meta)
+	require.NoError(t, err)
+	var restored service.Account
+	require.NoError(t, json.Unmarshal(payload, &restored))
+
+	require.NotNil(t, restored.ProxyGroupID)
+	require.Equal(t, groupID, *restored.ProxyGroupID)
+	require.True(t, restored.ProxyGroupExhausted)
+	require.False(t, restored.IsSchedulable(), "cached metadata must keep exhausted accounts unschedulable")
+}
+
 func TestBuildSchedulerMetadataAccount_KeepsSparkShadowRoutingIdentity(t *testing.T) {
 	parentID := int64(100)
 	account := service.Account{

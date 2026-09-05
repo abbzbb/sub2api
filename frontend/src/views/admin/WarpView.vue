@@ -40,6 +40,9 @@
               {{ t('admin.warp.created', { n: lastResult.created_proxies?.length || 0 }) }},
               {{ t('admin.warp.updated', { n: lastResult.updated_proxies?.length || 0 }) }},
               {{ t('admin.warp.members', { n: lastResult.member_ids?.length || 0 }) }}
+              <template v-if="lastResult.detached_ids?.length">,
+                {{ t('admin.warp.unhealthyIsolated', { n: lastResult.detached_ids.length }) }}
+              </template>
             </span>
             <span v-if="lastResult.group">
               {{ t('admin.warp.group') }}: {{ lastResult.group.name }} (#{{ lastResult.group.id }})

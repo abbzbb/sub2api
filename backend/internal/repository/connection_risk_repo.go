@@ -27,12 +27,12 @@ const connectionRiskSelectColumns = `
  first_seen_at, last_seen_at, window_start, window_end`
 
 // UpsertOpen inserts a new open event or refreshes last_seen on conflict of open dedupe_key.
-func (r *connectionRiskRepository) UpsertOpen(ctx context.Context, event *service.ConnectionRiskEvent) (*service.ConnectionRiskEvent, error) {
+func (r *connectionRiskRepository) UpsertOpen(ctx context.Context, event *service.ConnectionRiskEvent) (*service.ConnectionRiskEvent, bool, error) {
 	if r == nil || r.db == nil {
-		return nil, fmt.Errorf("nil connection risk repository")
+		return nil, false, fmt.Errorf("nil connection risk repository")
 	}
 	if event == nil {
-		return nil, fmt.Errorf("nil event")
+		return nil, false, fmt.Errorf("nil event")
 	}
 	now := time.Now().UTC()
 	if event.FirstSeenAt.IsZero() {
@@ -104,10 +104,10 @@ RETURNING` + connectionRiskSelectColumns
 		)
 		existing, err := scanConnectionRiskEvent(row.Scan)
 		if err == nil {
-			return existing, nil
+			return existing, false, nil
 		}
 		if err != sql.ErrNoRows {
-			return nil, err
+			return nil, false, err
 		}
 		// No open row for this dedupe_key — insert below.
 	}
@@ -144,7 +144,11 @@ RETURNING` + connectionRiskSelectColumns
 		nullTimePtr(event.WindowEnd),
 		now,
 	)
-	return scanConnectionRiskEvent(row.Scan)
+	saved, err := scanConnectionRiskEvent(row.Scan)
+	if err != nil {
+		return nil, false, err
+	}
+	return saved, true, nil
 }
 
 func (r *connectionRiskRepository) GetByID(ctx context.Context, id int64) (*service.ConnectionRiskEvent, error) {
@@ -229,11 +233,18 @@ func (r *connectionRiskRepository) UpdateStatus(ctx context.Context, id int64, s
 	} else {
 		resolvedAt = nil
 	}
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 UPDATE connection_risk_events
 SET status = $1, resolver_id = $2, resolved_at = $3, updated_at = $4
 WHERE id = $5`, status, nullInt64Ptr(resolverID), resolvedAt, now, id)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return service.ErrConnectionRiskEventNotFound
+	}
+	return nil
 }
 
 func (r *connectionRiskRepository) UpdateActionTaken(ctx context.Context, id int64, action string) error {
@@ -254,8 +265,15 @@ func (r *connectionRiskRepository) Delete(ctx context.Context, id int64) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil connection risk repository")
 	}
-	_, err := r.db.ExecContext(ctx, `DELETE FROM connection_risk_events WHERE id = $1`, id)
-	return err
+	res, err := r.db.ExecContext(ctx, `DELETE FROM connection_risk_events WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return service.ErrConnectionRiskEventNotFound
+	}
+	return nil
 }
 
 func (r *connectionRiskRepository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {

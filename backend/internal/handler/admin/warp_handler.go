@@ -3,6 +3,7 @@ package admin
 import (
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -16,6 +17,10 @@ type WarpHandler struct {
 
 func NewWarpHandler(svc *service.WarpSyncService) *WarpHandler {
 	return &WarpHandler{svc: svc}
+}
+
+func writeWarpSyncResult(c *gin.Context, result *service.WarpSyncResult) {
+	response.Success(c, dto.WarpSyncResultFromService(result))
 }
 
 // Status GET /api/v1/admin/warp/status
@@ -68,7 +73,7 @@ func (h *WarpHandler) Sync(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // CreatePool POST /api/v1/admin/warp/pools
@@ -100,7 +105,7 @@ func (h *WarpHandler) CreatePool(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // RegisterPool POST /api/v1/admin/warp/register-pool
@@ -132,7 +137,7 @@ func (h *WarpHandler) RegisterPool(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // HealthSync POST /api/v1/admin/warp/health-sync
@@ -150,7 +155,7 @@ func (h *WarpHandler) HealthSync(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // Rotate POST /api/v1/admin/warp/instances/:id/rotate
@@ -173,7 +178,7 @@ func (h *WarpHandler) Rotate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // DeleteInstance DELETE /api/v1/admin/warp/instances/:id
@@ -210,7 +215,7 @@ func (h *WarpHandler) DeleteInstance(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, result)
+	writeWarpSyncResult(c, result)
 }
 
 // BindAccounts POST /api/v1/admin/warp/bind-accounts

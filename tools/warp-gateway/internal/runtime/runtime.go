@@ -12,6 +12,11 @@ type Handle interface {
 	Stop(ctx context.Context) error
 	// LocalAddr returns host:port of SOCKS listener.
 	LocalAddr() string
+	// Done is closed/signaled when the runtime process exits. Nil if unsupported.
+	Done() <-chan error
+	// Err returns the wait error after Done is closed. Nil if unsupported,
+	// still running, or the process exited cleanly.
+	Err() error
 }
 
 // Manager starts/stops instance runtimes.

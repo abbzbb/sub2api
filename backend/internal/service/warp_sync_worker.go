@@ -165,7 +165,7 @@ func (w *WarpSyncWorker) tick() {
 			"created", len(res.CreatedProxies),
 			"updated", len(res.UpdatedProxies),
 			"members", len(res.MemberIDs),
-			"detached", len(res.DetachedIDs),
+			"unhealthy", len(res.DetachedIDs),
 		)
 	}
 }

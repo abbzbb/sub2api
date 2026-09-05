@@ -5,6 +5,17 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+)
+
+var (
+	ErrConnectionRiskEventNotFound              = infraerrors.NotFound("CONNECTION_RISK_EVENT_NOT_FOUND", "connection risk event not found")
+	ErrConnectionRiskWhitelistRestrictsAllowAll = infraerrors.BadRequest(
+		"CONNECTION_RISK_WHITELIST_RESTRICTS_ALLOW_ALL",
+		"applying sample IPs would replace an empty (allow-all) whitelist; confirm to continue",
+	)
 )
 
 // RiskActionPolicy applies notify / soft-throttle / auto-disable for risk events.
@@ -50,8 +61,9 @@ func (p *RiskActionPolicy) HandleNewEvent(ctx context.Context, event *Connection
 	}
 	// Phase A: no automatic mutation when action flags are off, or when the
 	// configured phase is observe (UI "enforce" is normalized to auto_disable).
-	if settings.Actions.SoftThrottleEnabled && p.signals != nil && event.APIKeyID != nil &&
-		(phase == connectionRiskPhaseSoftThrottle || phase == connectionRiskPhaseAutoDisable) {
+	if settings.Enabled && settings.Actions.SoftThrottleEnabled && p.signals != nil && event.APIKeyID != nil &&
+		(phase == connectionRiskPhaseSoftThrottle || phase == connectionRiskPhaseAutoDisable) &&
+		severityAtLeast(event.Severity, throttleMinSeverity(settings)) {
 		capRPM := settings.Actions.ThrottleAbsRPM
 		if capRPM <= 0 {
 			capRPM = 30
@@ -97,6 +109,16 @@ func (p *RiskActionPolicy) autoDisable(ctx context.Context, event *ConnectionRis
 	}
 }
 
+func throttleMinSeverity(settings ConnectionRiskSettings) string {
+	need := strings.ToLower(strings.TrimSpace(settings.Actions.ThrottleMinSeverity))
+	switch need {
+	case connectionRiskSeverityLow, connectionRiskSeverityMedium, connectionRiskSeverityHigh, connectionRiskSeverityCritical:
+		return need
+	default:
+		return connectionRiskSeverityHigh
+	}
+}
+
 func severityAtLeast(have, need string) bool {
 	rank := map[string]int{
 		connectionRiskSeverityLow:      1,
@@ -108,7 +130,9 @@ func severityAtLeast(have, need string) bool {
 }
 
 // ApplyWhitelistIPs merges sample IPs into the key whitelist via AdminUpdate.
-func (p *RiskActionPolicy) ApplyWhitelistIPs(ctx context.Context, keyID int64, ips []string) (*APIKey, error) {
+// confirmRestrictAllowAll must be true when the key currently has an empty
+// (allow-all) whitelist, otherwise the merge is refused.
+func (p *RiskActionPolicy) ApplyWhitelistIPs(ctx context.Context, keyID int64, ips []string, confirmRestrictAllowAll bool) (*APIKey, error) {
 	if p == nil || p.apiKeys == nil {
 		return nil, ErrInsufficientPerms
 	}
@@ -116,20 +140,32 @@ func (p *RiskActionPolicy) ApplyWhitelistIPs(ctx context.Context, keyID int64, i
 	if err != nil {
 		return nil, err
 	}
-	merged := append([]string{}, key.IPWhitelist...)
-	seen := map[string]struct{}{}
-	for _, ip := range merged {
-		seen[ip] = struct{}{}
-	}
-	for _, ip := range ips {
-		if ip == "" {
-			continue
-		}
-		if _, ok := seen[ip]; ok {
-			continue
-		}
-		merged = append(merged, ip)
-		seen[ip] = struct{}{}
+	merged, err := mergeWhitelistSamples(key.IPWhitelist, ips, confirmRestrictAllowAll)
+	if err != nil {
+		return nil, err
 	}
 	return p.apiKeys.AdminUpdate(ctx, keyID, AdminUpdateAPIKeyRequest{IPWhitelist: &merged})
+}
+
+func mergeWhitelistSamples(existing, samples []string, confirmRestrictAllowAll bool) ([]string, error) {
+	if len(existing) == 0 && !confirmRestrictAllowAll {
+		return nil, ErrConnectionRiskWhitelistRestrictsAllowAll
+	}
+	merged := append([]string{}, existing...)
+	seen := map[string]struct{}{}
+	for _, item := range merged {
+		seen[item] = struct{}{}
+	}
+	for _, raw := range samples {
+		pattern := ip.WhitelistPatternFromSecuritySample(raw)
+		if pattern == "" {
+			continue
+		}
+		if _, ok := seen[pattern]; ok {
+			continue
+		}
+		merged = append(merged, pattern)
+		seen[pattern] = struct{}{}
+	}
+	return merged, nil
 }

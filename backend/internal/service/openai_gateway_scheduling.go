@@ -1703,6 +1703,9 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
 	}
+	if err := rejectUnschedulableHydratedProxyAccount(hydrated); err != nil {
+		return nil, err
+	}
 	return hydrated, nil
 }
 

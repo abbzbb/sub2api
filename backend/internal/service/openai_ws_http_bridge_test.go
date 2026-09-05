@@ -1580,13 +1580,68 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokReconcilesSemanticAccountErrors(t *te
 	}
 }
 
+func TestProxyOpenAIWSHTTPBridgeTurnGrokStream429UsesBoundModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\",\"status_code\":429}}}\n\n",
+		)),
+	}}
+	repo := &grokBridgeAccountRepo{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream: upstream,
+		accountRepo:  repo,
+	}
+	account := &Account{
+		ID:          780,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{"base_url": xai.DefaultCLIBaseURL},
+	}
+	payload := []byte(`{"type":"response.create","model":"grok-4.5-latest","generate":true,"stream":true,"input":"hi"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	_, _ = svc.proxyOpenAIWSHTTPBridgeTurn(
+		context.Background(), c, account, "access-token", payload, len(payload),
+		"grok-4.5-latest", "", "", "", "", 1,
+		func([]byte) error { return nil },
+	)
+
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "model-scoped stream 429 must not latch the account")
+	require.Empty(t, repo.rateLimitedCalls)
+	require.NotEmpty(t, repo.modelRateLimitCalls)
+	require.Contains(t, repo.modelRateLimitCalls[0].model, "grok-4.5")
+}
+
 type grokBridgeAccountRepo struct {
 	stubOpenAIAccountRepo
-	tempUnschedCalls int
+	tempUnschedCalls    int
+	rateLimitedCalls    int
+	modelRateLimitCalls []struct {
+		model string
+	}
 }
 
 func (r *grokBridgeAccountRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, _ string) error {
 	r.tempUnschedCalls++
+	return nil
+}
+
+func (r *grokBridgeAccountRepo) SetRateLimited(_ context.Context, _ int64, _ time.Time) error {
+	r.rateLimitedCalls++
+	return nil
+}
+
+func (r *grokBridgeAccountRepo) SetModelRateLimit(_ context.Context, _ int64, model string, _ time.Time, _ ...string) error {
+	r.modelRateLimitCalls = append(r.modelRateLimitCalls, struct{ model string }{model: model})
 	return nil
 }
 

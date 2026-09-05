@@ -10,7 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
-const grokQuotaSnapshotExtraKey = "grok_usage_snapshot"
+const grokQuotaSnapshotExtraKey = GrokQuotaSnapshotExtraKey
 
 type GrokQuotaFetcher struct{}
 

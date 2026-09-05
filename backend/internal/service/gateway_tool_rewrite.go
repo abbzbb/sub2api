@@ -292,7 +292,7 @@ func applyToolsLastCacheBreakpoint(body []byte) []byte {
 		return body
 	}
 
-	raw := fmt.Sprintf(`{"type":"ephemeral","ttl":%q}`, claude.DefaultCacheControlTTL)
+	raw := gatewayInjectedEphemeralCacheControlJSON()
 	if next, err := sjson.SetRawBytes(body, fmt.Sprintf("tools.%d.cache_control", lastIdx), []byte(raw)); err == nil {
 		body = next
 	}

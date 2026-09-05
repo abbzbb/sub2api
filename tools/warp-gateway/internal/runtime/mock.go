@@ -22,17 +22,47 @@ func NewMockManager() *MockManager { return &MockManager{} }
 func (m *MockManager) Name() string { return "mock" }
 
 type mockHandle struct {
-	ln   net.Listener
-	addr string
-	once sync.Once
+	ln       net.Listener
+	addr     string
+	once     sync.Once
+	doneOnce sync.Once
+	done     chan error
+	waitErr  error
 }
 
 func (h *mockHandle) LocalAddr() string { return h.addr }
+
+func (h *mockHandle) Done() <-chan error { return h.done }
+
+func (h *mockHandle) Err() error { return h.waitErr }
+
+// MockForceExit closes Done and records err for Err(). Test-only helper.
+func MockForceExit(h Handle, err error) {
+	mh, ok := h.(*mockHandle)
+	if !ok || mh == nil {
+		return
+	}
+	mh.doneOnce.Do(func() {
+		mh.waitErr = err
+		if mh.done != nil {
+			close(mh.done)
+		}
+	})
+}
+
+func (h *mockHandle) closeDone() {
+	h.doneOnce.Do(func() {
+		if h.done != nil {
+			close(h.done)
+		}
+	})
+}
 
 func (h *mockHandle) Stop(ctx context.Context) error {
 	var err error
 	h.once.Do(func() {
 		err = h.ln.Close()
+		h.closeDone()
 	})
 	return err
 }
@@ -71,11 +101,12 @@ func (m *MockManager) Start(ctx context.Context, inst *store.Instance) (Handle, 
 		return nil, err
 	}
 
-	h := &mockHandle{ln: ln, addr: ln.Addr().String()}
+	h := &mockHandle{ln: ln, addr: ln.Addr().String(), done: make(chan error)}
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
+				h.closeDone()
 				return
 			}
 			go func(c net.Conn) {

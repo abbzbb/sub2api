@@ -30,7 +30,7 @@ func TestPropagateAccountProxyToShadows(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, shadow))
 
 	newProxy := int64(22)
-	require.NoError(t, propagateAccountProxyToShadows(ctx, repo, parentID, &newProxy))
+	require.NoError(t, propagateAccountProxyToShadows(ctx, repo, parentID, &newProxy, nil))
 
 	got, err := repo.GetByID(ctx, shadow.ID)
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestPropagateAccountProxyToShadows(t *testing.T) {
 	require.Equal(t, newProxy, *got.ProxyID, "shadow proxy must follow the parent's new proxy")
 
 	// 清空母 proxy 也应传播为 nil。
-	require.NoError(t, propagateAccountProxyToShadows(ctx, repo, parentID, nil))
+	require.NoError(t, propagateAccountProxyToShadows(ctx, repo, parentID, nil, nil))
 	got, err = repo.GetByID(ctx, shadow.ID)
 	require.NoError(t, err)
 	require.Nil(t, got.ProxyID, "clearing parent proxy must clear the shadow proxy too")

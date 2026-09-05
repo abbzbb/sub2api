@@ -116,8 +116,8 @@ func injectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Resul
 	if content.Type == gjson.String {
 		text := content.String()
 		blockRaw := fmt.Sprintf(
-			`[{"type":"text","text":%s,"cache_control":{"type":"ephemeral","ttl":%q}}]`,
-			mustJSONString(text), claude.DefaultCacheControlTTL,
+			`[{"type":"text","text":%s,"cache_control":%s}]`,
+			mustJSONString(text), gatewayInjectedEphemeralCacheControlJSON(),
 		)
 		if next, err := sjson.SetRawBytes(body, fmt.Sprintf("messages.%d.content", idx), []byte(blockRaw)); err == nil {
 			body = next
@@ -147,7 +147,7 @@ func injectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Resul
 		}
 		return body
 	}
-	raw := fmt.Sprintf(`{"type":"ephemeral","ttl":%q}`, claude.DefaultCacheControlTTL)
+	raw := gatewayInjectedEphemeralCacheControlJSON()
 	if next, err := sjson.SetRawBytes(body, pathPrefix, []byte(raw)); err == nil {
 		body = next
 	}

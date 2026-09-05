@@ -216,6 +216,21 @@ func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error
 	return s.cache.CleanupStaleProcessSlots(ctx, RequestIDPrefix())
 }
 
+type instanceHeartbeatCache interface {
+	StartInstanceHeartbeat(ctx context.Context, prefix string)
+	StopInstanceHeartbeat()
+}
+
+// StartInstanceHeartbeat 启动与 acquire 解耦的进程级心跳续期。
+func (s *ConcurrencyService) StartInstanceHeartbeat() {
+	if s == nil || s.cache == nil {
+		return
+	}
+	if c, ok := s.cache.(instanceHeartbeatCache); ok {
+		c.StartInstanceHeartbeat(context.Background(), RequestIDPrefix())
+	}
+}
+
 const (
 	// 默认等待队列额外槽位
 	defaultExtraWaitSlots = 20

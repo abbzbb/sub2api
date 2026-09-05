@@ -72,6 +72,66 @@ func TestGrokQuotaSnapshotBlocksSchedulingFreeUsageCodeWithoutReset(t *testing.T
 	require.True(t, account.IsRateLimited())
 }
 
+func TestGrokQuotaSnapshotStaleFreeUsageCodeDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	account := &Account{
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			grokQuotaSnapshotExtraKey: &xai.QuotaSnapshot{
+				ProviderErrorCode: grokFreeUsageExhaustedErrorCode,
+				UpdatedAt:         time.Now().Add(-7 * time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	require.False(t, grokStoredFreeUsageExhaustionStillActive(account.Extra[grokQuotaSnapshotExtraKey].(*xai.QuotaSnapshot)))
+	require.False(t, grokQuotaSnapshotBlocksScheduling(account))
+	require.True(t, account.IsSchedulable())
+}
+
+func TestGrokQuotaSnapshotStaleDoesNotBlockScheduling(t *testing.T) {
+	t.Parallel()
+	remaining := int64(0)
+	account := &Account{
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			grokQuotaSnapshotExtraKey: &xai.QuotaSnapshot{
+				Tokens:    &xai.QuotaWindow{Remaining: &remaining},
+				UpdatedAt: time.Now().Add(-7 * time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	require.True(t, grokQuotaSnapshotIsStale(account.Extra[grokQuotaSnapshotExtraKey].(*xai.QuotaSnapshot), time.Now()))
+	require.False(t, grokQuotaSnapshotBlocksScheduling(account))
+	require.True(t, account.IsSchedulable())
+}
+
+func TestGrokQuotaSnapshotPaidRemainingZeroWithoutResetDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	remaining := int64(0)
+	account := &Account{
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"subscription_tier": "supergrok"},
+		Extra: map[string]any{
+			grokQuotaSnapshotExtraKey: &xai.QuotaSnapshot{
+				Tokens:           &xai.QuotaWindow{Remaining: &remaining},
+				SubscriptionTier: "supergrok",
+				UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	require.False(t, grokQuotaSnapshotBlocksScheduling(account))
+	require.True(t, account.IsSchedulable())
+}
+
 func TestBuildGrokQuotaSnapshotUpdatesLatchesAccountWideFreeUsageCopy(t *testing.T) {
 	now := time.Now()
 	account := &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}

@@ -1022,7 +1022,7 @@ export default {
       noProxy: '无代理',
       proxyGroup: '代理池',
       noProxyGroup: '不使用代理池',
-      proxyGroupHint: '未指定单代理时生效；单代理优先。Grok 建议开启粘性策略。',
+      proxyGroupHint: '单代理与代理组互斥，请只选其一。Grok 建议开启粘性策略。',
       concurrency: '并发数',
       loadFactor: '负载因子',
       loadFactorHint: '提高负载因子可以提高对账号的调度频率',

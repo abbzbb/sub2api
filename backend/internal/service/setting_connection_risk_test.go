@@ -129,6 +129,7 @@ func TestGetConnectionRiskSettingsNormalizesValues(t *testing.T) {
 			"worker_interval_seconds": 10,
 			"phase": "weird",
 			"min_notify_severity": "nope",
+			"actions": {"throttle_min_severity": "nope"},
 			"r7_include_admin_actors": false
 		}`,
 	}}
@@ -143,7 +144,18 @@ func TestGetConnectionRiskSettingsNormalizesValues(t *testing.T) {
 	require.Equal(t, 60, settings.WorkerIntervalSeconds)
 	require.Equal(t, "observe", settings.Phase)
 	require.Equal(t, "high", settings.MinNotifySeverity)
+	require.Equal(t, "high", settings.Actions.ThrottleMinSeverity)
 	require.False(t, settings.R7IncludeAdminActors)
+}
+
+func TestNormalizeConnectionRiskSettingsUnknownThrottleMinSeverityDefaultsHigh(t *testing.T) {
+	s := DefaultConnectionRiskSettings()
+	s.Actions.ThrottleMinSeverity = "urgent"
+	normalizeConnectionRiskSettings(s)
+	require.Equal(t, connectionRiskSeverityHigh, s.Actions.ThrottleMinSeverity)
+	s.Actions.ThrottleMinSeverity = "medium"
+	normalizeConnectionRiskSettings(s)
+	require.Equal(t, connectionRiskSeverityMedium, s.Actions.ThrottleMinSeverity)
 }
 
 func TestGetConnectionRiskSettingsMapsEnforcePhaseToAutoDisable(t *testing.T) {

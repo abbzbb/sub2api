@@ -115,6 +115,27 @@ const GroupSelectorStub = defineComponent({
   `,
 })
 
+const ExclusiveProxySelectorStub = defineComponent({
+  name: 'ProxySelector',
+  props: {
+    modelValue: { type: [Number, String, null], default: null },
+    mode: { type: String, default: 'proxy' },
+    proxies: { type: Array, default: () => [] },
+    groups: { type: Array, default: () => [] },
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div>
+      <button
+        type="button"
+        :data-testid="mode === 'group' ? 'select-proxy-group' : 'select-proxy'"
+        @click="$emit('update:modelValue', mode === 'group' ? 7 : 3)"
+      >select</button>
+      <span :data-testid="mode === 'group' ? 'proxy-group-value' : 'proxy-value'">{{ modelValue ?? '' }}</span>
+    </div>
+  `,
+})
+
 const ModelWhitelistSelectorStub = defineComponent({
   name: 'ModelWhitelistSelector',
   props: {
@@ -543,5 +564,90 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+})
+
+describe('CreateAccountModal proxy binding exclusivity', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+  })
+
+  function mountExclusive() {
+    return mount(CreateAccountModal, {
+      props: {
+        show: true,
+        proxies: [{ id: 3, name: 'p3', protocol: 'http', host: 'p.example', port: 8080, status: 'active' }],
+        proxyGroups: [
+          {
+            id: 7,
+            name: 'pool-b',
+            strategy: 'round_robin',
+            sticky_by_account: false,
+            status: 'active',
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+        groups: [],
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          OAuthAuthorizationFlow: OAuthAuthorizationFlowStub,
+          ConfirmDialog: true,
+          Select: true,
+          Icon: true,
+          PlatformIcon: true,
+          ProxyAdBanner: true,
+          ProxySelector: ExclusiveProxySelectorStub,
+          GroupSelector: GroupSelectorStub,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+          QuotaLimitCard: true,
+        },
+      },
+    })
+  }
+
+  async function fillOpenAIApiKey(wrapper: ReturnType<typeof mountExclusive>) {
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+  }
+
+  it('clears proxy_group_id when a single proxy is selected before create', async () => {
+    const wrapper = mountExclusive()
+    await fillOpenAIApiKey(wrapper)
+    await wrapper.get('[data-testid="select-proxy-group"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('7')
+    await wrapper.get('[data-testid="select-proxy"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('3')
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload.proxy_id).toBe(3)
+    expect(payload.proxy_group_id == null || payload.proxy_group_id === 0).toBe(true)
+  })
+
+  it('clears proxy_id when a proxy group is selected before create', async () => {
+    const wrapper = mountExclusive()
+    await fillOpenAIApiKey(wrapper)
+    await wrapper.get('[data-testid="select-proxy"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('3')
+    await wrapper.get('[data-testid="select-proxy-group"]').trigger('click')
+    expect(wrapper.get('[data-testid="proxy-group-value"]').text()).toBe('7')
+    expect(wrapper.get('[data-testid="proxy-value"]').text()).toBe('')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload.proxy_id == null || payload.proxy_id === 0).toBe(true)
+    expect(payload.proxy_group_id).toBe(7)
   })
 })

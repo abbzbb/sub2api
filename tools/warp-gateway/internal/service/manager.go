@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,9 +25,18 @@ type Manager struct {
 	runtime runtime.Manager
 	log     *slog.Logger
 
-	mu      sync.Mutex
-	handles map[string]runtime.Handle
-	cancels map[string]context.CancelFunc
+	mu           sync.Mutex
+	handles      map[string]runtime.Handle
+	cancels      map[string]context.CancelFunc
+	instanceMu   map[string]*sync.Mutex
+	startBackoff map[string]reconcileStartBackoff
+	lastProbe    map[string]time.Time
+	probeMu      sync.Mutex
+}
+
+type reconcileStartBackoff struct {
+	fails int
+	last  time.Time
 }
 
 func NewManager(cfg config.Config, st *store.Store, rt runtime.Manager, log *slog.Logger) *Manager {
@@ -33,12 +44,15 @@ func NewManager(cfg config.Config, st *store.Store, rt runtime.Manager, log *slo
 		log = slog.Default()
 	}
 	return &Manager{
-		cfg:     cfg,
-		store:   st,
-		runtime: rt,
-		log:     log,
-		handles: make(map[string]runtime.Handle),
-		cancels: make(map[string]context.CancelFunc),
+		cfg:          cfg,
+		store:        st,
+		runtime:      rt,
+		log:          log,
+		handles:      make(map[string]runtime.Handle),
+		cancels:      make(map[string]context.CancelFunc),
+		instanceMu:   make(map[string]*sync.Mutex),
+		startBackoff: make(map[string]reconcileStartBackoff),
+		lastProbe:    make(map[string]time.Time),
 	}
 }
 
@@ -66,6 +80,12 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*store.Instanc
 	if err != nil {
 		return nil, err
 	}
+	created := false
+	defer func() {
+		if !created {
+			m.store.ReleasePort(port)
+		}
+	}()
 	desired := req.DesiredState
 	if desired == "" {
 		desired = store.DesiredRunning
@@ -85,6 +105,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*store.Instanc
 	if err := m.store.Create(inst); err != nil {
 		return nil, err
 	}
+	created = true
 	auto := true
 	if req.AutoStart != nil {
 		auto = *req.AutoStart
@@ -311,11 +332,82 @@ func RedactInstances(list []store.Instance) []store.Instance {
 	return out
 }
 
+func (m *Manager) lockInstance(id string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.instanceMu == nil {
+		m.instanceMu = map[string]*sync.Mutex{}
+	}
+	lk, ok := m.instanceMu[id]
+	if !ok {
+		lk = &sync.Mutex{}
+		m.instanceMu[id] = lk
+	}
+	return lk
+}
+
+func (m *Manager) withInstanceLock(id string, fn func() error) error {
+	lk := m.lockInstance(id)
+	lk.Lock()
+	defer lk.Unlock()
+	return fn()
+}
+
+func reconcileStartDelay(fails int) time.Duration {
+	if fails <= 0 {
+		return 0
+	}
+	delay := 30 * time.Second
+	for n := 1; n < fails; n++ {
+		next := delay * 2
+		if next > 10*time.Minute {
+			return 10 * time.Minute
+		}
+		delay = next
+	}
+	return delay
+}
+
+func (m *Manager) allowReconcileStart(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.startBackoff[id]
+	if !ok || b.fails == 0 {
+		return true
+	}
+	return time.Since(b.last) >= reconcileStartDelay(b.fails)
+}
+
+func (m *Manager) noteReconcileStartFailure(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b := m.startBackoff[id]
+	b.fails++
+	b.last = time.Now()
+	m.startBackoff[id] = b
+}
+
+func (m *Manager) clearReconcileStartFailure(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.startBackoff, id)
+}
+
 func (m *Manager) Start(ctx context.Context, id string) error {
+	return m.withInstanceLock(id, func() error {
+		return m.startInternal(ctx, id, false)
+	})
+}
+
+func (m *Manager) startInternal(ctx context.Context, id string, reconcile bool) error {
 	inst, err := m.store.Get(id)
 	if err != nil {
 		return err
 	}
+	if reconcile && inst.DesiredState == store.DesiredStopped {
+		return nil
+	}
+
 	m.mu.Lock()
 	if _, ok := m.handles[id]; ok {
 		m.mu.Unlock()
@@ -323,11 +415,24 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 	m.mu.Unlock()
 
-	_, _ = m.store.Update(id, func(i *store.Instance) {
-		i.Status = store.StatusStarting
-		i.DesiredState = store.DesiredRunning
-		i.LastError = ""
-	})
+	if !reconcile {
+		_, _ = m.store.Update(id, func(i *store.Instance) {
+			i.Status = store.StatusStarting
+			i.DesiredState = store.DesiredRunning
+			i.LastError = ""
+		})
+	} else {
+		_, _ = m.store.Update(id, func(i *store.Instance) {
+			if i.DesiredState == store.DesiredStopped {
+				return
+			}
+			i.Status = store.StatusStarting
+			i.LastError = ""
+		})
+		if current, getErr := m.store.Get(id); getErr == nil && current.DesiredState == store.DesiredStopped {
+			return nil
+		}
+	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	h, err := m.runtime.Start(runCtx, inst)
@@ -341,6 +446,15 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	}
 
 	m.mu.Lock()
+	if existing, ok := m.handles[id]; ok {
+		m.mu.Unlock()
+		cancel()
+		stopCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = h.Stop(stopCtx)
+		c()
+		_ = existing
+		return nil
+	}
 	m.handles[id] = h
 	m.cancels[id] = cancel
 	m.mu.Unlock()
@@ -349,13 +463,68 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 		i.Status = store.StatusRunning
 		i.LastError = ""
 	})
+	m.watchHandle(id, h)
 
-	// Immediate health
+	if current, getErr := m.store.Get(id); getErr == nil && current.DesiredState == store.DesiredStopped {
+		return m.stopInternal(ctx, id)
+	}
+
+	// Allow one probe after start; HealthAll within the min interval is skipped.
+	m.probeMu.Lock()
+	delete(m.lastProbe, id)
+	m.probeMu.Unlock()
 	_ = m.HealthCheck(ctx, id)
 	return nil
 }
 
+func (m *Manager) watchHandle(id string, h runtime.Handle) {
+	if h == nil {
+		return
+	}
+	done := h.Done()
+	if done == nil {
+		return
+	}
+	go func() {
+		err, ok := <-done
+		if !ok {
+			err = h.Err()
+			if err == nil {
+				err = fmt.Errorf("runtime exited")
+			}
+		}
+		m.mu.Lock()
+		cur, exists := m.handles[id]
+		if !exists || cur != h {
+			m.mu.Unlock()
+			return
+		}
+		delete(m.handles, id)
+		if cancel := m.cancels[id]; cancel != nil {
+			cancel()
+		}
+		delete(m.cancels, id)
+		m.mu.Unlock()
+		msg := "runtime exited unexpectedly"
+		if err != nil {
+			msg = err.Error()
+		}
+		_, _ = m.store.Update(id, func(i *store.Instance) {
+			if i.DesiredState == store.DesiredRunning {
+				i.Status = store.StatusError
+				i.LastError = msg
+			}
+		})
+	}()
+}
+
 func (m *Manager) Stop(ctx context.Context, id string) error {
+	return m.withInstanceLock(id, func() error {
+		return m.stopInternal(ctx, id)
+	})
+}
+
+func (m *Manager) stopInternal(ctx context.Context, id string) error {
 	m.mu.Lock()
 	h, ok := m.handles[id]
 	cancel := m.cancels[id]
@@ -385,53 +554,84 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 }
 
 func (m *Manager) Restart(ctx context.Context, id string) error {
-	_ = m.Stop(ctx, id)
-	// Allow OS to release SOCKS listen port before re-bind.
+	return m.withInstanceLock(id, func() error {
+		return m.restartLocked(ctx, id)
+	})
+}
+
+func (m *Manager) restartLocked(ctx context.Context, id string) error {
+	_ = m.stopInternal(ctx, id)
+	_, _ = m.store.Update(id, func(i *store.Instance) {
+		i.DesiredState = store.DesiredRunning
+	})
+	// Allow OS to release SOCKS listen port before re-bind. Do not abort Start
+	// if the caller context is already cancelled (client timeout after Stop).
+	timer := time.NewTimer(80 * time.Millisecond)
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(80 * time.Millisecond):
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
 	}
-	return m.Start(ctx, id)
+	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+	defer cancel()
+	return m.startInternal(startCtx, id, false)
 }
 
 // Rotate restarts instance; optional new profile (Phase 3).
 // When newProfile is nil and runtime is sing-box, re-registers a free WARP profile
 // and best-effort unregisters the previous Cloudflare device.
 func (m *Manager) Rotate(ctx context.Context, id string, newProfile *store.Profile) (*store.Instance, error) {
-	if newProfile != nil {
-		if _, err := m.store.Update(id, func(i *store.Instance) {
-			i.Profile = *newProfile
-		}); err != nil {
-			return nil, err
-		}
-	} else if m.runtime.Name() == "sing-box" {
-		old, _ := m.store.Get(id)
-		reg, err := register.RegisterFree(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("rotate re-register: %w", err)
-		}
-		if _, err := m.store.Update(id, func(i *store.Instance) {
-			i.Profile = reg.Profile
-		}); err != nil {
-			return nil, err
-		}
-		// Best-effort CF cleanup of previous device (do not fail rotate).
-		if old != nil {
-			if uerr := m.unregisterCloudflare(ctx, old.Profile); uerr != nil {
-				m.log.Warn("rotate: unregister old cloudflare device failed", "id", id, "err", uerr)
+	var out *store.Instance
+	err := m.withInstanceLock(id, func() error {
+		if newProfile != nil {
+			if newProfile.PrivateKey == "" && len(newProfile.Peers) == 0 && newProfile.MockExitIP == "" {
+				return fmt.Errorf("profile is empty")
+			}
+			if m.runtime.Name() == "sing-box" && (newProfile.PrivateKey == "" || len(newProfile.Peers) == 0) {
+				return fmt.Errorf("profile requires private_key and peers")
+			}
+			old, _ := m.store.Get(id)
+			if _, err := m.store.Update(id, func(i *store.Instance) {
+				i.Profile = *newProfile
+			}); err != nil {
+				return err
+			}
+			if old != nil {
+				if uerr := m.unregisterCloudflare(ctx, old.Profile); uerr != nil {
+					m.log.Warn("rotate: unregister old cloudflare device failed", "id", id, "err", uerr)
+				}
+			}
+		} else if m.runtime.Name() == "sing-box" {
+			old, _ := m.store.Get(id)
+			reg, err := register.RegisterFree(ctx)
+			if err != nil {
+				return fmt.Errorf("rotate re-register: %w", err)
+			}
+			if _, err := m.store.Update(id, func(i *store.Instance) {
+				i.Profile = reg.Profile
+			}); err != nil {
+				return err
+			}
+			if old != nil {
+				if uerr := m.unregisterCloudflare(ctx, old.Profile); uerr != nil {
+					m.log.Warn("rotate: unregister old cloudflare device failed", "id", id, "err", uerr)
+				}
 			}
 		}
-	}
-	if err := m.Restart(ctx, id); err != nil {
-		return nil, err
-	}
-	inst, err := m.store.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	out := RedactInstance(*inst)
-	return &out, nil
+		if err := m.restartLocked(ctx, id); err != nil {
+			return err
+		}
+		inst, err := m.store.Get(id)
+		if err != nil {
+			return err
+		}
+		redacted := RedactInstance(*inst)
+		out = &redacted
+		return nil
+	})
+	return out, err
 }
 
 // DeleteOptions controls Cloudflare deregistration behavior.
@@ -447,22 +647,42 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 
 // DeleteWithOptions stops instance, optionally unregisters CF device, removes store entry.
 func (m *Manager) DeleteWithOptions(ctx context.Context, id string, opts DeleteOptions) error {
-	inst, err := m.store.Get(id)
-	if err != nil {
-		return err
-	}
-	deregister := true
-	if opts.DeregisterCloudflare != nil {
-		deregister = *opts.DeregisterCloudflare
-	}
-	if deregister {
-		if uerr := m.unregisterCloudflare(ctx, inst.Profile); uerr != nil {
-			// Log but still delete local state so ops can recover.
-			m.log.Warn("cloudflare unregister failed; continuing local delete", "id", id, "device_id", inst.Profile.DeviceID, "err", uerr)
+	return m.withInstanceLock(id, func() error {
+		inst, err := m.store.Get(id)
+		if err != nil {
+			return err
 		}
-	}
-	_ = m.Stop(ctx, id)
-	return m.store.Delete(id)
+		deregister := true
+		if opts.DeregisterCloudflare != nil {
+			deregister = *opts.DeregisterCloudflare
+		}
+		if deregister {
+			if uerr := m.unregisterCloudflare(ctx, inst.Profile); uerr != nil {
+				// Log but still delete local state so ops can recover.
+				m.log.Warn("cloudflare unregister failed; continuing local delete", "id", id, "device_id", inst.Profile.DeviceID, "err", uerr)
+			}
+		}
+		_ = m.stopInternal(ctx, id)
+		if err := m.store.Delete(id); err != nil {
+			return err
+		}
+		m.forgetInstance(id)
+		instDir := filepath.Join(m.cfg.DataDir, "instances", id)
+		if err := os.RemoveAll(instDir); err != nil {
+			m.log.Warn("remove instance dir failed", "id", id, "dir", instDir, "err", err)
+		}
+		return nil
+	})
+}
+
+func (m *Manager) forgetInstance(id string) {
+	m.mu.Lock()
+	delete(m.instanceMu, id)
+	delete(m.startBackoff, id)
+	m.mu.Unlock()
+	m.probeMu.Lock()
+	delete(m.lastProbe, id)
+	m.probeMu.Unlock()
 }
 
 func (m *Manager) unregisterCloudflare(ctx context.Context, p store.Profile) error {
@@ -470,6 +690,16 @@ func (m *Manager) unregisterCloudflare(ctx context.Context, p store.Profile) err
 		return nil // nothing to unregister (mock or legacy instance)
 	}
 	return register.Unregister(ctx, p.DeviceID, p.AccessToken)
+}
+
+func (m *Manager) HasRuntimeHandle(id string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.handles[id]
+	return ok
 }
 
 func (m *Manager) Get(id string) (*store.Instance, error) {
@@ -485,7 +715,17 @@ func (m *Manager) List() []store.Instance { return RedactInstances(m.store.List(
 // GetRaw returns instance with secrets (runtime internal use only).
 func (m *Manager) GetRaw(id string) (*store.Instance, error) { return m.store.Get(id) }
 
+const healthProbeMinInterval = 15 * time.Second
+
 func (m *Manager) HealthCheck(ctx context.Context, id string) error {
+	m.probeMu.Lock()
+	if last, ok := m.lastProbe[id]; ok && time.Since(last) < healthProbeMinInterval {
+		m.probeMu.Unlock()
+		return nil
+	}
+	m.lastProbe[id] = time.Now()
+	m.probeMu.Unlock()
+
 	inst, err := m.store.Get(id)
 	if err != nil {
 		return err
@@ -608,33 +848,55 @@ func (m *Manager) ExitIPDuplicates() map[string][]string {
 // Reconcile brings runtime in line with desired_state.
 func (m *Manager) Reconcile(ctx context.Context) {
 	for _, inst := range m.store.List() {
-		m.mu.Lock()
-		_, running := m.handles[inst.ID]
-		m.mu.Unlock()
-		switch inst.DesiredState {
-		case store.DesiredRunning:
-			if !running {
-				if err := m.Start(ctx, inst.ID); err != nil {
-					m.log.Error("reconcile start failed", "id", inst.ID, "err", err)
+		id := inst.ID
+		_ = m.withInstanceLock(id, func() error {
+			cur, err := m.store.Get(id)
+			if err != nil {
+				return err
+			}
+			m.mu.Lock()
+			_, running := m.handles[id]
+			m.mu.Unlock()
+			switch cur.DesiredState {
+			case store.DesiredRunning:
+				if !running {
+					if !m.allowReconcileStart(id) {
+						return nil
+					}
+					if err := m.startInternal(ctx, id, true); err != nil {
+						m.noteReconcileStartFailure(id)
+						m.log.Error("reconcile start failed", "id", id, "err", err)
+					} else {
+						m.clearReconcileStartFailure(id)
+					}
+				} else {
+					m.clearReconcileStartFailure(id)
+				}
+			case store.DesiredStopped:
+				if running {
+					if err := m.stopInternal(ctx, id); err != nil {
+						m.log.Error("reconcile stop failed", "id", id, "err", err)
+					}
 				}
 			}
-		case store.DesiredStopped:
-			if running {
-				if err := m.Stop(ctx, inst.ID); err != nil {
-					m.log.Error("reconcile stop failed", "id", inst.ID, "err", err)
-				}
-			}
-		}
+			return nil
+		})
 	}
 }
 
-// RunBackground starts health loop.
+// RunBackground starts health loop and periodic reconcile for crashed runtimes.
 func (m *Manager) RunBackground(ctx context.Context) {
 	if m.cfg.ReconcileOnStart {
 		m.Reconcile(ctx)
 	}
-	t := time.NewTicker(m.cfg.HealthInterval)
+	interval := m.cfg.HealthInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
+	rt := time.NewTicker(interval)
+	defer rt.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -647,6 +909,8 @@ func (m *Manager) RunBackground(ctx context.Context) {
 			if dups := m.ExitIPDuplicates(); len(dups) > 0 {
 				m.log.Warn("duplicate exit IPs detected", "dups", dups)
 			}
+		case <-rt.C:
+			m.Reconcile(ctx)
 		}
 	}
 }

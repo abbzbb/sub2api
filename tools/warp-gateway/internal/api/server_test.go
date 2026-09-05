@@ -129,3 +129,15 @@ func TestAPIRotateAndDelete(t *testing.T) {
 		t.Fatalf("delete %d", rr.Code)
 	}
 }
+
+func TestAPIRotateRejectsInvalidJSON(t *testing.T) {
+	h, _ := setupAPI(t)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/instances/x/rotate", bytes.NewReader([]byte(`{`)))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rr, req)
+	if rr.Code != 400 {
+		t.Fatalf("want 400 got %d %s", rr.Code, rr.Body.String())
+	}
+}

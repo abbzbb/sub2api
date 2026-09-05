@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 const (
@@ -89,6 +90,18 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	case PlatformAnthropic:
 		if isAnthropicFableModel(modelKey) && modelKey != anthropicFableRateLimitKey {
 			keys = append(keys, anthropicFableRateLimitKey)
+		}
+	case PlatformGrok:
+		requested := strings.TrimSpace(requestedModel)
+		if requested != "" && requested != modelKey {
+			keys = append(keys, requested)
+		}
+		canonical := xai.ResolveGrokTextResponsesModelID(modelKey)
+		if canonical == "" && requested != "" {
+			canonical = xai.ResolveGrokTextResponsesModelID(requested)
+		}
+		if canonical != "" && canonical != modelKey && canonical != requested {
+			keys = append(keys, canonical)
 		}
 	}
 	return keys

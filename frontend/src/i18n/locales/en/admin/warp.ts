@@ -47,6 +47,7 @@ export default {
     created: 'created {n}',
     updated: 'updated {n}',
     members: 'members {n}',
+    unhealthyIsolated: 'unhealthy (isolated) {n}',
     group: 'Group'
   }
 }

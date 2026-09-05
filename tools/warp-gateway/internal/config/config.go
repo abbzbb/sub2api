@@ -1,9 +1,14 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -21,7 +26,7 @@ type Config struct {
 	SingBoxPath      string        `json:"sing_box_path"`
 	UnhealthyAfter   int           `json:"unhealthy_after"`
 	ReconcileOnStart bool          `json:"reconcile_on_start"`
-	// ProfileKey encrypts private keys at rest (AES-256-GCM). Falls back to Token.
+	// ProfileKey encrypts private keys at rest (AES-256-GCM). Never falls back to Token.
 	ProfileKey string `json:"profile_key,omitempty"`
 	// TLS for multi-host control plane (optional).
 	TLSCertFile string `json:"tls_cert_file,omitempty"`
@@ -87,12 +92,11 @@ func LoadFromEnv() Config {
 	return cfg
 }
 
-// ProfileSecret returns material used for at-rest profile encryption.
+// ProfileSecret returns the explicit at-rest profile encryption key.
+// API tokens must not be reused: rotating the control-plane token would
+// otherwise make existing ciphertext unreadable.
 func (c Config) ProfileSecret() string {
-	if c.ProfileKey != "" {
-		return c.ProfileKey
-	}
-	return c.Token
+	return strings.TrimSpace(c.ProfileKey)
 }
 
 func (c Config) Validate() error {
@@ -107,10 +111,95 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported runtime %q (mock|sing-box)", c.Runtime)
 	}
+	if err := c.validateListenAuth(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c Config) validateListenAuth() error {
+	tokenOK := strings.TrimSpace(c.Token) != ""
+	ca := strings.TrimSpace(c.ClientCAFile)
+	cert := strings.TrimSpace(c.TLSCertFile)
+	key := strings.TrimSpace(c.TLSKeyFile)
+	hasCA, hasCert, hasKey := ca != "", cert != "", key != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("tls_cert_file and tls_key_file must both be set")
+	}
+	if hasCA && (!hasCert || !hasKey) {
+		return fmt.Errorf("client_ca_file requires tls_cert_file and tls_key_file for mTLS")
+	}
+	mtlsOK := hasCA && hasCert && hasKey
+	if tokenOK || mtlsOK {
+		return nil
+	}
+	if listenHostIsLoopback(c.Listen) {
+		return nil
+	}
+	return fmt.Errorf("token is required when listening on non-loopback %q without mTLS", c.Listen)
+}
+
+// listenHostIsLoopback reports whether listen binds only loopback.
+// Empty host (":19798"), 0.0.0.0, :: and other unspecified addresses are
+// treated as all-interfaces — not loopback — and require a token or mTLS.
+func listenHostIsLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		host = listen
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if host == "localhost" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func (c Config) String() string {
 	b, _ := json.Marshal(c)
 	return string(b)
+}
+
+const profileKeyFileName = "profile.key"
+
+// EnsureProfileKey loads or creates a 0600 key file under DataDir when ProfileKey is empty.
+func EnsureProfileKey(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if strings.TrimSpace(cfg.ProfileKey) != "" {
+		return nil
+	}
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return fmt.Errorf("data_dir is required to persist profile key")
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		return err
+	}
+	keyPath := filepath.Join(cfg.DataDir, profileKeyFileName)
+	if b, err := os.ReadFile(keyPath); err == nil {
+		if key := strings.TrimSpace(string(b)); key != "" {
+			cfg.ProfileKey = key
+			return nil
+		}
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	key := hex.EncodeToString(raw)
+	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0o600); err != nil {
+		return err
+	}
+	cfg.ProfileKey = key
+	return nil
 }

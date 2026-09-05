@@ -37,6 +37,9 @@ func (h *ConnectionRiskHandler) UpdateConfig(c *gin.Context) {
 	// 以默认值为底再绑定：客户端省略的布尔字段（worker_enabled 等）保持默认，
 	// 而不是被零值 struct 悄悄置为 false。与 GetConnectionRiskSettings 的读取口径一致。
 	req := *service.DefaultConnectionRiskSettings()
+	if current, err := h.svc.GetConfig(c.Request.Context()); err == nil && current != nil {
+		req = *current
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request body")
 		return
@@ -194,14 +197,15 @@ func (h *ConnectionRiskHandler) ClearExempt(c *gin.Context) {
 // WhitelistIP POST /api/v1/admin/connection-risk/actions/whitelist-ip
 func (h *ConnectionRiskHandler) WhitelistIP(c *gin.Context) {
 	var req struct {
-		APIKeyID int64    `json:"api_key_id" binding:"required"`
-		IPs      []string `json:"ips" binding:"required"`
+		APIKeyID                int64    `json:"api_key_id" binding:"required"`
+		IPs                     []string `json:"ips" binding:"required"`
+		ConfirmRestrictAllowAll bool     `json:"confirm_restrict_allow_all"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request body")
 		return
 	}
-	key, err := h.svc.WhitelistIPs(c.Request.Context(), req.APIKeyID, req.IPs)
+	key, err := h.svc.WhitelistIPs(c.Request.Context(), req.APIKeyID, req.IPs, req.ConfirmRestrictAllowAll)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

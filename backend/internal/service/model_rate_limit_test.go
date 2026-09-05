@@ -428,6 +428,31 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 	}
 }
 
+func TestModelRateLimitKeysForRequestIncludesGrokCanonical(t *testing.T) {
+	account := &Account{Platform: PlatformGrok}
+	keys := account.modelRateLimitKeysForRequest(context.Background(), "grok-4.5-latest")
+	require.Contains(t, keys, "grok-4.5-latest")
+	require.Contains(t, keys, "grok-4.5")
+}
+
+func TestGetModelRateLimitRemainingTimeHitsGrokCanonicalKey(t *testing.T) {
+	now := time.Now()
+	future := now.Add(10 * time.Minute).Format(time.RFC3339)
+	account := &Account{
+		Platform: PlatformGrok,
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				"grok-4.5": map[string]any{
+					"rate_limit_reset_at": future,
+				},
+			},
+		},
+	}
+	remaining := account.GetModelRateLimitRemainingTimeWithContext(context.Background(), "grok-4.5-latest")
+	require.Greater(t, remaining, 8*time.Minute)
+	require.Less(t, remaining, 12*time.Minute)
+}
+
 func TestGetRateLimitRemainingTime(t *testing.T) {
 	now := time.Now()
 	future15m := now.Add(15 * time.Minute).Format(time.RFC3339)

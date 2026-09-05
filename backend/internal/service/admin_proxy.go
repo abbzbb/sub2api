@@ -130,6 +130,7 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	prevStatus := proxy.Status
 
 	// W1: warp-* inventory identity is managed by WARP sync. Allow status/expiry
 	// (and soft operational fields) only; block name/host/port/protocol/auth changes
@@ -205,7 +206,7 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		return nil, infraerrors.BadRequest("PROXY_BACKUP_REQUIRED", "backup proxy required when fallback_mode=proxy")
 	}
 
-	statusChanged := input.Status != ""
+	statusChanged := input.Status != "" && input.Status != prevStatus
 	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
 		return nil, err
 	}

@@ -55,6 +55,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	// account has no model_mapping, matching the Chat Completions path and xAI's
 	// actual Responses model IDs.
 	upstreamModel = xai.ResolveGrokTextResponsesModelID(upstreamModel, grokDefaultResponsesModel)
+	ctx = bindGrokMappedModel(c, ctx, upstreamModel)
 	if isGrokImageGenerationModel(upstreamModel) {
 		return nil, fmt.Errorf("model %s is an image model and is not available on the Responses endpoint; use /v1/images/generations instead", upstreamModel)
 	}
@@ -1835,12 +1836,42 @@ func grokQuotaSnapshotBlocksSchedulingFromSnapshot(account *Account, snapshot *x
 	}
 	// remaining=0 with no absolute reset: keep free/unknown accounts out until
 	// a probe rewrites the snapshot. Paid accounts fall back to the ordinary
-	// rate_limit_reset_at / temp-unsched timers.
+	// rate_limit_reset_at / temp-unsched timers. Stale snapshots older than
+	// grokQuotaSnapshotMaxAge no longer block (worker-off self-heal).
+	if grokQuotaSnapshotIsStale(snapshot, now) {
+		return false
+	}
 	return account != nil && (account.IsGrokFreeOrUnknownOAuth() || isKnownGrokFreeAccount(account))
+}
+
+const grokQuotaSnapshotMaxAge = 6 * time.Hour
+
+func grokQuotaSnapshotIsStale(snapshot *xai.QuotaSnapshot, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	raw := strings.TrimSpace(snapshot.UpdatedAt)
+	if raw == "" {
+		raw = strings.TrimSpace(snapshot.LastProbeAt)
+	}
+	if raw == "" {
+		return false
+	}
+	updated, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		updated, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return false
+	}
+	return now.Sub(updated) > grokQuotaSnapshotMaxAge
 }
 
 func grokStoredFreeUsageExhaustionStillActive(snapshot *xai.QuotaSnapshot) bool {
 	if snapshot == nil {
+		return false
+	}
+	if grokQuotaSnapshotIsStale(snapshot, time.Now()) {
 		return false
 	}
 	code := strings.ToLower(strings.TrimSpace(snapshot.ProviderErrorCode))
@@ -2335,6 +2366,22 @@ type grokTeamRateLimitModelContextKey struct{}
 
 // withGrokTeamRateLimitModel attaches the upstream model name for rate-limit
 // side effects (team+model cool). Safe when model is empty.
+const ginKeyGrokMappedModel = "grok_mapped_model"
+
+func bindGrokMappedModel(c *gin.Context, ctx context.Context, model string) context.Context {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ctx
+	}
+	if c != nil {
+		c.Set(ginKeyGrokMappedModel, model)
+		if c.Request != nil {
+			c.Request = c.Request.WithContext(withGrokTeamRateLimitModel(c.Request.Context(), model))
+		}
+	}
+	return withGrokTeamRateLimitModel(ctx, model)
+}
+
 func withGrokTeamRateLimitModel(ctx context.Context, model string) context.Context {
 	model = strings.TrimSpace(model)
 	if model == "" || ctx == nil {
@@ -2453,25 +2500,20 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 		if s.handleGrokModelOrEndpointError(ctx, account, model, statusCode, responseBody) {
 			return false
 		}
-		if s.markGrokAccountError(ctx, account, statusCode, responseBody) {
-			// Permanent path only. CAS miss must not fall through to a temp cooldown.
-			return true
-		}
-		// Spending-limit often arrives as 403 with a billing body.
-		if isGrokSpendingLimitError(responseBody) {
-			s.rateLimitGrok(ctx, account, grokSpendingLimitResetAt(account, time.Now()))
-			return false
-		}
-		if grokResponseIndicatesSoftEntitlementOrBilling(statusCode, responseBody) {
-			// Pool mode must not treat bare 402 as a default cooldown (origin
-			// pool bypass). Soft entitlement still applies when the body has
-			// explicit billing/entitlement markers (or non-402 statuses).
-			if account.IsPoolMode() && statusCode == http.StatusPaymentRequired &&
-				!grokSoftEntitlementHasExplicitBodySignal(responseBody) {
+		if !account.IsPoolMode() {
+			if s.markGrokAccountError(ctx, account, statusCode, responseBody) {
+				// Permanent path only. CAS miss must not fall through to a temp cooldown.
+				return true
+			}
+			// Spending-limit often arrives as 403 with a billing body.
+			if isGrokSpendingLimitError(responseBody) {
+				s.rateLimitGrok(ctx, account, grokSpendingLimitResetAt(account, time.Now()))
 				return false
 			}
-			s.tempUnscheduleGrok(ctx, account, grokSoftEntitlementCooldown, grokSoftEntitlementReason)
-			return false
+			if grokResponseIndicatesSoftEntitlementOrBilling(statusCode, responseBody) {
+				s.tempUnscheduleGrok(ctx, account, grokSoftEntitlementCooldown, grokSoftEntitlementReason)
+				return false
+			}
 		}
 		// Ambiguous 403/404: leave durable state alone. A single hit changes
 		// nothing; repeated hits inside a short window trip a runtime-only
