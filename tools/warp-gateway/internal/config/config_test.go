@@ -56,6 +56,39 @@ func TestValidateAllowsLoopbackWithoutToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsClientCAWithoutTLSCertKey(t *testing.T) {
+	cfg := Default()
+	cfg.Listen = "0.0.0.0:19798"
+	cfg.Token = ""
+	cfg.ClientCAFile = "/tmp/client-ca.pem"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for client CA without TLS cert/key")
+	}
+	cfg.TLSCertFile = "/tmp/server.pem"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for cert without key")
+	}
+	cfg.TLSKeyFile = "/tmp/server.key"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateRejectsTLSCertWithoutKey(t *testing.T) {
+	cfg := Default()
+	cfg.Listen = "127.0.0.1:19798"
+	cfg.Token = ""
+	cfg.TLSCertFile = "/tmp/server.pem"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for cert without key")
+	}
+	cfg.TLSCertFile = ""
+	cfg.TLSKeyFile = "/tmp/server.key"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for key without cert")
+	}
+}
+
 func TestEnsureProfileKeyCreates0600File(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{DataDir: dir}

@@ -118,7 +118,19 @@ func (c Config) Validate() error {
 }
 
 func (c Config) validateListenAuth() error {
-	if strings.TrimSpace(c.Token) != "" || strings.TrimSpace(c.ClientCAFile) != "" {
+	tokenOK := strings.TrimSpace(c.Token) != ""
+	ca := strings.TrimSpace(c.ClientCAFile)
+	cert := strings.TrimSpace(c.TLSCertFile)
+	key := strings.TrimSpace(c.TLSKeyFile)
+	hasCA, hasCert, hasKey := ca != "", cert != "", key != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("tls_cert_file and tls_key_file must both be set")
+	}
+	if hasCA && (!hasCert || !hasKey) {
+		return fmt.Errorf("client_ca_file requires tls_cert_file and tls_key_file for mTLS")
+	}
+	mtlsOK := hasCA && hasCert && hasKey
+	if tokenOK || mtlsOK {
 		return nil
 	}
 	if listenHostIsLoopback(c.Listen) {

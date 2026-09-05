@@ -2,8 +2,10 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/tools/warp-gateway/internal/store"
 )
 
+var testManagerPortBase atomic.Int64
+
 func testManager(t *testing.T) *service.Manager {
 	t.Helper()
 	dir := t.TempDir()
@@ -20,8 +24,9 @@ func testManager(t *testing.T) *service.Manager {
 	cfg.DataDir = dir
 	cfg.Runtime = "mock"
 	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42001
-	cfg.PortRangeEnd = 42050
+	start := 43000 + int(testManagerPortBase.Add(50))
+	cfg.PortRangeStart = start
+	cfg.PortRangeEnd = start + 40
 	cfg.HealthInterval = time.Hour
 	cfg.UnhealthyAfter = 2
 	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
@@ -210,7 +215,7 @@ func TestDeleteRemovesInstanceDirectory(t *testing.T) {
 	}
 }
 
-func TestStartInFlightReturnsError(t *testing.T) {
+func TestStartSerializesAndSecondIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.DataDir = dir
@@ -240,15 +245,15 @@ func TestStartInFlightReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() { errCh <- mgr.Start(ctx, inst.ID) }()
 	<-delay.started
-	if err := mgr.Start(ctx, inst.ID); err != service.ErrStartInFlight {
-		t.Fatalf("second start err=%v want ErrStartInFlight", err)
-	}
+	go func() { errCh <- mgr.Start(ctx, inst.ID) }()
 	close(delay.release)
-	if err := <-errCh; err != nil {
-		t.Fatalf("first start: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
 	}
 }
 
@@ -282,15 +287,15 @@ func TestStartHonorsDesiredStoppedBeforeReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() { errCh <- mgr.Start(ctx, inst.ID) }()
 	<-delay.started
-	if err := mgr.Stop(ctx, inst.ID); err != nil {
-		t.Fatal(err)
-	}
+	go func() { errCh <- mgr.Stop(ctx, inst.ID) }()
 	close(delay.release)
-	if err := <-errCh; err != nil {
-		t.Fatalf("start after stop: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("lifecycle %d: %v", i, err)
+		}
 	}
 	got, err := mgr.Get(inst.ID)
 	if err != nil {
@@ -377,6 +382,32 @@ func TestStartAfterCompletedStopBringsInstanceBack(t *testing.T) {
 	}
 }
 
+func TestStopAfterStartDoesNotTimeoutWhileWatchHandleConsumesDone(t *testing.T) {
+	mgr := testManager(t)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "stop-watch", Profile: store.Profile{MockExitIP: "203.0.113.33"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.HasRuntimeHandle(inst.ID) {
+		t.Fatal("expected handle after start")
+	}
+	start := time.Now()
+	if err := mgr.Stop(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed >= 4*time.Second {
+		t.Fatalf("stop took %s, likely waited on a single-consumer Done channel", elapsed)
+	}
+	if mgr.HasRuntimeHandle(inst.ID) {
+		t.Fatal("expected watchHandle to drop handle after stop")
+	}
+}
+
 func TestRotateRejectsEmptyProfile(t *testing.T) {
 	mgr := testManager(t)
 	ctx := context.Background()
@@ -387,4 +418,81 @@ func TestRotateRejectsEmptyProfile(t *testing.T) {
 	if _, err := mgr.Rotate(ctx, inst.ID, &store.Profile{}); err == nil {
 		t.Fatal("expected empty profile to fail")
 	}
+}
+
+func TestReconcileDoesNotOverrideDesiredStopped(t *testing.T) {
+	mgr := testManager(t)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "recon-stop", Profile: store.Profile{MockExitIP: "203.0.113.40"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Stop(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	mgr.Reconcile(ctx)
+	got, err := mgr.Get(inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DesiredState != store.DesiredStopped {
+		t.Fatalf("desired=%s want stopped", got.DesiredState)
+	}
+	if mgr.HasRuntimeHandle(inst.ID) {
+		t.Fatal("reconcile must not restart an explicitly stopped instance")
+	}
+}
+
+type failRuntime struct {
+	starts int
+	err    error
+}
+
+func (f *failRuntime) Name() string { return "mock" }
+
+func (f *failRuntime) Start(ctx context.Context, inst *store.Instance) (runtime.Handle, error) {
+	f.starts++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return runtime.NewMockManager().Start(ctx, inst)
+}
+
+func TestReconcileStartBackoffSkipsImmediateRetry(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.PortRangeStart = 42501
+	cfg.PortRangeEnd = 42540
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := &failRuntime{err: errors.New("start failed")}
+	mgr := service.NewManager(cfg, st, fail, nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	auto := false
+	inst, err := mgr.Create(ctx, service.CreateRequest{
+		Name:         "backoff",
+		Profile:      store.Profile{MockExitIP: "203.0.113.41"},
+		AutoStart:    &auto,
+		DesiredState: store.DesiredRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.Reconcile(ctx)
+	if fail.starts != 1 {
+		t.Fatalf("first reconcile starts=%d want 1", fail.starts)
+	}
+	mgr.Reconcile(ctx)
+	if fail.starts != 1 {
+		t.Fatalf("immediate retry starts=%d want 1", fail.starts)
+	}
+	_ = inst
 }
