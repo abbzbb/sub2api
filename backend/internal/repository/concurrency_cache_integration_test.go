@@ -910,9 +910,10 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_ReapsDeadInstanceLi
 	accountKey := fmt.Sprintf("%s%d", accountSlotKeyPrefix, accountID)
 	now, err := s.rawCache.redisUnixSeconds(s.ctx)
 	require.NoError(s.T(), err)
+	stale := float64(now - int64(instanceHeartbeatTTL/time.Second) - 1)
 	live := float64(now - 5)
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountKey,
-		redis.Z{Score: live, Member: "deadinst-1"},
+		redis.Z{Score: stale, Member: "deadinst-1"},
 		redis.Z{Score: live, Member: "keep-1"},
 	).Err())
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountActiveIndexKey, redis.Z{

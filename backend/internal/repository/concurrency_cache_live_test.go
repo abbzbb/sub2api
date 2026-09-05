@@ -81,7 +81,7 @@ func TestAcquireAccountSlotReapsDeadInstanceSlots(t *testing.T) {
 	accountID := int64(44)
 	key := accountSlotKey(accountID)
 	now := time.Now().Unix()
-	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "rdead01-1"}).Err())
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now - int64(instanceHeartbeatTTL/time.Second) - 1), Member: "rdead01-1"}).Err())
 
 	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rlive01-1")
 	require.NoError(t, err)
@@ -90,9 +90,6 @@ func TestAcquireAccountSlotReapsDeadInstanceSlots(t *testing.T) {
 	members, err := client.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rlive01-1"}, members)
-	exists, err := client.Exists(ctx, instanceHeartbeatKey("rlive01")).Result()
-	require.NoError(t, err)
-	require.EqualValues(t, 1, exists)
 }
 
 func TestAcquireAccountSlotReapsExpiredHeartbeatWithoutRenewal(t *testing.T) {
@@ -104,14 +101,13 @@ func TestAcquireAccountSlotReapsExpiredHeartbeatWithoutRenewal(t *testing.T) {
 	accountID := int64(45)
 	key := accountSlotKey(accountID)
 	now := time.Now().Unix()
-	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "rA-1"}).Err())
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now - int64(instanceHeartbeatTTL/time.Second) - 1), Member: "rA-1"}).Err())
 	cache.touchInstanceHeartbeat(ctx, "rA")
-
-	redisServer.FastForward(instanceHeartbeatTTL + time.Second)
+	require.NoError(t, client.Del(ctx, instanceHeartbeatKey("rA")).Err())
 
 	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rB-1")
 	require.NoError(t, err)
-	require.True(t, acquired, "expired heartbeat without renew must be treated as dead")
+	require.True(t, acquired, "expired heartbeat and stale score must be treated as dead")
 	members, err := client.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rB-1"}, members)
@@ -140,6 +136,44 @@ func TestAcquireAccountSlotKeepsInFlightWhenHeartbeatRenewed(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, members, "rA-1")
 	require.NotContains(t, members, "rB-1")
+}
+
+func TestAcquireAccountSlotKeepsPeerWithoutHeartbeatWhenScoreFresh(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+	accountID := int64(47)
+	key := accountSlotKey(accountID)
+	now := time.Now().Unix()
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "roldbin-1"}).Err())
+
+	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rnewbin-1")
+	require.NoError(t, err)
+	require.False(t, acquired, "rolling-upgrade peer with fresh slot score must not be reaped")
+	members, err := client.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"roldbin-1"}, members)
+}
+
+func TestAcquireAccountSlotDoesNotReapWhenNotFull(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+	accountID := int64(48)
+	key := accountSlotKey(accountID)
+	stale := time.Now().Unix() - int64(instanceHeartbeatTTL/time.Second) - 5
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(stale), Member: "rdead02-1"}).Err())
+
+	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 2, "rlive02-1")
+	require.NoError(t, err)
+	require.True(t, acquired)
+	members, err := client.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"rdead02-1", "rlive02-1"}, members, "reap only runs when the slot is full")
 }
 
 func TestRequestIDInstancePrefix(t *testing.T) {

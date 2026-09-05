@@ -650,18 +650,7 @@ func runScriptInt64Pair(ctx context.Context, rdb *redis.Client, script *redis.Sc
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
-	key := accountSlotKey(accountID)
-	c.touchAndReapDeadInstanceSlots(ctx, key, requestID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveAccountSlotKey(accountID)}, maxConcurrency, c.slotTTLSeconds, requestID)
-	if err != nil {
-		return false, err
-	}
-	if result == 1 {
-		// 成功占槽后标记活跃账号，后台清理即可从索引定位候选账号。
-		c.touchActiveIndexAt(ctx, accountActiveIndexKey, accountID, now+int64(c.slotTTLSeconds))
-	}
-	return result == 1, nil
+	return c.acquireSlot(ctx, accountSlotKey(accountID), liveAccountSlotKey(accountID), accountActiveIndexKey, accountID, maxConcurrency, requestID)
 }
 
 func (c *concurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
@@ -728,16 +717,26 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 // User slot operations
 
 func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
-	key := userSlotKey(userID)
-	c.touchAndReapDeadInstanceSlots(ctx, key, requestID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveUserSlotKey(userID)}, maxConcurrency, c.slotTTLSeconds, requestID)
+	return c.acquireSlot(ctx, userSlotKey(userID), liveUserSlotKey(userID), userActiveIndexKey, userID, maxConcurrency, requestID)
+}
+
+func (c *concurrencyCache) acquireSlot(ctx context.Context, key, liveKey, indexKey string, ownerID int64, maxConcurrency int, requestID string) (bool, error) {
+	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
 		return false, err
 	}
 	if result == 1 {
-		// 成功占槽后标记活跃用户，避免启动清理依赖全量 SCAN。
-		c.touchActiveIndexAt(ctx, userActiveIndexKey, userID, now+int64(c.slotTTLSeconds))
+		c.touchActiveIndexAt(ctx, indexKey, ownerID, now+int64(c.slotTTLSeconds))
+		return true, nil
+	}
+	// Slot full: reap peers that lost both heartbeat and recent ZADD, then retry once.
+	c.reapDeadInstanceSlots(ctx, key, requestIDInstancePrefix(requestID))
+	result, now, err = runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
+	if err != nil {
+		return false, err
+	}
+	if result == 1 {
+		c.touchActiveIndexAt(ctx, indexKey, ownerID, now+int64(c.slotTTLSeconds))
 	}
 	return result == 1, nil
 }
@@ -1361,38 +1360,39 @@ func (c *concurrencyCache) StopInstanceHeartbeat() {
 	}
 }
 
-func (c *concurrencyCache) touchAndReapDeadInstanceSlots(ctx context.Context, slotKey, requestID string) {
-	prefix := requestIDInstancePrefix(requestID)
-	if prefix == "" {
-		return
-	}
-	c.touchInstanceHeartbeat(ctx, prefix)
-	c.reapDeadInstanceSlots(ctx, slotKey, prefix)
-}
-
 func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, currentPrefix string) {
 	if c == nil || c.rdb == nil || slotKey == "" {
 		return
 	}
 	currentPrefix = normalizeInstancePrefix(currentPrefix)
-	members, err := c.rdb.ZRange(ctx, slotKey, 0, -1).Result()
+	members, err := c.rdb.ZRangeWithScores(ctx, slotKey, 0, -1).Result()
 	if err != nil || len(members) == 0 {
 		return
 	}
+	now, err := c.redisUnixSeconds(ctx)
+	if err != nil {
+		return
+	}
+	staleBefore := float64(now - int64(instanceHeartbeatTTL/time.Second))
 
 	type candidate struct {
 		member string
 		prefix string
 	}
 	candidates := make([]candidate, 0, len(members))
+	latestScore := map[string]float64{}
 	unique := make([]string, 0)
 	seen := map[string]struct{}{}
-	for _, member := range members {
+	for _, z := range members {
+		member, _ := z.Member.(string)
 		pfx := requestIDInstancePrefix(member)
 		if pfx == "" || pfx == currentPrefix {
 			continue
 		}
 		candidates = append(candidates, candidate{member: member, prefix: pfx})
+		if z.Score > latestScore[pfx] {
+			latestScore[pfx] = z.Score
+		}
 		if _, ok := seen[pfx]; ok {
 			continue
 		}
@@ -1418,9 +1418,15 @@ func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, c
 	}
 	dead := make([]any, 0)
 	for _, item := range candidates {
-		if !alive[item.prefix] {
-			dead = append(dead, item.member)
+		if alive[item.prefix] {
+			continue
 		}
+		// Rolling upgrade: old binaries have no heartbeat, but a recent ZADD
+		// score means the peer is still acquiring and must not be reaped.
+		if latestScore[item.prefix] >= staleBefore {
+			continue
+		}
+		dead = append(dead, item.member)
 	}
 	if len(dead) == 0 {
 		return
