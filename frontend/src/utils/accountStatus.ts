@@ -64,12 +64,8 @@ const grokHasPaidBillingSnapshot = (extra: Record<string, unknown> | undefined):
 const grokHasPaidTierEvidence = (account: RateLimitAccount, snap: Record<string, unknown>): boolean => {
   const extra = account.extra as Record<string, unknown> | undefined
   const credentials = account.credentials as Record<string, unknown> | undefined
-  for (const source of [credentials, extra]) {
-    if (!source) continue
-    for (const key of ['subscription_tier', 'plan', 'plan_type', 'entitlement_status']) {
-      if (grokPaidTierEvidence(source[key])) return true
-    }
-  }
+  // Match backend: credentials.subscription_tier + billing snapshot (+ snapshot tier).
+  if (grokPaidTierEvidence(credentials?.subscription_tier)) return true
   if (grokPaidTierEvidence(snap.subscription_tier) || grokPaidTierEvidence(snap.entitlement_status)) {
     return true
   }
@@ -77,7 +73,7 @@ const grokHasPaidTierEvidence = (account: RateLimitAccount, snap: Record<string,
 }
 
 const grokQuotaSnapshotIsStale = (snap: Record<string, unknown>, now: number): boolean => {
-  const raw = String(snap.updated_at ?? snap.last_probe_at ?? '').trim()
+  const raw = String(snap.updated_at || snap.last_probe_at || '').trim()
   if (!raw) return false
   const updated = Date.parse(raw)
   return Number.isFinite(updated) && now - updated > grokQuotaSnapshotMaxAgeMs

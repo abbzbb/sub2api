@@ -138,6 +138,32 @@ describe('accountStatus', () => {
     expect(isAccountRateLimited(account)).toBe(true)
   })
 
+  it('ignores extra.plan paid markers that the backend does not read', () => {
+    const account = makeAccount({
+      extra: {
+        plan: 'supergrok',
+        grok_usage_snapshot: {
+          tokens: { remaining: 0 },
+          updated_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T00:01:00Z'))).toBe(true)
+  })
+
+  it('falls back to last_probe_at when updated_at is an empty string', () => {
+    const account = makeAccount({
+      extra: {
+        grok_usage_snapshot: {
+          requests: { remaining: 0 },
+          updated_at: '',
+          last_probe_at: '2026-07-14T00:00:00Z'
+        }
+      }
+    })
+    expect(isAccountRateLimited(account, Date.parse('2026-07-14T07:00:00Z'))).toBe(false)
+  })
+
   it('does not treat a paid Grok remaining=0 snapshot without reset as rate limited', () => {
     const account = makeAccount({
       credentials: { subscription_tier: 'supergrok' },
