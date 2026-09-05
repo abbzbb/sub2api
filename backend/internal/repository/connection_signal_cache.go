@@ -533,14 +533,16 @@ func (c *connectionSignalCache) SnapshotBaselineDay(ctx context.Context, keyID i
 		return false, nil
 	}
 	key := crBaselineDay(keyID, day)
-	created, err := c.rdb.SetNX(ctx, key, count, 14*24*time.Hour).Result()
+	ttl := 14 * 24 * time.Hour
+	old, err := c.rdb.SetArgs(ctx, key, count, redis.SetArgs{TTL: ttl, Get: true}).Result()
+	if err == redis.Nil {
+		return true, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	if !created {
-		_ = c.rdb.Set(ctx, key, count, 14*24*time.Hour).Err()
-	}
-	return created, nil
+	_ = old
+	return false, nil
 }
 
 func (c *connectionSignalCache) LoadBaselineSamples(ctx context.Context, keyID int64, days []string) ([]int64, error) {
