@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -212,6 +213,60 @@ func TestDeleteRemovesInstanceDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(instDir); !os.IsNotExist(err) {
 		t.Fatalf("instance dir still present: %v", err)
+	}
+}
+
+func TestWatchHandleRecordsRuntimeErr(t *testing.T) {
+	mgr := testManager(t)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	auto := false
+	inst, err := mgr.Create(ctx, service.CreateRequest{
+		Name:      "watch-err",
+		Profile:   store.Profile{MockExitIP: "203.0.113.34"},
+		AutoStart: &auto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	mgr.FailRuntimeForTest(inst.ID, errors.New("exit status 1"))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, gerr := mgr.Get(inst.ID)
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		if strings.Contains(got.LastError, "exit status 1") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, _ := mgr.Get(inst.ID)
+	t.Fatalf("LastError=%q, want exit status 1", got.LastError)
+}
+
+func TestDeleteClearsPerInstanceMaps(t *testing.T) {
+	mgr := testManager(t)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	ctx := context.Background()
+	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "forget-maps", Profile: store.Profile{MockExitIP: "203.0.113.35"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.SeedInstanceMapsForTest(inst.ID)
+	hasMu, hasBackoff, hasProbe := mgr.InstanceMapsContain(inst.ID)
+	if !hasMu || !hasBackoff || !hasProbe {
+		t.Fatalf("seed maps missing mu=%v backoff=%v probe=%v", hasMu, hasBackoff, hasProbe)
+	}
+	if err := mgr.Delete(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	hasMu, hasBackoff, hasProbe = mgr.InstanceMapsContain(inst.ID)
+	if hasMu || hasBackoff || hasProbe {
+		t.Fatalf("maps still hold id after delete mu=%v backoff=%v probe=%v", hasMu, hasBackoff, hasProbe)
 	}
 }
 

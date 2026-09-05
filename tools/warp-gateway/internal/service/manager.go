@@ -488,7 +488,10 @@ func (m *Manager) watchHandle(id string, h runtime.Handle) {
 	go func() {
 		err, ok := <-done
 		if !ok {
-			err = fmt.Errorf("runtime exited")
+			err = h.Err()
+			if err == nil {
+				err = fmt.Errorf("runtime exited")
+			}
 		}
 		m.mu.Lock()
 		cur, exists := m.handles[id]
@@ -644,29 +647,83 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 
 // DeleteWithOptions stops instance, optionally unregisters CF device, removes store entry.
 func (m *Manager) DeleteWithOptions(ctx context.Context, id string, opts DeleteOptions) error {
-	inst, err := m.store.Get(id)
-	if err != nil {
-		return err
-	}
-	deregister := true
-	if opts.DeregisterCloudflare != nil {
-		deregister = *opts.DeregisterCloudflare
-	}
-	if deregister {
-		if uerr := m.unregisterCloudflare(ctx, inst.Profile); uerr != nil {
-			// Log but still delete local state so ops can recover.
-			m.log.Warn("cloudflare unregister failed; continuing local delete", "id", id, "device_id", inst.Profile.DeviceID, "err", uerr)
+	return m.withInstanceLock(id, func() error {
+		inst, err := m.store.Get(id)
+		if err != nil {
+			return err
 		}
+		deregister := true
+		if opts.DeregisterCloudflare != nil {
+			deregister = *opts.DeregisterCloudflare
+		}
+		if deregister {
+			if uerr := m.unregisterCloudflare(ctx, inst.Profile); uerr != nil {
+				// Log but still delete local state so ops can recover.
+				m.log.Warn("cloudflare unregister failed; continuing local delete", "id", id, "device_id", inst.Profile.DeviceID, "err", uerr)
+			}
+		}
+		_ = m.stopInternal(ctx, id)
+		if err := m.store.Delete(id); err != nil {
+			return err
+		}
+		m.forgetInstance(id)
+		instDir := filepath.Join(m.cfg.DataDir, "instances", id)
+		if err := os.RemoveAll(instDir); err != nil {
+			m.log.Warn("remove instance dir failed", "id", id, "dir", instDir, "err", err)
+		}
+		return nil
+	})
+}
+
+func (m *Manager) forgetInstance(id string) {
+	m.mu.Lock()
+	delete(m.instanceMu, id)
+	delete(m.startBackoff, id)
+	m.mu.Unlock()
+	m.probeMu.Lock()
+	delete(m.lastProbe, id)
+	m.probeMu.Unlock()
+}
+
+// InstanceMapsContain reports whether per-id bookkeeping maps still hold id.
+func (m *Manager) InstanceMapsContain(id string) (hasMu, hasBackoff, hasProbe bool) {
+	if m == nil {
+		return
 	}
-	_ = m.Stop(ctx, id)
-	if err := m.store.Delete(id); err != nil {
-		return err
+	m.mu.Lock()
+	_, hasMu = m.instanceMu[id]
+	_, hasBackoff = m.startBackoff[id]
+	m.mu.Unlock()
+	m.probeMu.Lock()
+	_, hasProbe = m.lastProbe[id]
+	m.probeMu.Unlock()
+	return
+}
+
+// SeedInstanceMapsForTest inserts per-id map entries so Delete cleanup can be asserted.
+func (m *Manager) SeedInstanceMapsForTest(id string) {
+	if m == nil {
+		return
 	}
-	instDir := filepath.Join(m.cfg.DataDir, "instances", id)
-	if err := os.RemoveAll(instDir); err != nil {
-		m.log.Warn("remove instance dir failed", "id", id, "dir", instDir, "err", err)
+	_ = m.lockInstance(id)
+	m.noteReconcileStartFailure(id)
+	m.probeMu.Lock()
+	if m.lastProbe == nil {
+		m.lastProbe = map[string]time.Time{}
 	}
-	return nil
+	m.lastProbe[id] = time.Now()
+	m.probeMu.Unlock()
+}
+
+// FailRuntimeForTest closes the mock handle Done channel with err.
+func (m *Manager) FailRuntimeForTest(id string, err error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	h := m.handles[id]
+	m.mu.Unlock()
+	runtime.ForceExit(h, err)
 }
 
 func (m *Manager) unregisterCloudflare(ctx context.Context, p store.Profile) error {

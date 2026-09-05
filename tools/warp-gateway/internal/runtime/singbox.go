@@ -38,6 +38,8 @@ func (h *singBoxHandle) LocalAddr() string { return h.addr }
 
 func (h *singBoxHandle) Done() <-chan error { return h.done }
 
+func (h *singBoxHandle) Err() error { return h.waitErr }
+
 func (h *singBoxHandle) Stop(ctx context.Context) error {
 	if h.cmd == nil || h.cmd.Process == nil {
 		return nil

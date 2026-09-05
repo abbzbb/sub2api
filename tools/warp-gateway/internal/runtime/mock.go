@@ -27,11 +27,28 @@ type mockHandle struct {
 	once     sync.Once
 	doneOnce sync.Once
 	done     chan error
+	waitErr  error
 }
 
 func (h *mockHandle) LocalAddr() string { return h.addr }
 
 func (h *mockHandle) Done() <-chan error { return h.done }
+
+func (h *mockHandle) Err() error { return h.waitErr }
+
+// ForceExit closes Done and records err for Err(). Used by tests.
+func ForceExit(h Handle, err error) {
+	mh, ok := h.(*mockHandle)
+	if !ok || mh == nil {
+		return
+	}
+	mh.doneOnce.Do(func() {
+		mh.waitErr = err
+		if mh.done != nil {
+			close(mh.done)
+		}
+	})
+}
 
 func (h *mockHandle) closeDone() {
 	h.doneOnce.Do(func() {
