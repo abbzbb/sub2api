@@ -379,6 +379,9 @@ type concurrencyCache struct {
 	hbMu   sync.Mutex
 	hbStop context.CancelFunc
 	hbWG   sync.WaitGroup
+
+	acquireScripts int // test: acquire Lua invocations
+	reapCalls      int // test: reapDeadInstanceSlots invocations
 }
 
 // NewConcurrencyCache 创建并发控制缓存
@@ -721,6 +724,7 @@ func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, ma
 }
 
 func (c *concurrencyCache) acquireSlot(ctx context.Context, key, liveKey, indexKey string, ownerID int64, maxConcurrency int, requestID string) (bool, error) {
+	c.acquireScripts++
 	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
 		return false, err
@@ -729,8 +733,11 @@ func (c *concurrencyCache) acquireSlot(ctx context.Context, key, liveKey, indexK
 		c.touchActiveIndexAt(ctx, indexKey, ownerID, now+int64(c.slotTTLSeconds))
 		return true, nil
 	}
-	// Slot full: reap peers that lost both heartbeat and recent ZADD, then retry once.
-	c.reapDeadInstanceSlots(ctx, key, requestIDInstancePrefix(requestID))
+	// Slot full: reap peers that lost both heartbeat and recent ZADD; retry only if something was removed.
+	if c.reapDeadInstanceSlots(ctx, key, requestIDInstancePrefix(requestID), now) <= 0 {
+		return false, nil
+	}
+	c.acquireScripts++
 	result, now, err = runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveKey}, maxConcurrency, c.slotTTLSeconds, requestID)
 	if err != nil {
 		return false, err
@@ -1258,7 +1265,7 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 			continue
 		}
 
-		c.reapDeadInstanceSlots(ctx, spec.slotKey(id), currentPrefix)
+		c.reapDeadInstanceSlots(ctx, spec.slotKey(id), currentPrefix, now)
 		_, remaining, err := runScriptInt64Pair(ctx, c.rdb, startupCleanupSlotScript, []string{spec.slotKey(id)}, c.slotTTLSeconds, now)
 		if err != nil {
 			return fmt.Errorf("cleanup stale process slots %s: %w", spec.slotKey(id), err)
@@ -1360,18 +1367,21 @@ func (c *concurrencyCache) StopInstanceHeartbeat() {
 	}
 }
 
-func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, currentPrefix string) {
+func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, currentPrefix string, now int64) int {
 	if c == nil || c.rdb == nil || slotKey == "" {
-		return
+		return 0
 	}
+	c.reapCalls++
 	currentPrefix = normalizeInstancePrefix(currentPrefix)
 	members, err := c.rdb.ZRangeWithScores(ctx, slotKey, 0, -1).Result()
 	if err != nil || len(members) == 0 {
-		return
+		return 0
 	}
-	now, err := c.redisUnixSeconds(ctx)
-	if err != nil {
-		return
+	if now <= 0 {
+		now, err = c.redisUnixSeconds(ctx)
+		if err != nil {
+			return 0
+		}
 	}
 	staleBefore := float64(now - int64(instanceHeartbeatTTL/time.Second))
 
@@ -1400,7 +1410,7 @@ func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, c
 		unique = append(unique, pfx)
 	}
 	if len(candidates) == 0 {
-		return
+		return 0
 	}
 
 	pipe := c.rdb.Pipeline()
@@ -1410,7 +1420,7 @@ func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, c
 	}
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		logger.LegacyPrintf("repository.concurrency", "Warning: check instance heartbeats failed: %v", err)
-		return
+		return 0
 	}
 	alive := make(map[string]bool, len(unique))
 	for i, pfx := range unique {
@@ -1429,9 +1439,11 @@ func (c *concurrencyCache) reapDeadInstanceSlots(ctx context.Context, slotKey, c
 		dead = append(dead, item.member)
 	}
 	if len(dead) == 0 {
-		return
+		return 0
 	}
 	if err := c.rdb.ZRem(ctx, slotKey, dead...).Err(); err != nil {
 		logger.LegacyPrintf("repository.concurrency", "Warning: reap dead instance slots on %s failed: %v", slotKey, err)
+		return 0
 	}
+	return len(dead)
 }

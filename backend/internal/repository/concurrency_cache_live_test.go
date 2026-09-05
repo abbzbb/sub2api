@@ -174,6 +174,29 @@ func TestAcquireAccountSlotDoesNotReapWhenNotFull(t *testing.T) {
 	members, err := client.ZRange(ctx, key, 0, -1).Result()
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rdead02-1", "rlive02-1"}, members, "reap only runs when the slot is full")
+	require.Equal(t, 0, cache.reapCalls)
+	require.Equal(t, 1, cache.acquireScripts)
+}
+
+func TestAcquireAccountSlotDoesNotRetryWhenFullWithoutDead(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok)
+	ctx := context.Background()
+	accountID := int64(49)
+	key := accountSlotKey(accountID)
+	now := time.Now().Unix()
+	require.NoError(t, client.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: "rlive03-1"}).Err())
+
+	acquired, err := cache.AcquireAccountSlot(ctx, accountID, 1, "rnew03-1")
+	require.NoError(t, err)
+	require.False(t, acquired)
+	require.Equal(t, 1, cache.reapCalls)
+	require.Equal(t, 1, cache.acquireScripts, "full slot with no dead peers must not retry acquire")
+	members, err := client.ZRange(ctx, key, 0, -1).Result()
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"rlive03-1"}, members)
 }
 
 func TestRequestIDInstancePrefix(t *testing.T) {
