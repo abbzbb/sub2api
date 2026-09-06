@@ -987,10 +987,12 @@ ops:
 # JWT 配置
 # =============================================================================
 jwt:
-  # IMPORTANT: Change this to a random string in production!
-  # 重要：生产环境中请更改为随机字符串！
+  # IMPORTANT: Set a fixed random secret in production!
+  # 重要：生产环境请设置固定的随机密钥！
+  # Leave empty to auto-generate on startup (sessions reset each restart).
+  # 留空则启动时自动生成（每次重启会使登录会话失效）。
   # Generate with / 生成命令: openssl rand -hex 32
-  secret: "change-this-to-a-secure-random-string"
+  secret: ""
   # Token expiration time in hours (max 168)
   # 令牌过期时间（小时，最大 168）
   expire_hour: 24
@@ -1088,7 +1090,10 @@ default:
   # Initial admin account (created on first run)
   # 初始管理员账户（首次运行时创建）
   admin_email: "admin@example.com"
-  admin_password: "admin123"
+  # Leave empty to auto-generate (shown in logs on first run).
+  # 留空则自动生成（首次运行时打印到日志）。
+  # Or set explicitly / 或手动设置: openssl rand -base64 24
+  admin_password: ""
 
   # Default settings for new users
   # 新用户默认设置
