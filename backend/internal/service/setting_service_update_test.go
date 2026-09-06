@@ -687,8 +687,8 @@ func TestSettingService_LoadForwardedClientIPSettingsMigration(t *testing.T) {
 		{
 			name:                   "missing setting follows configured default",
 			values:                 map[string]string{},
-			configDefault:          true,
-			wantEnabled:            true,
+			configDefault:          false,
+			wantEnabled:            false,
 			wantMigrationMarkerSet: true,
 		},
 		{
