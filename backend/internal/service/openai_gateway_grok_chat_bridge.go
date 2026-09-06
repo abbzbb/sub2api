@@ -662,7 +662,13 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 		if result.RequestID == "" {
 			result.RequestID = firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 		}
-		result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+		// Mirror Responses patchedBody billing: normalize before extract so usage
+		// records the effort actually sent upstream (aliases / model clamps).
+		billingBody, normErr := normalizeGrokChatReasoningEffort(body, upstreamModel)
+		if normErr != nil {
+			return nil, fmt.Errorf("normalize Grok chat reasoning effort for billing: %w", normErr)
+		}
+		result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(billingBody, upstreamModel, billingModel, originalModel)
 	}
 	return result, err
 }

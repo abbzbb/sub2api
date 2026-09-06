@@ -83,9 +83,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		// anchored to the client's stable conversation prefix.
 		grokCacheIdentity = resolveGrokCacheIdentity(c, body, "", upstreamModel)
 	}
-	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
-	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
 
 	// 3. Rewrite model in body (no protocol conversion)
 	upstreamBody := body
@@ -162,6 +159,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 	upstreamBody = applyOllamaCloudRawChatCompletionsRequest(account, upstreamBody)
+
+	// Extract after Grok/GLM/Ollama rewrites so billing matches the outbound body
+	// (same contract as Responses extract-from-patchedBody).
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(upstreamBody, upstreamModel, billingModel, originalModel)
+	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, upstreamBody, billingModel)
 
 	logger.L().Debug("openai chat_completions raw: forwarding without protocol conversion",
 		zap.Int64("account_id", account.ID),
