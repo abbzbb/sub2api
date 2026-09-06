@@ -26,10 +26,10 @@ func TestGatewayHandlerResponsesAndChatCompletions_AnthropicEffortPolicyDeny(t *
 		ID:      9103,
 		GroupID: &groupID,
 		Group: &service.Group{
-			ID:                           groupID,
-			Platform:                     service.PlatformAnthropic,
-			MaxReasoningEffort:           "high",
-			MaxReasoningEffortOverLimit:  service.ReasoningEffortOverLimitDeny,
+			ID:                          groupID,
+			Platform:                    service.PlatformAnthropic,
+			MaxReasoningEffort:          "high",
+			MaxReasoningEffortOverLimit: service.ReasoningEffortOverLimitDeny,
 		},
 		User: &service.User{ID: userID, Status: service.StatusActive},
 	}
