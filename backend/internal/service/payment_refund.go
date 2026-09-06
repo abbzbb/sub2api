@@ -303,43 +303,8 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	if c == 0 {
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
-	if p.DeductionType == payment.DeductionTypeBalance && p.BalanceToDeduct > 0 {
-		// Skip balance deduction on retry if previous attempt already deducted
-		// but failed to roll back (REFUND_ROLLBACK_FAILED in audit log).
-		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") {
-			deducted, err := s.deductAvailableBalance(ctx, p.Order.UserID, p.BalanceToDeduct)
-			if err != nil {
-				s.restoreStatus(ctx, p)
-				return nil, fmt.Errorf("deduction: %w", err)
-			}
-			p.BalanceToDeduct = deducted
-		} else {
-			slog.Warn("skipping balance deduction on retry (previous rollback failed)", "orderID", p.OrderID)
-			p.BalanceToDeduct = 0
-		}
-	}
-	if p.DeductionType == payment.DeductionTypeSubscription && p.SubDaysToDeduct > 0 && p.SubscriptionID > 0 {
-		if !s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") {
-			_, err := s.subscriptionSvc.ExtendSubscription(ctx, p.SubscriptionID, -p.SubDaysToDeduct)
-			if err != nil {
-				if errors.Is(err, ErrAdjustWouldExpire) {
-					// Deduction would expire the subscription — revoke it entirely
-					slog.Info("subscription deduction would expire, revoking", "orderID", p.OrderID, "subID", p.SubscriptionID, "days", p.SubDaysToDeduct)
-					if revokeErr := s.subscriptionSvc.RevokeSubscription(ctx, p.SubscriptionID); revokeErr != nil {
-						s.restoreStatus(ctx, p)
-						return nil, fmt.Errorf("revoke subscription: %w", revokeErr)
-					}
-				} else {
-					// Other errors (DB failure, not found) — abort refund
-					s.restoreStatus(ctx, p)
-					return nil, fmt.Errorf("deduct subscription days: %w", err)
-				}
-			}
-		} else {
-			slog.Warn("skipping subscription deduction on retry (previous rollback failed)", "orderID", p.OrderID)
-			p.SubDaysToDeduct = 0
-		}
-	}
+	// Fail-closed: call the payment gateway before any ledger mutation so a
+	// provider failure cannot leave balance/subscription already deducted.
 	resp, err := s.gwRefund(ctx, p)
 	if err != nil {
 		return s.handleGwFail(ctx, p, err)
@@ -347,10 +312,25 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	return s.finishRefund(ctx, p, resp)
 }
 
+func (s *PaymentService) applyExecuteRefundDeduction(ctx context.Context, p *RefundPlan) error {
+	// Skip ledger mutation on retry if a previous attempt already deducted and
+	// failed to roll back (REFUND_ROLLBACK_FAILED in audit log).
+	if s.hasAuditLog(ctx, p.OrderID, "REFUND_ROLLBACK_FAILED") {
+		slog.Warn("skipping refund deduction on retry (previous rollback failed)", "orderID", p.OrderID)
+		p.BalanceToDeduct = 0
+		p.SubDaysToDeduct = 0
+		return nil
+	}
+	return s.applyRefundFinalDeduction(ctx, p)
+}
+
 func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.RefundResponse, error) {
-	if p.Order.PaymentTradeNo == "" {
-		s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "skipped"})
-		return &payment.RefundResponse{Status: payment.ProviderStatusSuccess}, nil
+	if strings.TrimSpace(p.Order.PaymentTradeNo) == "" {
+		// Fail-closed: never treat a missing upstream trade no as provider success.
+		if s != nil && s.entClient != nil {
+			s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "missing"})
+		}
+		return nil, fmt.Errorf("refund missing payment trade number")
 	}
 
 	// Use the exact provider instance that created this order, not a random one
@@ -410,6 +390,19 @@ func (s *PaymentService) finishRefund(ctx context.Context, p *RefundPlan, resp *
 	}
 	switch strings.TrimSpace(resp.Status) {
 	case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded:
+		if err := s.applyExecuteRefundDeduction(ctx, p); err != nil {
+			// Gateway already accepted the refund; park pending so finalize can retry ledger.
+			slog.Error("ledger deduction failed after gateway refund success", "orderID", p.OrderID, "error", err)
+			s.writeAuditLog(ctx, p.OrderID, "REFUND_DEDUCTION_FAILED", "admin", map[string]any{"detail": psErrMsg(err)})
+			result, markErr := s.markRefundPending(ctx, p, resp)
+			if markErr != nil {
+				return nil, fmt.Errorf("deduction failed after gateway refund (%v); mark pending: %w", err, markErr)
+			}
+			if result != nil {
+				result.Warning = "gateway refund succeeded but deduction failed; left pending for finalize: " + psErrMsg(err)
+			}
+			return result, nil
+		}
 		return s.markRefundOk(ctx, p)
 	case payment.ProviderStatusPending:
 		return s.markRefundPending(ctx, p, resp)
@@ -572,9 +565,12 @@ func (s *PaymentService) latestRefundPendingDetail(ctx context.Context, oid int6
 		Order(paymentauditlog.ByCreatedAt(sql.OrderDesc())).
 		First(ctx)
 	if err != nil || logEntry == nil {
-		return refundPendingAuditDetail{DeductionRollbackOK: true}
+		// Fail-closed: missing REFUND_PENDING audit means we cannot prove rollback
+		// succeeded, so finalize must not apply another ledger deduction.
+		return refundPendingAuditDetail{DeductionRollbackOK: false}
 	}
-	detail := refundPendingAuditDetail{DeductionRollbackOK: true}
+	// Zero-value DeductionRollbackOK is false; only an explicit true in the audit unlocks deduction.
+	detail := refundPendingAuditDetail{}
 	_ = json.Unmarshal([]byte(logEntry.Detail), &detail)
 	detail.RefundID = strings.TrimSpace(detail.RefundID)
 	return detail
@@ -594,15 +590,13 @@ func (s *PaymentService) getRefundProvider(ctx context.Context, o *dbent.Payment
 }
 
 func (s *PaymentService) handleGwFail(ctx context.Context, p *RefundPlan, gErr error) (*RefundResult, error) {
-	if s.RollbackRefund(ctx, p, gErr) {
-		s.restoreStatus(ctx, p)
-		s.writeAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_FAILED", "admin", map[string]any{"detail": psErrMsg(gErr)})
-		return &RefundResult{Success: false, Warning: "gateway failed: " + psErrMsg(gErr) + ", rolled back"}, nil
-	}
-	now := time.Now()
-	_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(OrderStatusRefundFailed).SetFailedAt(now).SetFailedReason(psErrMsg(gErr)).Save(ctx)
-	s.writeAuditLog(ctx, p.OrderID, "REFUND_FAILED", "admin", map[string]any{"detail": psErrMsg(gErr)})
-	return nil, infraerrors.InternalServer("REFUND_FAILED", psErrMsg(gErr))
+	// Gateway-first: ledger is not mutated before the provider call, so there is
+	// nothing to roll back — clear planned amounts to avoid inventing a credit.
+	p.BalanceToDeduct = 0
+	p.SubDaysToDeduct = 0
+	s.restoreStatus(ctx, p)
+	s.writeAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_FAILED", "admin", map[string]any{"detail": psErrMsg(gErr)})
+	return &RefundResult{Success: false, Warning: "gateway failed: " + psErrMsg(gErr)}, nil
 }
 
 func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*RefundResult, error) {
@@ -645,13 +639,12 @@ func (s *PaymentService) markRefundOkTx(ctx context.Context, client *dbent.Clien
 }
 
 func (s *PaymentService) markRefundPending(ctx context.Context, p *RefundPlan, resp *payment.RefundResponse) (*RefundResult, error) {
-	balanceDeducted := p.BalanceToDeduct
-	subDaysDeducted := p.SubDaysToDeduct
-	rollbackOK := s.RollbackRefund(ctx, p, nil)
-	if rollbackOK {
-		p.BalanceToDeduct = 0
-		p.SubDaysToDeduct = 0
-	}
+	// Gateway-first: planned BalanceToDeduct/SubDaysToDeduct are not yet applied.
+	// Do not credit them back — that would invent balance. Finalize deducts later.
+	plannedBalance := p.BalanceToDeduct
+	plannedSubDays := p.SubDaysToDeduct
+	p.BalanceToDeduct = 0
+	p.SubDaysToDeduct = 0
 
 	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).
 		SetStatus(OrderStatusRefundPending).
@@ -667,23 +660,19 @@ func (s *PaymentService) markRefundPending(ctx context.Context, p *RefundPlan, r
 	}
 
 	detail := map[string]any{
-		"refundID":            refundResponseID(resp),
-		"refundAmount":        p.RefundAmount,
-		"reason":              p.Reason,
-		"force":               p.Force,
-		"balanceDeducted":     p.BalanceToDeduct,
-		"subDaysDeducted":     p.SubDaysToDeduct,
-		"balanceRolledBack":   balanceDeducted,
-		"subDaysRolledBack":   subDaysDeducted,
-		"deductionRollbackOK": rollbackOK,
+		"refundID":             refundResponseID(resp),
+		"refundAmount":         p.RefundAmount,
+		"reason":               p.Reason,
+		"force":                p.Force,
+		"balanceDeducted":      0,
+		"subDaysDeducted":      0,
+		"plannedBalanceDeduct": plannedBalance,
+		"plannedSubDaysDeduct": plannedSubDays,
+		"deductionRollbackOK":  true, // nothing taken yet; finalize may deduct
 	}
 	s.writeAuditLog(ctx, p.OrderID, "REFUND_PENDING", "admin", detail)
 
-	warning := "gateway refund is pending confirmation"
-	if !rollbackOK {
-		warning += "; refund deduction rollback failed"
-	}
-	return &RefundResult{Success: false, Warning: warning}, nil
+	return &RefundResult{Success: false, Warning: "gateway refund is pending confirmation"}, nil
 }
 
 func refundResponseID(resp *payment.RefundResponse) string {
