@@ -39,10 +39,11 @@ func RegisterPaymentRoutes(
 			orders.POST("", paymentHandler.CreateOrder)
 			orders.POST("/verify", paymentHandler.VerifyOrder)
 			orders.GET("/my", paymentHandler.GetMyOrders)
+			// Static path before /:id so it is not captured as an order id.
+			orders.GET("/refund-eligible-providers", paymentHandler.GetRefundEligibleProviders)
 			orders.GET("/:id", paymentHandler.GetOrder)
 			orders.POST("/:id/cancel", paymentHandler.CancelOrder)
 			orders.POST("/:id/refund-request", paymentHandler.RequestRefund)
-			orders.GET("/refund-eligible-providers", paymentHandler.GetRefundEligibleProviders)
 		}
 	}
 
