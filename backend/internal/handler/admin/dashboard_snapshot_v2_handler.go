@@ -135,7 +135,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		)
 	})
 	if err != nil {
-		response.Error(c, 500, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 	if cached.ETag != "" {
