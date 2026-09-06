@@ -9,9 +9,12 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
@@ -53,8 +56,50 @@ func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadByte
 	}
 }
 
+// validateImageResolvedIP 校验下载 URL 解析后的 IP；测试可替换以避开真实 DNS。
+var validateImageResolvedIP = urlvalidator.ValidateResolvedIP
+
 func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req == nil || req.URL == nil {
+				return errors.New("invalid redirect")
+			}
+			if _, err := normalizeImageDownloadURL(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+// normalizeImageDownloadURL 按 openai_images_b64_backfill 的同等策略校验出站图片 URL：
+// 仅允许 http(s)、无条件拒绝私网/回环等字面量主机，并校验解析后的 IP。
+// 不受 security.url_allowlist 配置影响。
+func normalizeImageDownloadURL(raw string) (string, error) {
+	normalized, err := urlvalidator.ValidateURLFormat(raw, true)
+	if err != nil {
+		return "", fmt.Errorf("invalid image url: %w", err)
+	}
+	if err := rejectPrivateImageHost(normalized); err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid image url: %w", err)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return "", errors.New("invalid host")
+	}
+	if err := validateImageResolvedIP(host); err != nil {
+		return "", err
+	}
+	return normalized, nil
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -192,7 +237,11 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	downloadURL, err := normalizeImageDownloadURL(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("image url not allowed: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("build download request: %w", err)
 	}
