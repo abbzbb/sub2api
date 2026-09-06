@@ -93,8 +93,36 @@ describe('HomeView compact mode', () => {
       home_content: ' https://example.com/home ',
     })
 
-    expect(wrapper.get('iframe').attributes('src')).toBe('https://example.com/home')
+    const iframe = wrapper.get('iframe')
+    expect(iframe.attributes('src')).toBe('https://example.com/home')
+    expect(iframe.attributes('sandbox')).toBe(
+      'allow-scripts allow-same-origin allow-forms allow-popups',
+    )
     expect(wrapper.find('[data-testid="compact-home"]').exists()).toBe(false)
+  })
+
+  it('strips malicious HTML from custom home content', () => {
+    const wrapper = mountHome({
+      home_content:
+        '<img src=x onerror="alert(1)"><script>alert(1)</script><p id="safe-home">ok</p>',
+    })
+
+    const html = wrapper.html()
+    expect(html).not.toContain('onerror')
+    expect(html).not.toContain('<script>')
+    expect(wrapper.get('#safe-home').text()).toBe('ok')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+  })
+
+  it('rejects javascript: URLs for iframe home content', () => {
+    const wrapper = mountHome({
+      compact_home_enabled: true,
+      home_content: 'javascript:alert(1)',
+    })
+
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    expect(wrapper.find('[src^="javascript:"]').exists()).toBe(false)
+    expect(wrapper.find('[href^="javascript:"]').exists()).toBe(false)
   })
 
   it('treats whitespace-only custom content as empty and selects compact mode', () => {
