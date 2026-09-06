@@ -1,12 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -73,16 +74,22 @@ func TestImageResultUploaderRewritesB64JSON(t *testing.T) {
 }
 
 func TestImageResultUploaderRewritesURL(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes)
-	}))
-	defer upstream.Close()
+	orig := validateImageResolvedIP
+	validateImageResolvedIP = func(string) error { return nil }
+	t.Cleanup(func() { validateImageResolvedIP = orig })
 
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "https://cdn.example.com/pic.png", req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pngBytes)),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
 	storage := &fakeImageStorage{}
-	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	uploader := NewImageResultUploader(storage, "images/", 0, client)
 
-	result := json.RawMessage(`{"created":1,"data":[{"url":"` + upstream.URL + `/pic.png"}]}`)
+	result := json.RawMessage(`{"created":1,"data":[{"url":"https://cdn.example.com/pic.png"}]}`)
 	out, err := uploader.Rewrite(context.Background(), "imgtask_xyz", result)
 	require.NoError(t, err)
 
@@ -243,4 +250,85 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+}
+
+func TestImageResultUploaderRejectsPrivateDownloadURLs(t *testing.T) {
+	orig := validateImageResolvedIP
+	validateImageResolvedIP = func(string) error { return nil }
+	t.Cleanup(func() { validateImageResolvedIP = orig })
+
+	var dials int
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		dials++
+		return nil, errors.New("should not dial")
+	})})
+
+	for _, rawURL := range []string{
+		"http://localhost:8080/api/v1/admin/accounts",
+		"http://Foo.LocalHost/a.png",
+		"http://127.0.0.1:8080/a.png",
+		"https://127.0.0.1/a.png",
+		"http://[::1]:8080/a.png",
+		"http://10.0.0.5/a.png",
+		"http://172.16.0.9:9000/bucket/a.png",
+		"http://192.168.1.10:9000/bucket/a.png",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://0.0.0.0:8080/a.png",
+		"http://[fe80::1]/a.png",
+		"http://[::ffff:127.0.0.1]/a.png",
+		"ftp://cdn.example.com/a.png",
+	} {
+		result, err := json.Marshal(map[string]any{"data": []map[string]string{{"url": rawURL}}})
+		require.NoError(t, err)
+		_, err = uploader.Rewrite(context.Background(), "imgtask_ssrf", result)
+		require.Error(t, err, "url=%s", rawURL)
+		require.Contains(t, err.Error(), "image url not allowed", "url=%s", rawURL)
+	}
+	require.Zero(t, dials, "private destinations must never be requested")
+
+	// 同一路径下公网主机照常下载，证明拒绝依据是目的地而非协议。
+	result := json.RawMessage(`{"data":[{"url":"http://cdn.example.com/a.png"}]}`)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://cdn.example.com/a.png", req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pngBytes)),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
+	uploader = NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_public", result)
+	require.NoError(t, err)
+}
+
+func TestImageResultUploaderRedirectCheckerRejectsPrivateHops(t *testing.T) {
+	client := defaultImageDownloadHTTPClient()
+	require.NotNil(t, client.CheckRedirect)
+
+	via := []*http.Request{mustHTTPRequest(t, "https://cdn.example.com/a.png")}
+	for _, hop := range []string{
+		"http://127.0.0.1:8080/a.png",
+		"http://[::1]:8080/a.png",
+		"http://10.0.0.8/a.png",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://0.0.0.0/a.png",
+	} {
+		hopReq := mustHTTPRequest(t, hop)
+		require.Error(t, client.CheckRedirect(hopReq, via), "hop=%s", hop)
+	}
+
+	orig := validateImageResolvedIP
+	validateImageResolvedIP = func(string) error { return nil }
+	t.Cleanup(func() { validateImageResolvedIP = orig })
+
+	publicHop := mustHTTPRequest(t, "http://93.184.216.34/a.png")
+	require.NoError(t, client.CheckRedirect(publicHop, via))
+	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
+}
+
+func mustHTTPRequest(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	require.NoError(t, err)
+	return req
 }
