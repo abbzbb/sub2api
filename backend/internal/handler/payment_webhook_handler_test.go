@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -96,6 +97,45 @@ func TestWriteSuccessResponse(t *testing.T) {
 			} else {
 				assert.Equal(t, tt.wantBody, w.Body.String())
 			}
+		})
+	}
+}
+
+// TestHandleNotifyProviderLookupFailureReturns4xx locks the contract that
+// GetWebhookProviders errors must NOT writeSuccessResponse for non-WeChat
+// providers. A nil entClient makes registry fallback fail for every non-wxpay
+// key, so handleNotify exits before VerifyNotification — the bug path that
+// previously returned 200 "success" / empty 200 and falsely ACKed the webhook.
+func TestHandleNotifyProviderLookupFailureReturns4xx(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	paymentSvc := service.NewPaymentService(nil, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
+	h := NewPaymentWebhookHandler(paymentSvc, payment.NewRegistry())
+
+	tests := []struct {
+		name string
+		call func(*gin.Context)
+		body string
+	}{
+		// Bodies omit out_trade_no so GetWebhookProviders skips the order
+		// lookup and hits the failing registry-fallback path (nil entClient).
+		{name: "stripe", call: h.StripeWebhook, body: `{"type":"checkout.session.completed"}`},
+		{name: "alipay", call: h.AlipayNotify, body: "trade_status=TRADE_SUCCESS"},
+		{name: "easypay", call: h.EasyPayNotify, body: "trade_status=TRADE_SUCCESS"},
+		{name: "airwallex", call: h.AirwallexWebhook, body: `{"name":"payment_intent.succeeded"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(tt.body))
+
+			tt.call(c)
+
+			require.Equal(t, http.StatusBadRequest, w.Code,
+				"provider lookup failure must be 4xx, not a success ACK")
+			require.Equal(t, "verify failed", w.Body.String())
 		})
 	}
 }
