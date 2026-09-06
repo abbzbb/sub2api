@@ -1469,7 +1469,47 @@ func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 	require.Equal(t, "insufficient_quota", response.Error.Code)
 }
 
-func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
+func TestAPIKeyAuthOpenAIQuotaErrorFormatForChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{ID: 11, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
+	group := &service.Group{ID: 8, Platform: service.PlatformOpenAI, Status: service.StatusActive}
+	apiKey := &service.APIKey{
+		ID: 105, UserID: user.ID, Key: "openai-quota-exhausted", Status: service.StatusAPIKeyQuotaExhausted,
+		User: user, Group: group, GroupID: &group.ID,
+	}
+	apiKeyRepo := &stubApiKeyRepo{getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+		if key != apiKey.Key {
+			return nil, service.ErrAPIKeyNotFound
+		}
+		clone := *apiKey
+		userClone := *user
+		clone.User = &userClone
+		return &clone, nil
+	}}
+
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("x-api-key", apiKey.Key)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	var response struct {
+		Error struct {
+			Message string  `json:"message"`
+			Type    string  `json:"type"`
+			Param   *string `json:"param"`
+			Code    string  `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Equal(t, "insufficient_quota", response.Error.Type)
+	require.Equal(t, "insufficient_quota", response.Error.Code)
+}
+
+func TestAPIKeyAuthQuotaErrorUsesAnthropicEnvelopeOnMessages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	user := &service.User{ID: 11, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
@@ -1496,7 +1536,13 @@ func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
-	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "error", body["type"])
+	errObj, _ := body["error"].(map[string]any)
+	require.Equal(t, "rate_limit_error", errObj["type"])
+	require.Equal(t, "API_KEY_QUOTA_EXHAUSTED", errObj["code"])
+	require.Equal(t, "API key 额度已用完", errObj["message"])
 }
 
 func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) *gin.Engine {
@@ -1507,6 +1553,7 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	}
 	router.GET("/t", ok)
 	router.POST("/v1/responses", ok)
+	router.POST("/v1/chat/completions", ok)
 	router.POST("/v1/messages", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)

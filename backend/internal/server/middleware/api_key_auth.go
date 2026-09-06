@@ -315,22 +315,7 @@ func abortWithAPIKeyQuotaError(c *gin.Context) {
 }
 
 func isOpenAICompatibleAPIKeyRequest(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return false
-	}
-
-	path := strings.TrimRight(c.Request.URL.Path, "/")
-	for _, root := range []string{
-		"/v1/responses",
-		"/openai/v1/responses",
-		"/responses",
-		"/backend-api/codex/responses",
-	} {
-		if path == root || strings.HasPrefix(path, root+"/") {
-			return true
-		}
-	}
-	return false
+	return gatewayErrorProtocol(c) == "openai"
 }
 
 func isAsyncImageTaskRead(method, path string) bool {
