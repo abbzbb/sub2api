@@ -29,7 +29,6 @@ describe('embedded-url', () => {
     const result = buildEmbeddedUrl(
       'https://pay.example.com/checkout?plan=pro',
       42,
-      'token-123',
       'dark',
       'zh-CN',
     )
@@ -37,7 +36,7 @@ describe('embedded-url', () => {
     const url = new URL(result)
     expect(url.searchParams.get('plan')).toBe('pro')
     expect(url.searchParams.get('user_id')).toBe('42')
-    expect(url.searchParams.get('token')).toBe('token-123')
+    expect(url.searchParams.has('token')).toBe(false)
     expect(url.searchParams.get('theme')).toBe('dark')
     expect(url.searchParams.get('lang')).toBe('zh-CN')
     expect(url.searchParams.get('ui_mode')).toBe('embedded')
@@ -45,8 +44,21 @@ describe('embedded-url', () => {
     expect(url.searchParams.get('src_url')).toBe('https://app.example.com/user/purchase')
   })
 
+  it('never appends an access-token token= query parameter', () => {
+    const result = buildEmbeddedUrl(
+      'https://pay.example.com/checkout',
+      42,
+      'light',
+      'en',
+    )
+
+    const url = new URL(result)
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(result).not.toMatch(/[?&]token=/)
+  })
+
   it('omits optional params when they are empty', () => {
-    const result = buildEmbeddedUrl('https://pay.example.com/checkout', undefined, '', 'light')
+    const result = buildEmbeddedUrl('https://pay.example.com/checkout', undefined, 'light')
 
     const url = new URL(result)
     expect(url.searchParams.get('theme')).toBe('light')
@@ -57,7 +69,7 @@ describe('embedded-url', () => {
   })
 
   it('returns original string for invalid url input', () => {
-    expect(buildEmbeddedUrl('not a url', 1, 'token')).toBe('not a url')
+    expect(buildEmbeddedUrl('not a url', 1)).toBe('not a url')
   })
 
   it('detects dark mode from document root class', () => {

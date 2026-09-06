@@ -107,6 +107,8 @@
           <iframe
             :src="embeddedUrl"
             class="custom-embed-frame"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+            referrerpolicy="no-referrer"
             allowfullscreen
           ></iframe>
         </div>
@@ -175,10 +177,10 @@ const isMarkdownMode = computed(() => !!markdownSlug.value)
 
 const embeddedUrl = computed(() => {
   if (!menuItem.value || isMarkdownMode.value) return ''
+  // Shared by iframe src and open-in-new-tab; never includes auth JWT.
   return buildEmbeddedUrl(
     menuItem.value.url,
     authStore.user?.id,
-    authStore.token,
     pageTheme.value,
     locale.value,
   )
