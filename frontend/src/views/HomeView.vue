@@ -4,12 +4,13 @@
     <!-- iframe mode -->
     <iframe
       v-if="isHomeContentUrl"
-      :src="homeContent.trim()"
+      :src="homeContentUrl"
       class="h-screen w-full border-0"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
       allowfullscreen
     ></iframe>
-    <!-- HTML mode - SECURITY: homeContent is admin-only setting, XSS risk is acceptable -->
-    <div v-else v-html="homeContent"></div>
+    <!-- HTML mode: Markdown/HTML sanitized via DOMPurify before v-html -->
+    <div v-else v-html="sanitizedHomeContent"></div>
   </div>
 
   <!-- Compact Home Page -->
@@ -500,6 +501,7 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
+import { sanitizeMarkdownHtml } from '@/utils/sanitize'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 
 const { t } = useI18n()
@@ -513,15 +515,16 @@ const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'AI API Gateway Platform')
 const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || ''))
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
-const hasHomeContent = computed(() => homeContent.value.trim().length > 0)
+const homeContentUrl = computed(() => sanitizeUrl(homeContent.value))
+const isHomeContentUrl = computed(() => homeContentUrl.value.length > 0)
+const sanitizedHomeContent = computed(() =>
+  isHomeContentUrl.value ? '' : sanitizeMarkdownHtml(homeContent.value),
+)
+const hasHomeContent = computed(
+  () => isHomeContentUrl.value || sanitizedHomeContent.value.trim().length > 0,
+)
 const compactHomeEnabled = computed(() => appStore.cachedPublicSettings?.compact_home_enabled === true)
 const modelPlazaEnabled = computed(() => isFeatureFlagEnabled(FeatureFlags.modelPlaza))
-
-// Check if homeContent is a URL (for iframe display)
-const isHomeContentUrl = computed(() => {
-  const content = homeContent.value.trim()
-  return content.startsWith('http://') || content.startsWith('https://')
-})
 
 // Theme
 const isDark = ref(document.documentElement.classList.contains('dark'))
