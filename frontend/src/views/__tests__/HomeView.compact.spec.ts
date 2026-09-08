@@ -95,9 +95,8 @@ describe('HomeView compact mode', () => {
 
     const iframe = wrapper.get('iframe')
     expect(iframe.attributes('src')).toBe('https://example.com/home')
-    expect(iframe.attributes('sandbox')).toBe(
-      'allow-scripts allow-same-origin allow-forms allow-popups',
-    )
+    expect(iframe.attributes('sandbox')).toBe('allow-scripts allow-forms allow-popups')
+    expect(iframe.attributes('sandbox')).not.toContain('allow-same-origin')
     expect(wrapper.find('[data-testid="compact-home"]').exists()).toBe(false)
   })
 

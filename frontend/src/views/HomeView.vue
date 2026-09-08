@@ -6,7 +6,7 @@
       v-if="isHomeContentUrl"
       :src="homeContentUrl"
       class="h-screen w-full border-0"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      sandbox="allow-scripts allow-forms allow-popups"
       allowfullscreen
     ></iframe>
     <!-- HTML mode: Markdown/HTML sanitized via DOMPurify before v-html -->
