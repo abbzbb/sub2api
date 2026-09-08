@@ -136,29 +136,35 @@ func normalizeIngressRejectIP(raw string) string {
 func ingressRejectRoute(path string) (string, string) {
 	path = strings.ToLower(strings.TrimSpace(path))
 	switch {
-	case strings.HasPrefix(path, "/antigravity/v1beta"):
+	case hasIngressRouteNamespace(path, "/antigravity/v1beta"):
 		return "antigravity", "google"
-	case strings.HasPrefix(path, "/v1beta"):
+	case hasIngressRouteNamespace(path, "/v1beta"):
 		return "gemini", "google"
-	case strings.HasPrefix(path, "/backend-api/codex"):
+	case hasIngressRouteNamespace(path, "/backend-api/codex"):
 		return "codex", "openai"
-	case strings.HasPrefix(path, "/antigravity"):
+	case hasIngressRouteNamespace(path, "/antigravity"):
 		return "antigravity", "anthropic"
-	case strings.Contains(path, "/messages"):
+	case path == "/v1/usage":
+		return "other", "anthropic"
+	case hasIngressRouteNamespace(path, "/v1/messages"), hasIngressRouteNamespace(path, "/messages"):
 		return "messages", "anthropic"
-	case strings.Contains(path, "/responses"):
+	case hasIngressRouteNamespace(path, "/v1/responses"), hasIngressRouteNamespace(path, "/responses"):
 		return "responses", "openai"
-	case strings.Contains(path, "/chat/completions"):
+	case hasIngressRouteNamespace(path, "/v1/chat/completions"), hasIngressRouteNamespace(path, "/chat/completions"):
 		return "chat_completions", "openai"
-	case strings.Contains(path, "/images"):
+	case hasIngressRouteNamespace(path, "/v1/images"), hasIngressRouteNamespace(path, "/images"):
 		return "images", "openai"
-	case strings.Contains(path, "/videos"):
+	case hasIngressRouteNamespace(path, "/v1/videos"), hasIngressRouteNamespace(path, "/videos"):
 		return "videos", "openai"
-	case strings.Contains(path, "/embeddings"):
+	case hasIngressRouteNamespace(path, "/v1/embeddings"), hasIngressRouteNamespace(path, "/embeddings"):
 		return "embeddings", "openai"
-	case strings.Contains(path, "/models"):
+	case hasIngressRouteNamespace(path, "/v1/models"), hasIngressRouteNamespace(path, "/models"):
 		return "models", "openai"
 	default:
 		return "other", "gateway"
 	}
+}
+
+func hasIngressRouteNamespace(path, namespace string) bool {
+	return path == namespace || strings.HasPrefix(path, namespace+"/")
 }

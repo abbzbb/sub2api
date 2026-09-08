@@ -29,6 +29,29 @@ func TestNormalizeIngressRejectIP(t *testing.T) {
 	require.Equal(t, "0.0.0.0", normalizeIngressRejectIP("not-an-ip"))
 }
 
+func TestIngressRejectRouteUsesLeadingGatewayNamespace(t *testing.T) {
+	tests := []struct {
+		path            string
+		wantRouteFamily string
+		wantProtocol    string
+	}{
+		{path: "/v1/messages", wantRouteFamily: "messages", wantProtocol: "anthropic"},
+		{path: "/messages/count_tokens", wantRouteFamily: "messages", wantProtocol: "anthropic"},
+		{path: "/v1/responses", wantRouteFamily: "responses", wantProtocol: "openai"},
+		{path: "/responses/messages", wantRouteFamily: "responses", wantProtocol: "openai"},
+		{path: "/v1/responses/messages", wantRouteFamily: "responses", wantProtocol: "openai"},
+		{path: "/v1/usage", wantRouteFamily: "other", wantProtocol: "anthropic"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			routeFamily, protocol := ingressRejectRoute(tc.path)
+			require.Equal(t, tc.wantRouteFamily, routeFamily)
+			require.Equal(t, tc.wantProtocol, protocol)
+		})
+	}
+}
+
 func TestLoggerRecordsIngressRejectOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := &ingressRejectRecorderStub{}

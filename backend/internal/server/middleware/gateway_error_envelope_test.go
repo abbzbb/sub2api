@@ -29,7 +29,10 @@ func TestGatewayProtocolErrorWriterSelectsEnvelope(t *testing.T) {
 	}{
 		{name: "completions", path: "/v1/chat/completions", wantOpenAI: true},
 		{name: "responses", path: "/v1/responses", wantOpenAI: true},
+		{name: "responses subpath containing messages", path: "/v1/responses/messages", wantOpenAI: true},
+		{name: "responses alias subpath containing messages", path: "/responses/messages", wantOpenAI: true},
 		{name: "anthropic", path: "/v1/messages", wantAnthropic: true},
+		{name: "usage", path: "/v1/usage", wantAnthropic: true},
 		{name: "gemini", path: "/v1beta/models/gemini-pro:generateContent", wantGoogle: true},
 	}
 
@@ -75,6 +78,8 @@ func TestAPIKeyAuthGatewayMissingAndInvalidKeyEnvelopes(t *testing.T) {
 	router.POST("/v1/messages", ok)
 	router.POST("/v1/chat/completions", ok)
 	router.POST("/v1/responses", ok)
+	router.POST("/v1/responses/messages", ok)
+	router.GET("/v1/usage", ok)
 
 	t.Run("missing_key_anthropic", func(t *testing.T) {
 		w := httptest.NewRecorder()
@@ -107,9 +112,40 @@ func TestAPIKeyAuthGatewayMissingAndInvalidKeyEnvelopes(t *testing.T) {
 		require.NotContains(t, w.Body.String(), `"code":401`)
 	})
 
+	t.Run("missing_key_anthropic_usage", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		require.Equal(t, "error", body["type"])
+		errObj, _ := body["error"].(map[string]any)
+		require.Equal(t, "authentication_error", errObj["type"])
+		require.Equal(t, "API_KEY_REQUIRED", errObj["code"])
+		require.Contains(t, errObj["message"], "API key is required")
+	})
+
 	t.Run("bad_key_anthropic", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("x-api-key", "not-a-real-key")
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		require.Equal(t, "error", body["type"])
+		errObj, _ := body["error"].(map[string]any)
+		require.Equal(t, "authentication_error", errObj["type"])
+		require.Equal(t, "INVALID_API_KEY", errObj["code"])
+		require.Equal(t, "Invalid API key", errObj["message"])
+	})
+
+	t.Run("bad_key_anthropic_usage", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
 		req.Header.Set("x-api-key", "not-a-real-key")
 		router.ServeHTTP(w, req)
 		require.Equal(t, http.StatusUnauthorized, w.Code)
@@ -137,6 +173,20 @@ func TestAPIKeyAuthGatewayMissingAndInvalidKeyEnvelopes(t *testing.T) {
 		require.Equal(t, "Invalid API key", errObj["message"])
 		require.NotContains(t, body, "type")
 	})
+
+	t.Run("missing_key_openai_responses_subpath", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses/messages", nil)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		errObj, _ := body["error"].(map[string]any)
+		require.Equal(t, "invalid_request_error", errObj["type"])
+		require.Equal(t, "API_KEY_REQUIRED", errObj["code"])
+		require.NotContains(t, body, "type")
+	})
 }
 
 func TestRecoveryGatewayPanicUsesProtocolEnvelope(t *testing.T) {
@@ -144,23 +194,26 @@ func TestRecoveryGatewayPanicUsesProtocolEnvelope(t *testing.T) {
 
 	tests := []struct {
 		name          string
+		method        string
 		path          string
 		wantAnthropic bool
 		wantOpenAI    bool
 	}{
-		{name: "messages", path: "/v1/messages", wantAnthropic: true},
-		{name: "completions", path: "/v1/chat/completions", wantOpenAI: true},
-		{name: "responses", path: "/v1/responses", wantOpenAI: true},
+		{name: "messages", method: http.MethodPost, path: "/v1/messages", wantAnthropic: true},
+		{name: "usage", method: http.MethodGet, path: "/v1/usage", wantAnthropic: true},
+		{name: "completions", method: http.MethodPost, path: "/v1/chat/completions", wantOpenAI: true},
+		{name: "responses", method: http.MethodPost, path: "/v1/responses", wantOpenAI: true},
+		{name: "responses subpath containing messages", method: http.MethodPost, path: "/v1/responses/messages", wantOpenAI: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := gin.New()
 			r.Use(Recovery())
-			r.POST(tc.path, func(c *gin.Context) { panic("boom") })
+			r.Handle(tc.method, tc.path, func(c *gin.Context) { panic("boom") })
 
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req := httptest.NewRequest(tc.method, tc.path, nil)
 			r.ServeHTTP(w, req)
 
 			require.Equal(t, http.StatusInternalServerError, w.Code)
@@ -233,6 +286,7 @@ func TestRequireGroupAssignmentUsesProtocolEnvelope(t *testing.T) {
 	router.Use(RequireGroupAssignment(settingService, GatewayProtocolErrorWriter))
 	router.POST("/v1/chat/completions", func(c *gin.Context) { c.Status(http.StatusOK) })
 	router.POST("/v1/messages", func(c *gin.Context) { c.Status(http.StatusOK) })
+	router.GET("/v1/usage", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -243,6 +297,12 @@ func TestRequireGroupAssignmentUsesProtocolEnvelope(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), `"type":"error"`)
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/usage", nil)
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusForbidden, w.Code)
 	require.Contains(t, w.Body.String(), `"type":"error"`)
