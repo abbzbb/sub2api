@@ -627,7 +627,7 @@ Invalid base URL: invalid url scheme: http
 
 #### ⚠️ 重要：创建管理员账号
 
-初始管理员账号**只能通过 setup 向导创建**（首次启动时访问 `http://<host>:8080`）。`config.yaml` 中的 `default.admin_email` / `default.admin_password` 字段**不会被用来创建管理员**——它们只是出于历史原因保留在模板里。
+初始管理员账号**只能通过 setup 向导创建**（首次启动时访问 `http://<host>:8080`）。`config.yaml` 中旧版 `default.admin_email` / `default.admin_password` 配置**不会被用来创建管理员**，示例模板已不再包含这些字段。
 
 由于上面第 5 步预先创建了 `config.yaml`，**setup 向导在首次启动时会被跳过**：服务检测到 config 已存在，会直接进入正常模式，此时 `users` 表为空，首次登录会返回 `invalid email or password`。
 
