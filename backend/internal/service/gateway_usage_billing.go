@@ -389,14 +389,17 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 	//   - HasUserPlatformQuotaLimit 守卫:无 limit 的公司跳过,避免无效写入 + 浪费 Redis 容量
 	//   - Redis 同步:确保下次 preflight 立即看到最新 usage,把 TOCTOU 超支窗口
 	//     限制在并发 in-flight 请求数量内（旧实现的异步入队会让超支无限累积直到 worker 处理）
-	//   - DB 异步(flusher_enabled=false):在独立 goroutine 中走 detached context,失败用 ALERT log 触发 oncall 对账
+	//   - DB 异步(flusher_enabled=false):在独立 goroutine 中走 detached+timeout context
+	//     （与 postUsageBillingTimeout 对齐，避免客户端断开后异步配额写无限挂起）,失败用 ALERT log 触发 oncall 对账
 	//   - flusher_enabled=true:不直写 DB,由 flusher 异步批量刷（markDirty 已在 IncrementUserPlatformQuotaUsage 内部完成）
 	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil {
 		if deps.billingCacheService.HasUserPlatformQuotaLimit(ctx, p.User.ID, p.Platform) {
 			deps.billingCacheService.IncrementUserPlatformQuotaUsage(p.User.ID, p.Platform, p.Cost.ActualCost)
 			if deps.cfg == nil || !deps.cfg.Database.UserPlatformQuotaFlusherEnabled {
-				// 降级路径:flusher 未启用时保留原有异步直写 DB
-				dbCtx, dbCancel := detachUpstreamContext(ctx)
+				// 降级路径:flusher 未启用时保留原有异步直写 DB。
+				// 必须用 detachedBillingContext（WithoutCancel + WithTimeout），不能只用
+				// detachUpstreamContext：后者会剥掉 deadline，客户端断开后 DB 写可能无限挂起。
+				dbCtx, dbCancel := detachedBillingContext(ctx)
 				userID, platform, cost := p.User.ID, p.Platform, p.Cost.ActualCost
 				go func() {
 					defer func() {
