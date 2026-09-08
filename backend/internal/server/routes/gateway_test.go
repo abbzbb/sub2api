@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,10 @@ func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 }
 
 func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string) *gin.Engine {
+	return newGatewayRoutesTestRouterWithResolver(cfg, nil, platform...)
+}
+
+func newGatewayRoutesTestRouterWithResolver(cfg *config.Config, resolver *service.CompositeRouteResolver, platform ...string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -43,7 +48,7 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 			groupID := int64(1)
 			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
 				GroupID: &groupID,
-				Group:   &service.Group{Platform: groupPlatform},
+				Group:   &service.Group{ID: groupID, Platform: groupPlatform},
 			})
 			c.Next()
 		}),
@@ -51,7 +56,7 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 		nil,
 		nil,
 		nil,
-		nil,
+		resolver,
 		cfg,
 		nil, // connectionSignalEmitter
 	)
@@ -374,6 +379,43 @@ func TestGatewayRoutesCompositeVideoEditAndExtensionAllowed(t *testing.T) {
 		router.ServeHTTP(w, req)
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit Grok video edit/extension handler", path)
 		require.NotContains(t, w.Body.String(), "not supported for this platform")
+	}
+}
+
+func TestGatewayRoutesCompositeVideoEditAndExtensionRequireResolvedGrokModel(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		model     string
+		ambiguous bool
+	}{
+		{name: "missing model"},
+		{name: "unknown model", model: "unknown-video-model"},
+		{name: "ambiguous ownership", model: "grok-imagine-video", ambiguous: true},
+		{name: "other provider", model: "gpt-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := service.NewCompositeRouteResolver(nil)
+			resolver.SetModelOwnershipResolver(func(context.Context, int64, string) (service.CompositeModelOwnership, error) {
+				return service.CompositeModelOwnership{Ambiguous: tc.ambiguous}, nil
+			})
+			router := newGatewayRoutesTestRouterWithResolver(&config.Config{
+				Gateway: config.GatewayConfig{MaxBodySize: 1024 * 1024, TextMaxBodySize: 1024 * 1024},
+			}, resolver, service.PlatformComposite)
+			body, err := json.Marshal(gin.H{
+				"model": tc.model, "prompt": "waves", "video": gin.H{"url": "https://example.com/in.mp4"},
+			})
+			require.NoError(t, err)
+
+			for _, path := range []string{"/v1/videos/edits", "/videos/edits", "/v1/videos/extensions", "/videos/extensions"} {
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+
+				require.Equal(t, http.StatusNotFound, w.Code, "path=%s", path)
+				require.Contains(t, w.Body.String(), "Videos API is not supported for this platform", "path=%s", path)
+			}
+		})
 	}
 }
 
