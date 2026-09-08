@@ -987,10 +987,14 @@ ops:
 # JWT 配置
 # =============================================================================
 jwt:
-  # IMPORTANT: Change this to a random string in production!
-  # 重要：生产环境中请更改为随机字符串！
+  # IMPORTANT: Set a fixed random secret in production!
+  # 重要：生产环境请设置固定的随机密钥！
+  # Leave empty to generate once and persist in the database; restarts reuse it.
+  # 留空则自动生成并持久化到数据库，重启时复用同一密钥。
+  # An existing database secret takes precedence over this setting.
+  # 数据库中已有的密钥优先于此配置。
   # Generate with / 生成命令: openssl rand -hex 32
-  secret: "change-this-to-a-secure-random-string"
+  secret: ""
   # Token expiration time in hours (max 168)
   # 令牌过期时间（小时，最大 168）
   expire_hour: 24
@@ -1085,11 +1089,6 @@ oidc_connect:
 # 默认设置
 # =============================================================================
 default:
-  # Initial admin account (created on first run)
-  # 初始管理员账户（首次运行时创建）
-  admin_email: "admin@example.com"
-  admin_password: "admin123"
-
   # Default settings for new users
   # 新用户默认设置
   # Max concurrent requests per user

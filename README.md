@@ -672,7 +672,7 @@ container, so it is read again after an image update or container recreation.
 
 #### ⚠️ Important: Creating the Admin Account
 
-The initial admin account is **only created via the setup wizard** (served at `http://<host>:8080` on first run). The `default.admin_email` / `default.admin_password` fields in `config.yaml` are **not used** to create it — they exist in the template for historical reasons.
+The initial admin account is **only created via the setup wizard** (served at `http://<host>:8080` on first run). Legacy `default.admin_email` / `default.admin_password` settings in `config.yaml` are **not used** to create it and are omitted from the example template.
 
 Because step 5 above pre-creates `config.yaml`, the setup wizard will be **skipped on first run**: the server detects an existing config and boots straight into normal mode with an empty `users` table, so the first login attempt fails with `invalid email or password`.
 

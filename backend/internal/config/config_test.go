@@ -1463,6 +1463,9 @@ func TestValidateJWTSecretStrength(t *testing.T) {
 	if !isWeakJWTSecret("change-me-in-production") {
 		t.Fatalf("isWeakJWTSecret should detect weak secret")
 	}
+	if !isWeakJWTSecret("change-this-to-a-secure-random-string") {
+		t.Fatalf("isWeakJWTSecret should detect example placeholder secret")
+	}
 	if isWeakJWTSecret("StrongSecretValue") {
 		t.Fatalf("isWeakJWTSecret should accept strong secret")
 	}
