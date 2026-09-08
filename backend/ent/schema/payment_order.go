@@ -3,6 +3,8 @@ package schema
 import (
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
+
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
@@ -105,6 +107,9 @@ func (PaymentOrder) Fields() []ent.Field {
 			Default("PENDING"),
 
 		// 退款信息
+		field.JSON("refund_state", &domain.PaymentRefundState{}).
+			Optional().
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.Float("refund_amount").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,2)"}).
 			Default(0),

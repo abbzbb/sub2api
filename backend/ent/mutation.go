@@ -30252,6 +30252,7 @@ type PaymentOrderMutation struct {
 	provider_key             *string
 	provider_snapshot        *map[string]interface{}
 	status                   *string
+	refund_state             **domain.PaymentRefundState
 	refund_amount            *float64
 	addrefund_amount         *float64
 	refund_reason            *string
@@ -31421,6 +31422,55 @@ func (m *PaymentOrderMutation) ResetStatus() {
 	m.status = nil
 }
 
+// SetRefundState sets the "refund_state" field.
+func (m *PaymentOrderMutation) SetRefundState(drs *domain.PaymentRefundState) {
+	m.refund_state = &drs
+}
+
+// RefundState returns the value of the "refund_state" field in the mutation.
+func (m *PaymentOrderMutation) RefundState() (r *domain.PaymentRefundState, exists bool) {
+	v := m.refund_state
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRefundState returns the old "refund_state" field's value of the PaymentOrder entity.
+// If the PaymentOrder object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PaymentOrderMutation) OldRefundState(ctx context.Context) (v *domain.PaymentRefundState, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRefundState is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRefundState requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRefundState: %w", err)
+	}
+	return oldValue.RefundState, nil
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (m *PaymentOrderMutation) ClearRefundState() {
+	m.refund_state = nil
+	m.clearedFields[paymentorder.FieldRefundState] = struct{}{}
+}
+
+// RefundStateCleared returns if the "refund_state" field was cleared in this mutation.
+func (m *PaymentOrderMutation) RefundStateCleared() bool {
+	_, ok := m.clearedFields[paymentorder.FieldRefundState]
+	return ok
+}
+
+// ResetRefundState resets all changes to the "refund_state" field.
+func (m *PaymentOrderMutation) ResetRefundState() {
+	m.refund_state = nil
+	delete(m.clearedFields, paymentorder.FieldRefundState)
+}
+
 // SetRefundAmount sets the "refund_amount" field.
 func (m *PaymentOrderMutation) SetRefundAmount(f float64) {
 	m.refund_amount = &f
@@ -32244,7 +32294,7 @@ func (m *PaymentOrderMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *PaymentOrderMutation) Fields() []string {
-	fields := make([]string, 0, 39)
+	fields := make([]string, 0, 40)
 	if m.user != nil {
 		fields = append(fields, paymentorder.FieldUserID)
 	}
@@ -32310,6 +32360,9 @@ func (m *PaymentOrderMutation) Fields() []string {
 	}
 	if m.status != nil {
 		fields = append(fields, paymentorder.FieldStatus)
+	}
+	if m.refund_state != nil {
+		fields = append(fields, paymentorder.FieldRefundState)
 	}
 	if m.refund_amount != nil {
 		fields = append(fields, paymentorder.FieldRefundAmount)
@@ -32414,6 +32467,8 @@ func (m *PaymentOrderMutation) Field(name string) (ent.Value, bool) {
 		return m.ProviderSnapshot()
 	case paymentorder.FieldStatus:
 		return m.Status()
+	case paymentorder.FieldRefundState:
+		return m.RefundState()
 	case paymentorder.FieldRefundAmount:
 		return m.RefundAmount()
 	case paymentorder.FieldRefundReason:
@@ -32501,6 +32556,8 @@ func (m *PaymentOrderMutation) OldField(ctx context.Context, name string) (ent.V
 		return m.OldProviderSnapshot(ctx)
 	case paymentorder.FieldStatus:
 		return m.OldStatus(ctx)
+	case paymentorder.FieldRefundState:
+		return m.OldRefundState(ctx)
 	case paymentorder.FieldRefundAmount:
 		return m.OldRefundAmount(ctx)
 	case paymentorder.FieldRefundReason:
@@ -32697,6 +32754,13 @@ func (m *PaymentOrderMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetStatus(v)
+		return nil
+	case paymentorder.FieldRefundState:
+		v, ok := value.(*domain.PaymentRefundState)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRefundState(v)
 		return nil
 	case paymentorder.FieldRefundAmount:
 		v, ok := value.(float64)
@@ -32964,6 +33028,9 @@ func (m *PaymentOrderMutation) ClearedFields() []string {
 	if m.FieldCleared(paymentorder.FieldProviderSnapshot) {
 		fields = append(fields, paymentorder.FieldProviderSnapshot)
 	}
+	if m.FieldCleared(paymentorder.FieldRefundState) {
+		fields = append(fields, paymentorder.FieldRefundState)
+	}
 	if m.FieldCleared(paymentorder.FieldRefundReason) {
 		fields = append(fields, paymentorder.FieldRefundReason)
 	}
@@ -33037,6 +33104,9 @@ func (m *PaymentOrderMutation) ClearField(name string) error {
 		return nil
 	case paymentorder.FieldProviderSnapshot:
 		m.ClearProviderSnapshot()
+		return nil
+	case paymentorder.FieldRefundState:
+		m.ClearRefundState()
 		return nil
 	case paymentorder.FieldRefundReason:
 		m.ClearRefundReason()
@@ -33141,6 +33211,9 @@ func (m *PaymentOrderMutation) ResetField(name string) error {
 		return nil
 	case paymentorder.FieldStatus:
 		m.ResetStatus()
+		return nil
+	case paymentorder.FieldRefundState:
+		m.ResetRefundState()
 		return nil
 	case paymentorder.FieldRefundAmount:
 		m.ResetRefundAmount()

@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/user"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // PaymentOrderUpdate is the builder for updating PaymentOrder entities.
@@ -428,6 +429,18 @@ func (_u *PaymentOrderUpdate) SetNillableStatus(v *string) *PaymentOrderUpdate {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetRefundState sets the "refund_state" field.
+func (_u *PaymentOrderUpdate) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderUpdate {
+	_u.mutation.SetRefundState(v)
+	return _u
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (_u *PaymentOrderUpdate) ClearRefundState() *PaymentOrderUpdate {
+	_u.mutation.ClearRefundState()
 	return _u
 }
 
@@ -962,6 +975,12 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.RefundState(); ok {
+		_spec.SetField(paymentorder.FieldRefundState, field.TypeJSON, value)
+	}
+	if _u.mutation.RefundStateCleared() {
+		_spec.ClearField(paymentorder.FieldRefundState, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
 	}
@@ -1491,6 +1510,18 @@ func (_u *PaymentOrderUpdateOne) SetNillableStatus(v *string) *PaymentOrderUpdat
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetRefundState sets the "refund_state" field.
+func (_u *PaymentOrderUpdateOne) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderUpdateOne {
+	_u.mutation.SetRefundState(v)
+	return _u
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (_u *PaymentOrderUpdateOne) ClearRefundState() *PaymentOrderUpdateOne {
+	_u.mutation.ClearRefundState()
 	return _u
 }
 
@@ -2054,6 +2085,12 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.RefundState(); ok {
+		_spec.SetField(paymentorder.FieldRefundState, field.TypeJSON, value)
+	}
+	if _u.mutation.RefundStateCleared() {
+		_spec.ClearField(paymentorder.FieldRefundState, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)

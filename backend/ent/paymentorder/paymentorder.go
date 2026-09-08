@@ -58,6 +58,8 @@ const (
 	FieldProviderSnapshot = "provider_snapshot"
 	// FieldStatus holds the string denoting the status field in the database.
 	FieldStatus = "status"
+	// FieldRefundState holds the string denoting the refund_state field in the database.
+	FieldRefundState = "refund_state"
 	// FieldRefundAmount holds the string denoting the refund_amount field in the database.
 	FieldRefundAmount = "refund_amount"
 	// FieldRefundReason holds the string denoting the refund_reason field in the database.
@@ -130,6 +132,7 @@ var Columns = []string{
 	FieldProviderKey,
 	FieldProviderSnapshot,
 	FieldStatus,
+	FieldRefundState,
 	FieldRefundAmount,
 	FieldRefundReason,
 	FieldRefundAt,
