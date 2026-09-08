@@ -1,5 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildEmbeddedUrl, detectTheme } from '../embedded-url'
+
+const dir = dirname(fileURLToPath(import.meta.url))
+const customPageViewSource = readFileSync(resolve(dir, '../../views/user/CustomPageView.vue'), 'utf8')
 
 describe('embedded-url', () => {
   const originalLocation = window.location
@@ -29,7 +36,6 @@ describe('embedded-url', () => {
     const result = buildEmbeddedUrl(
       'https://pay.example.com/checkout?plan=pro',
       42,
-      'token-123',
       'dark',
       'zh-CN',
     )
@@ -37,7 +43,7 @@ describe('embedded-url', () => {
     const url = new URL(result)
     expect(url.searchParams.get('plan')).toBe('pro')
     expect(url.searchParams.get('user_id')).toBe('42')
-    expect(url.searchParams.get('token')).toBe('token-123')
+    expect(url.searchParams.has('token')).toBe(false)
     expect(url.searchParams.get('theme')).toBe('dark')
     expect(url.searchParams.get('lang')).toBe('zh-CN')
     expect(url.searchParams.get('ui_mode')).toBe('embedded')
@@ -45,8 +51,31 @@ describe('embedded-url', () => {
     expect(url.searchParams.get('src_url')).toBe('https://app.example.com/user/purchase')
   })
 
+  it('never appends auth JWT query parameters', () => {
+    const result = buildEmbeddedUrl(
+      'https://pay.example.com/checkout',
+      42,
+      'light',
+      'en',
+    )
+
+    const url = new URL(result)
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(url.searchParams.has('jwt')).toBe(false)
+    expect(url.searchParams.has('access_token')).toBe(false)
+    expect(result).not.toMatch(/[?&]token=/)
+  })
+
+  it('keeps the custom page iframe sandbox isolated from its parent origin', () => {
+    const sandbox = customPageViewSource.match(/<iframe[\s\S]*?sandbox="([^"]+)"/)?.[1]
+
+    expect(sandbox?.split(/\s+/)).toEqual(['allow-scripts', 'allow-forms', 'allow-popups'])
+    expect(sandbox).not.toContain('allow-same-origin')
+    expect(sandbox).not.toContain('allow-popups-to-escape-sandbox')
+  })
+
   it('omits optional params when they are empty', () => {
-    const result = buildEmbeddedUrl('https://pay.example.com/checkout', undefined, '', 'light')
+    const result = buildEmbeddedUrl('https://pay.example.com/checkout', undefined, 'light')
 
     const url = new URL(result)
     expect(url.searchParams.get('theme')).toBe('light')
@@ -57,7 +86,7 @@ describe('embedded-url', () => {
   })
 
   it('returns original string for invalid url input', () => {
-    expect(buildEmbeddedUrl('not a url', 1, 'token')).toBe('not a url')
+    expect(buildEmbeddedUrl('not a url', 1)).toBe('not a url')
   })
 
   it('detects dark mode from document root class', () => {
