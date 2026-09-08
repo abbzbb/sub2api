@@ -1,5 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildEmbeddedUrl, detectTheme } from '../embedded-url'
+
+const dir = dirname(fileURLToPath(import.meta.url))
+const customPageViewSource = readFileSync(resolve(dir, '../../views/user/CustomPageView.vue'), 'utf8')
 
 describe('embedded-url', () => {
   const originalLocation = window.location
@@ -44,7 +51,7 @@ describe('embedded-url', () => {
     expect(url.searchParams.get('src_url')).toBe('https://app.example.com/user/purchase')
   })
 
-  it('never appends an access-token token= query parameter', () => {
+  it('never appends auth JWT query parameters', () => {
     const result = buildEmbeddedUrl(
       'https://pay.example.com/checkout',
       42,
@@ -54,7 +61,17 @@ describe('embedded-url', () => {
 
     const url = new URL(result)
     expect(url.searchParams.has('token')).toBe(false)
+    expect(url.searchParams.has('jwt')).toBe(false)
+    expect(url.searchParams.has('access_token')).toBe(false)
     expect(result).not.toMatch(/[?&]token=/)
+  })
+
+  it('keeps the custom page iframe sandbox isolated from its parent origin', () => {
+    const sandbox = customPageViewSource.match(/<iframe[\s\S]*?sandbox="([^"]+)"/)?.[1]
+
+    expect(sandbox?.split(/\s+/)).toEqual(['allow-scripts', 'allow-forms', 'allow-popups'])
+    expect(sandbox).not.toContain('allow-same-origin')
+    expect(sandbox).not.toContain('allow-popups-to-escape-sandbox')
   })
 
   it('omits optional params when they are empty', () => {

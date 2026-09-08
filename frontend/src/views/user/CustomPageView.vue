@@ -107,7 +107,7 @@
           <iframe
             :src="embeddedUrl"
             class="custom-embed-frame"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+            sandbox="allow-scripts allow-forms allow-popups"
             referrerpolicy="no-referrer"
             allowfullscreen
           ></iframe>
