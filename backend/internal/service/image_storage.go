@@ -72,7 +72,18 @@ func defaultImageDownloadHTTPClient() *http.Client {
 }
 
 func newImageDownloadHTTPClient(resolver imageIPResolver, dialContext imageDialContextFunc) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
+		transport = defaultTransport.Clone()
+	} else {
+		transport = &http.Transport{
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		}
+	}
 	transport.Proxy = nil
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dialPublicImageAddress(ctx, resolver, dialContext, network, address)
