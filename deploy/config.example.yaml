@@ -989,8 +989,10 @@ ops:
 jwt:
   # IMPORTANT: Set a fixed random secret in production!
   # 重要：生产环境请设置固定的随机密钥！
-  # Leave empty to auto-generate on startup (sessions reset each restart).
-  # 留空则启动时自动生成（每次重启会使登录会话失效）。
+  # Leave empty to generate once and persist in the database; restarts reuse it.
+  # 留空则自动生成并持久化到数据库，重启时复用同一密钥。
+  # An existing database secret takes precedence over this setting.
+  # 数据库中已有的密钥优先于此配置。
   # Generate with / 生成命令: openssl rand -hex 32
   secret: ""
   # Token expiration time in hours (max 168)
@@ -1087,14 +1089,6 @@ oidc_connect:
 # 默认设置
 # =============================================================================
 default:
-  # Initial admin account (created on first run)
-  # 初始管理员账户（首次运行时创建）
-  admin_email: "admin@example.com"
-  # Leave empty to auto-generate (shown in logs on first run).
-  # 留空则自动生成（首次运行时打印到日志）。
-  # Or set explicitly / 或手动设置: openssl rand -base64 24
-  admin_password: ""
-
   # Default settings for new users
   # 新用户默认设置
   # Max concurrent requests per user
