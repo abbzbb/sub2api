@@ -29,11 +29,17 @@ the application's responsibility.
 
 ## Trusted client IPs
 
-`security.trust_forwarded_ip_for_api_key_acl` is enabled by default for upgrade
-compatibility. While enabled, raw forwarding headers take over client-IP
-resolution for logs and security-sensitive paths. Custom headers from
-`security.forwarded_client_ip_headers` are checked in configured order before
-the built-in `CF-Connecting-IP`, `X-Real-IP`, and `X-Forwarded-For` fallback.
+`security.trust_forwarded_ip_for_api_key_acl` defaults to false (secure).
+Behind a reverse proxy, keep it false and configure `server.trusted_proxies`
+with only the exact proxy CIDRs that connect directly to Sub2API. The trusted
+proxy chain can resolve `X-Forwarded-For` without legacy takeover. Enable
+takeover only when necessary for compatibility, the origin is inaccessible
+directly, and the proxy overwrites every trusted client-IP header.
+While enabled, raw forwarding
+headers take over client-IP resolution for logs and security-sensitive paths.
+Custom headers from `security.forwarded_client_ip_headers` are checked in
+configured order before the built-in `CF-Connecting-IP`, `X-Real-IP`, and
+`X-Forwarded-For` fallback.
 Header names are case-insensitive, normalized when loaded, de-duplicated, and
 limited to 16 unique valid HTTP field names. Header values must contain IP
 literals; comma-separated values are supported, invalid entries are skipped,
