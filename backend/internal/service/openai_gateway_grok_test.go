@@ -363,6 +363,39 @@ func TestNormalizeGrokChatReasoningEffort(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, "reasoning_effort").Exists())
 }
 
+func TestNormalizeGrokChatReasoningEffortExtractForBilling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		upstreamModel string
+		body          string
+		want          string
+		wantNil       bool
+	}{
+		{name: "4.6 ultra camel to xhigh", upstreamModel: "grok-4.6", body: `{"model":"grok-4.6","reasoningEffort":"ultra"}`, want: "xhigh"},
+		{name: "4.5 clamps xhigh", upstreamModel: "grok-4.5", body: `{"model":"grok-4.5","reasoning_effort":"xhigh"}`, want: "high"},
+		{name: "4.3 ultra to high", upstreamModel: "grok-4.3", body: `{"model":"grok-4.3","reasoning_effort":"ultra"}`, want: "high"},
+		{name: "composer drops effort", upstreamModel: "grok-composer-2.5-fast", body: `{"model":"grok-composer-2.5-fast","reasoning_effort":"high"}`, wantNil: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Pre-normalize extract can miss camelCase aliases or keep unclamped
+			// values; billing must follow the normalized outbound body.
+			patched, err := normalizeGrokChatReasoningEffort([]byte(tt.body), tt.upstreamModel)
+			require.NoError(t, err)
+			billed := extractOpenAIReasoningEffortFromBody(patched, tt.upstreamModel)
+			if tt.wantNil {
+				require.Nil(t, billed)
+				return
+			}
+			require.NotNil(t, billed)
+			require.Equal(t, tt.want, *billed)
+		})
+	}
+}
+
 func TestPatchGrokResponsesBodyDropsNestedUnsupportedFields(t *testing.T) {
 	t.Parallel()
 

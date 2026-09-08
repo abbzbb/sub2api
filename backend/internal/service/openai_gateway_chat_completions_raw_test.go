@@ -277,6 +277,59 @@ func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T)
 	require.Equal(t, "max", *result.ReasoningEffort)
 }
 
+func TestForwardAsRawChatCompletions_GrokBillsNormalizedReasoningEffort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name    string
+		model   string
+		effort  string
+		want    string
+		wantNil bool
+	}{
+		{name: "4.6 ultra becomes xhigh", model: "grok-4.6", effort: "ultra", want: "xhigh"},
+		{name: "4.5 clamps xhigh to high", model: "grok-4.5", effort: "xhigh", want: "high"},
+		{name: "composer drops unsupported effort", model: "grok-composer-2.5-fast", effort: "high", wantNil: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"` + tt.effort + `","stream":false}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_grok_effort"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_grok","object":"chat.completion","model":"` + tt.model + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+				)),
+			}}
+			svc := &OpenAIGatewayService{
+				cfg:          rawChatCompletionsTestConfig(),
+				httpUpstream: upstream,
+			}
+			account := &Account{
+				ID: 901, Platform: PlatformGrok, Type: AccountTypeAPIKey, Concurrency: 1,
+				Credentials: map[string]any{"api_key": "sk-grok", "base_url": "https://grok.example.test/v1"},
+			}
+
+			result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			if tt.wantNil {
+				require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning_effort").Exists())
+				require.Nil(t, result.ReasoningEffort)
+				return
+			}
+			require.Equal(t, tt.want, gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, tt.want, *result.ReasoningEffort)
+		})
+	}
+}
+
 func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
