@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +13,17 @@ import (
 	"strings"
 	"testing"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/enttest"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	_ "modernc.org/sqlite"
 )
 
 func TestWriteSuccessResponse(t *testing.T) {
@@ -101,12 +108,12 @@ func TestWriteSuccessResponse(t *testing.T) {
 	}
 }
 
-// TestHandleNotifyProviderLookupFailureReturns4xx locks the contract that
+// TestHandleNotifyProviderLookupFailureReturns503 locks the contract that
 // GetWebhookProviders errors must NOT writeSuccessResponse for non-WeChat
 // providers. A nil entClient makes registry fallback fail for every non-wxpay
 // key, so handleNotify exits before VerifyNotification — the bug path that
 // previously returned 200 "success" / empty 200 and falsely ACKed the webhook.
-func TestHandleNotifyProviderLookupFailureReturns4xx(t *testing.T) {
+func TestHandleNotifyProviderLookupFailureReturns503(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	paymentSvc := service.NewPaymentService(nil, payment.NewRegistry(), nil, nil, nil, nil, nil, nil, nil)
@@ -133,11 +140,43 @@ func TestHandleNotifyProviderLookupFailureReturns4xx(t *testing.T) {
 
 			tt.call(c)
 
-			require.Equal(t, http.StatusBadRequest, w.Code,
-				"provider lookup failure must be 4xx, not a success ACK")
+			require.Equal(t, http.StatusServiceUnavailable, w.Code,
+				"provider lookup failure must be retryable, not a success ACK")
 			require.Equal(t, "verify failed", w.Body.String())
 		})
 	}
+}
+
+func TestHandleNotifyInvalidPayloadStillReturns4xxAfterProviderResolution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := sql.Open("sqlite", "file:payment_webhook_invalid_payload?mode=memory&cache=shared&_fk=1")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.Exec("PRAGMA foreign_keys = ON")
+	require.NoError(t, err)
+
+	drv := entsql.OpenDB(dialect.SQLite, db)
+	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
+	t.Cleanup(func() { _ = client.Close() })
+
+	registry := payment.NewRegistry()
+	registry.Register(webhookHandlerProviderStub{
+		key:       payment.TypeStripe,
+		verifyErr: errors.New("invalid signature"),
+	})
+	paymentSvc := service.NewPaymentService(client, registry, nil, nil, nil, nil, nil, nil, nil)
+	h := NewPaymentWebhookHandler(paymentSvc, registry)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{"invalid":"payload"}`))
+
+	h.StripeWebhook(c)
+
+	require.Equal(t, http.StatusBadRequest, w.Code,
+		"a resolved provider rejecting an invalid payload must remain a non-retryable 4xx")
+	require.Equal(t, "verify failed", w.Body.String())
 }
 
 // TestUnknownOrderWebhookAcksWithSuccess exercises the response contract that

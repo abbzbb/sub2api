@@ -92,8 +92,8 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 		// Provider lookup failed before VerifyNotification — never ACK with 2xx.
 		// A success body here would stop provider retries while leaving an
 		// unverified payload unprocessed (false-positive fulfillment signal).
-		slog.Warn("[Payment Webhook] provider not found", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
-		c.String(http.StatusBadRequest, "verify failed")
+		slog.Warn("[Payment Webhook] provider resolution failed", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
+		c.String(http.StatusServiceUnavailable, "verify failed")
 		return
 	}
 
