@@ -261,7 +261,7 @@ export default {
         description: '控制 API Key 白/黑名单、操作审计日志与会话 IP/UA 绑定使用哪个客户端 IP 判断',
         trustForwardedIp: '信任反代传递的客户端 IP',
         trustForwardedIpHint:
-          '默认关闭。开启后 CF-Connecting-IP、X-Real-IP 或 X-Forwarded-For 会直接接管客户端 IP 解析并覆盖 server.trusted_proxies；部署在反代后且 API Key ACL 需要这些头时请显式开启，否则保持关闭以严格使用 server.trusted_proxies。仅在源站无法被直接访问时开启接管模式。切换会改变现有会话的 IP 指纹。',
+          '默认关闭。部署在反代后应保持关闭，并配置 server.trusted_proxies，由可信代理链解析 XFF。开启后 CF-Connecting-IP、X-Real-IP 或 X-Forwarded-For 会直接接管客户端 IP 解析并覆盖该代理链。仅在确有兼容需要、源站无法被直接访问且代理会覆盖所有受信任客户端 IP 头时开启旧版接管。切换会改变现有会话的 IP 指纹。',
         forwardedClientIpHeaders: '自定义客户端 IP 请求头',
         forwardedClientIpHeadersHint: '添加 CDN 或反代请求头名称，解析时优先于内置请求头。',
         forwardedClientIpHeadersPlaceholder: 'X-Client-IP',

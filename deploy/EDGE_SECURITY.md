@@ -30,8 +30,12 @@ the application's responsibility.
 ## Trusted client IPs
 
 `security.trust_forwarded_ip_for_api_key_acl` defaults to false (secure).
-Behind a reverse proxy, set it to true explicitly if API key ACL must honor
-`X-Forwarded-For` / related client-IP headers. While enabled, raw forwarding
+Behind a reverse proxy, keep it false and configure `server.trusted_proxies`
+with only the exact proxy CIDRs that connect directly to Sub2API. The trusted
+proxy chain can resolve `X-Forwarded-For` without legacy takeover. Enable
+takeover only when necessary for compatibility, the origin is inaccessible
+directly, and the proxy overwrites every trusted client-IP header.
+While enabled, raw forwarding
 headers take over client-IP resolution for logs and security-sensitive paths.
 Custom headers from `security.forwarded_client_ip_headers` are checked in
 configured order before the built-in `CF-Connecting-IP`, `X-Real-IP`, and
