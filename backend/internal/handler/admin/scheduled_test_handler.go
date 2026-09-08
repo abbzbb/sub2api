@@ -46,7 +46,7 @@ func (h *ScheduledTestHandler) ListByAccount(c *gin.Context) {
 
 	plans, err := h.scheduledTestSvc.ListPlansByAccount(c.Request.Context(), accountID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, plans)
@@ -135,7 +135,7 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
@@ -156,7 +156,7 @@ func (h *ScheduledTestHandler) ListResults(c *gin.Context) {
 
 	results, err := h.scheduledTestSvc.ListResults(c.Request.Context(), planID, limit)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, results)

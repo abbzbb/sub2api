@@ -1238,8 +1238,7 @@ func (h *AccountHandler) SyncFromCRS(c *gin.Context) {
 		SelectedAccountIDs: req.SelectedAccountIDs,
 	})
 	if err != nil {
-		// Provide detailed error message for CRS sync failures
-		response.InternalError(c, "CRS sync failed: "+err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 
@@ -1261,7 +1260,7 @@ func (h *AccountHandler) PreviewFromCRS(c *gin.Context) {
 		Password: req.Password,
 	})
 	if err != nil {
-		response.InternalError(c, "CRS preview failed: "+err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 
