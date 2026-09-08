@@ -94,10 +94,11 @@ func TestRecovery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := gin.New()
 			r.Use(Recovery())
-			r.GET("/t", tt.handler)
+			// Panel path keeps the {code:int} envelope used by admin/user APIs.
+			r.GET("/api/v1/t", tt.handler)
 
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/t", nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/t", nil)
 			r.ServeHTTP(w, req)
 
 			require.Equal(t, tt.wantHTTPCode, w.Code)

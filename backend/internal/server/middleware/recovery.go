@@ -12,7 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Recovery converts panics into the project's standard JSON error envelope.
+// Recovery converts panics into a path-appropriate JSON error envelope.
+// Gateway /v1 surfaces use protocol-aware Anthropic/OpenAI/Google bodies so
+// clients are not surprised by the panel {code:int} shape; /api stays panel.
 //
 // It preserves Gin's broken-pipe handling by not attempting to write a response
 // when the client connection is already gone.
@@ -29,6 +31,12 @@ func Recovery() gin.HandlerFunc {
 		}
 
 		if c.Writer.Written() {
+			c.Abort()
+			return
+		}
+
+		if c.Request != nil && c.Request.URL != nil && isGatewayAPIPath(c.Request.URL.Path) {
+			GatewayProtocolErrorWriter(c, http.StatusInternalServerError, infraerrors.UnknownMessage)
 			c.Abort()
 			return
 		}

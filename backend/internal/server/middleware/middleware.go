@@ -74,22 +74,21 @@ func NewErrorResponse(code, message string) ErrorResponse {
 	}
 }
 
-// AbortWithError 中断请求并返回JSON错误
+// AbortWithError 中断请求并返回JSON错误。
+// Gateway /v1 surfaces use protocol-aware envelopes so SDKs can parse auth and
+// admission failures the same way as business errors; panel /api stays flat.
 func AbortWithError(c *gin.Context, statusCode int, code, message string) {
+	if c != nil && c.Request != nil && c.Request.URL != nil && isGatewayAPIPath(c.Request.URL.Path) {
+		abortWithGatewayProtocolError(c, statusCode, code, message)
+		return
+	}
 	c.JSON(statusCode, NewErrorResponse(code, message))
 	c.Abort()
 }
 
 // abortWithOpenAIQuotaError writes the OpenAI-compatible insufficient quota response.
 func abortWithOpenAIQuotaError(c *gin.Context, statusCode int, message string) {
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"message": message,
-			"type":    "insufficient_quota",
-			"param":   nil,
-			"code":    "insufficient_quota",
-		},
-	})
+	writeOpenAIQuotaError(c, statusCode, message)
 	c.Abort()
 }
 
@@ -104,7 +103,7 @@ type GatewayErrorWriter func(c *gin.Context, status int, message string)
 func AnthropicErrorWriter(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{
 		"type":  "error",
-		"error": gin.H{"type": "permission_error", "message": message},
+		"error": gin.H{"type": anthropicErrorTypeForStatus(status), "message": message},
 	})
 }
 
