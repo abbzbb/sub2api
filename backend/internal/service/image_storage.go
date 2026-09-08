@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const defaultImageMaxDownloadBytes int64 = 32 << 20 // 32 MiB
@@ -37,6 +41,12 @@ type ImageResultUploader struct {
 	maxDownloadBytes int64
 }
 
+type imageIPResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+type imageDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
+
 // NewImageResultUploader 构造一个 uploader；storage 为 nil 时 Rewrite 直接透传。
 func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadBytes int64, httpClient *http.Client) *ImageResultUploader {
 	if httpClient == nil {
@@ -54,7 +64,133 @@ func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadByte
 }
 
 func defaultImageDownloadHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	return newImageDownloadHTTPClient(net.DefaultResolver, dialer.DialContext)
+}
+
+func newImageDownloadHTTPClient(resolver imageIPResolver, dialContext imageDialContextFunc) *http.Client {
+	var transport *http.Transport
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
+		transport = defaultTransport.Clone()
+	} else {
+		transport = &http.Transport{
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		}
+	}
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialPublicImageAddress(ctx, resolver, dialContext, network, address)
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req == nil || req.URL == nil {
+				return errors.New("invalid redirect")
+			}
+			if _, err := normalizeImageDownloadURL(req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+func dialPublicImageAddress(
+	ctx context.Context,
+	resolver imageIPResolver,
+	dialContext imageDialContextFunc,
+	network string,
+	address string,
+) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+
+	var addrs []net.IPAddr
+	if ip := parseImageLiteralIP(host); ip != nil {
+		addrs = []net.IPAddr{{IP: ip}}
+	} else {
+		if resolver == nil {
+			return nil, errors.New("image download resolver is not configured")
+		}
+		addrs, err = resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve image download host: %w", err)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("image download host %q has no addresses", host)
+	}
+
+	for _, addr := range addrs {
+		if !isPublicImageAddress(addr.IP) {
+			return nil, fmt.Errorf("image download address %q is not allowed", addr.IP.String())
+		}
+	}
+
+	if dialContext == nil {
+		return nil, errors.New("image download dialer is not configured")
+	}
+	var lastErr error
+	for _, addr := range addrs {
+		pinnedAddress := net.JoinHostPort(addr.IP.String(), port)
+		conn, err := dialContext(ctx, network, pinnedAddress)
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func parseImageLiteralIP(host string) net.IP {
+	if zoneIndex := strings.LastIndexByte(host, '%'); zoneIndex >= 0 {
+		host = host[:zoneIndex]
+	}
+	return net.ParseIP(host)
+}
+
+func isPublicImageAddress(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast() && !isPrivateIP(ip)
+}
+
+// normalizeImageDownloadURL 按 openai_images_b64_backfill 的同等策略校验出站图片 URL：
+// 仅允许 http(s)，并无条件拒绝私网/回环等字面量主机。域名解析结果由
+// defaultImageDownloadHTTPClient 在实际建连时校验并绑定，避免 DNS rebinding。
+// 不受 security.url_allowlist 配置影响；注入的自定义 client 仅作为 trusted test transport/client。
+func normalizeImageDownloadURL(raw string) (string, error) {
+	normalized, err := urlvalidator.ValidateURLFormat(raw, true)
+	if err != nil {
+		return "", fmt.Errorf("invalid image url: %w", err)
+	}
+	if err := rejectPrivateImageHost(normalized); err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid image url: %w", err)
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return "", errors.New("invalid host")
+	}
+	return normalized, nil
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -192,7 +328,11 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	downloadURL, err := normalizeImageDownloadURL(rawURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("image url not allowed: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("build download request: %w", err)
 	}

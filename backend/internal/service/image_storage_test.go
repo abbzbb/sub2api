@@ -1,12 +1,18 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -33,6 +39,22 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type staticImageResolver map[string][]net.IPAddr
+
+func (r staticImageResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	addrs, ok := r[host]
+	if !ok {
+		return nil, &net.DNSError{Err: "no such host", Name: host}
+	}
+	return append([]net.IPAddr(nil), addrs...), nil
+}
+
+type imageResolverFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
+
+func (f imageResolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return f(ctx, host)
 }
 
 func (f *fakeImageStorage) Save(_ context.Context, key, contentType string, data []byte) (string, error) {
@@ -73,16 +95,18 @@ func TestImageResultUploaderRewritesB64JSON(t *testing.T) {
 }
 
 func TestImageResultUploaderRewritesURL(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes)
-	}))
-	defer upstream.Close()
-
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "https://cdn.example.com/pic.png", req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pngBytes)),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
 	storage := &fakeImageStorage{}
-	uploader := NewImageResultUploader(storage, "images/", 0, nil)
+	uploader := NewImageResultUploader(storage, "images/", 0, client)
 
-	result := json.RawMessage(`{"created":1,"data":[{"url":"` + upstream.URL + `/pic.png"}]}`)
+	result := json.RawMessage(`{"created":1,"data":[{"url":"https://cdn.example.com/pic.png"}]}`)
 	out, err := uploader.Rewrite(context.Background(), "imgtask_xyz", result)
 	require.NoError(t, err)
 
@@ -243,4 +267,324 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+}
+
+func TestImageResultUploaderRejectsPrivateDownloadURLs(t *testing.T) {
+	var dials int
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		dials++
+		return nil, errors.New("should not dial")
+	})})
+
+	for _, rawURL := range []string{
+		"http://localhost:8080/api/v1/admin/accounts",
+		"http://Foo.LocalHost/a.png",
+		"http://127.0.0.1:8080/a.png",
+		"https://127.0.0.1/a.png",
+		"http://[::1]:8080/a.png",
+		"http://10.0.0.5/a.png",
+		"http://172.16.0.9:9000/bucket/a.png",
+		"http://192.168.1.10:9000/bucket/a.png",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://0.0.0.0:8080/a.png",
+		"http://[fe80::1]/a.png",
+		"http://[::ffff:127.0.0.1]/a.png",
+		"ftp://cdn.example.com/a.png",
+	} {
+		result, err := json.Marshal(map[string]any{"data": []map[string]string{{"url": rawURL}}})
+		require.NoError(t, err)
+		_, err = uploader.Rewrite(context.Background(), "imgtask_ssrf", result)
+		require.Error(t, err, "url=%s", rawURL)
+		require.Contains(t, err.Error(), "image url not allowed", "url=%s", rawURL)
+	}
+	require.Zero(t, dials, "private destinations must never be requested")
+
+	// 同一路径下公网主机照常下载，证明拒绝依据是目的地而非协议。
+	result := json.RawMessage(`{"data":[{"url":"http://cdn.example.com/a.png"}]}`)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://cdn.example.com/a.png", req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(pngBytes)),
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+		}, nil
+	})}
+	uploader = NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	_, err := uploader.Rewrite(context.Background(), "imgtask_public", result)
+	require.NoError(t, err)
+}
+
+func TestImageResultUploaderRedirectCheckerRejectsPrivateHops(t *testing.T) {
+	client := defaultImageDownloadHTTPClient()
+	require.NotNil(t, client.CheckRedirect)
+
+	via := []*http.Request{mustHTTPRequest(t, "https://cdn.example.com/a.png")}
+	for _, hop := range []string{
+		"http://127.0.0.1:8080/a.png",
+		"http://[::1]:8080/a.png",
+		"http://10.0.0.8/a.png",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://0.0.0.0/a.png",
+	} {
+		hopReq := mustHTTPRequest(t, hop)
+		require.Error(t, client.CheckRedirect(hopReq, via), "hop=%s", hop)
+	}
+
+	publicHop := mustHTTPRequest(t, "http://93.184.216.34/a.png")
+	require.NoError(t, client.CheckRedirect(publicHop, via))
+	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
+}
+
+func TestImageDownloadHTTPClientFallsBackFromCustomDefaultTransport(t *testing.T) {
+	customTransport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("custom default transport must not handle image downloads")
+		return nil, errors.New("unexpected round trip")
+	})
+	for _, tt := range []struct {
+		name      string
+		transport http.RoundTripper
+	}{
+		{name: "custom", transport: &customTransport},
+		{name: "nil"},
+		{name: "typed nil", transport: (*http.Transport)(nil)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			original := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = original })
+			http.DefaultTransport = tt.transport
+
+			const publicIP = "203.0.113.10"
+			var dialAddress string
+			dialErr := errors.New("test dial")
+			client := newImageDownloadHTTPClient(staticImageResolver{
+				"images.public.test": {{IP: net.ParseIP(publicIP)}},
+			}, func(_ context.Context, _, address string) (net.Conn, error) {
+				dialAddress = address
+				return nil, dialErr
+			})
+			t.Cleanup(client.CloseIdleConnections)
+			transport, ok := client.Transport.(*http.Transport)
+			require.True(t, ok)
+			require.NotNil(t, transport)
+			require.Nil(t, transport.Proxy)
+			require.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
+			require.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+			require.Equal(t, tt.transport, http.DefaultTransport, "constructor must not replace the global transport")
+
+			_, err := client.Get("http://images.public.test/a.png")
+			require.ErrorIs(t, err, dialErr)
+			require.Equal(t, net.JoinHostPort(publicIP, "80"), dialAddress)
+		})
+	}
+}
+
+func TestImageDownloadHTTPClientPinsResolvedAddressAndPreservesTLSHost(t *testing.T) {
+	var gotHost string
+	sni := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	server.TLS = &tls.Config{
+		GetConfigForClient: func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+			sni <- info.ServerName
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(serverURL.Host)
+	require.NoError(t, err)
+
+	const publicHost = "example.com"
+	require.NoError(t, server.Certificate().VerifyHostname(publicHost))
+	const publicIP = "203.0.113.10"
+	var dialAddresses []string
+	client := newImageDownloadHTTPClient(staticImageResolver{
+		publicHost: {{IP: net.ParseIP(publicIP)}},
+	}, func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialAddresses = append(dialAddresses, address)
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	})
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	t.Cleanup(client.CloseIdleConnections)
+
+	uploader := NewImageResultUploader(&fakeImageStorage{}, "images/", 0, client)
+	result := json.RawMessage(`{"data":[{"url":"https://` + publicHost + `:` + port + `/a.png"}]}`)
+	_, err = uploader.Rewrite(context.Background(), "imgtask_pinned", result)
+	require.NoError(t, err)
+	require.Equal(t, []string{net.JoinHostPort(publicIP, port)}, dialAddresses)
+	require.Equal(t, net.JoinHostPort(publicHost, port), gotHost)
+	require.Equal(t, publicHost, <-sni)
+}
+
+func TestImageDownloadHTTPClientRejectsMixedOrPrivateDNSBeforeDial(t *testing.T) {
+	tests := []struct {
+		name  string
+		addrs []net.IPAddr
+	}{
+		{name: "mixed public and loopback", addrs: []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}, {IP: net.ParseIP("127.0.0.1")}}},
+		{name: "private ipv4", addrs: []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}}},
+		{name: "link local ipv4", addrs: []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}},
+		{name: "carrier grade nat", addrs: []net.IPAddr{{IP: net.ParseIP("100.64.0.1")}}},
+		{name: "unspecified ipv4", addrs: []net.IPAddr{{IP: net.ParseIP("0.0.0.0")}}},
+		{name: "loopback ipv6", addrs: []net.IPAddr{{IP: net.ParseIP("::1")}}},
+		{name: "private ipv6", addrs: []net.IPAddr{{IP: net.ParseIP("fd00::1")}}},
+		{name: "link local ipv6", addrs: []net.IPAddr{{IP: net.ParseIP("fe80::1")}}},
+		{name: "multicast ipv6", addrs: []net.IPAddr{{IP: net.ParseIP("ff02::1")}}},
+		{name: "empty resolution", addrs: []net.IPAddr{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dials := 0
+			client := newImageDownloadHTTPClient(staticImageResolver{"blocked.test": tt.addrs}, func(context.Context, string, string) (net.Conn, error) {
+				dials++
+				return nil, errors.New("must not dial")
+			})
+			req := mustHTTPRequest(t, "http://blocked.test/a.png")
+			_, err := client.Do(req)
+			if len(tt.addrs) == 0 {
+				require.ErrorContains(t, err, "has no addresses")
+			} else {
+				require.ErrorContains(t, err, "not allowed")
+			}
+			require.Zero(t, dials)
+		})
+	}
+}
+
+func TestImageDownloadHTTPClientValidatesRedirectDestination(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "http://redirect.public.test"+r.URL.Query().Get("port")+"/image.png", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	t.Cleanup(server.Close)
+
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(serverURL.Host)
+	require.NoError(t, err)
+
+	const publicIP = "203.0.113.20"
+	var dialAddresses []string
+	client := newImageDownloadHTTPClient(staticImageResolver{
+		"origin.public.test":   {{IP: net.ParseIP(publicIP)}},
+		"redirect.public.test": {{IP: net.ParseIP("127.0.0.1")}},
+	}, func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialAddresses = append(dialAddresses, address)
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	})
+
+	req := mustHTTPRequest(t, "http://origin.public.test:"+port+"/redirect?port=:"+port)
+	_, err = client.Do(req)
+	require.ErrorContains(t, err, "not allowed")
+	require.Equal(t, []string{net.JoinHostPort(publicIP, port)}, dialAddresses)
+}
+
+func TestImageDownloadHTTPClientIgnoresProxyEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	t.Cleanup(server.Close)
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(serverURL.Host)
+	require.NoError(t, err)
+
+	const publicHost = "proxy-proof.public.test"
+	const publicIP = "203.0.113.30"
+	var dialAddress string
+	client := newImageDownloadHTTPClient(staticImageResolver{
+		publicHost: {{IP: net.ParseIP(publicIP)}},
+	}, func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialAddress = address
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	})
+
+	resp, err := client.Get("http://" + publicHost + ":" + port + "/a.png")
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, net.JoinHostPort(publicIP, port), dialAddress)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Nil(t, transport.Proxy)
+}
+
+func TestImageDownloadHTTPClientDialHonorsContextCancellation(t *testing.T) {
+	dialStarted := make(chan struct{})
+	client := newImageDownloadHTTPClient(staticImageResolver{
+		"slow.public.test": {{IP: net.ParseIP("203.0.113.40")}},
+	}, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(dialStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow.public.test/a.png", nil)
+	require.NoError(t, err)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.Do(req)
+		errCh <- err
+	}()
+	<-dialStarted
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("request did not stop after context cancellation")
+	}
+}
+
+func TestImageDownloadHTTPClientResolveHonorsContextDeadline(t *testing.T) {
+	resolverStarted := make(chan struct{})
+	client := newImageDownloadHTTPClient(imageResolverFunc(func(ctx context.Context, _ string) ([]net.IPAddr, error) {
+		close(resolverStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}), func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("must not dial")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://deadline.public.test/a.png", nil)
+	require.NoError(t, err)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.Do(req)
+		errCh <- err
+	}()
+	<-resolverStarted
+
+	err = <-errCh
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func mustHTTPRequest(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	require.NoError(t, err)
+	return req
 }
