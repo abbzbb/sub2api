@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/user"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // PaymentOrderCreate is the builder for creating a PaymentOrder entity.
@@ -256,6 +257,12 @@ func (_c *PaymentOrderCreate) SetNillableStatus(v *string) *PaymentOrderCreate {
 	if v != nil {
 		_c.SetStatus(*v)
 	}
+	return _c
+}
+
+// SetRefundState sets the "refund_state" field.
+func (_c *PaymentOrderCreate) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderCreate {
+	_c.mutation.SetRefundState(v)
 	return _c
 }
 
@@ -785,6 +792,10 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
 		_node.Status = value
 	}
+	if value, ok := _c.mutation.RefundState(); ok {
+		_spec.SetField(paymentorder.FieldRefundState, field.TypeJSON, value)
+		_node.RefundState = value
+	}
 	if value, ok := _c.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
 		_node.RefundAmount = value
@@ -1279,6 +1290,24 @@ func (u *PaymentOrderUpsert) SetStatus(v string) *PaymentOrderUpsert {
 // UpdateStatus sets the "status" field to the value that was provided on create.
 func (u *PaymentOrderUpsert) UpdateStatus() *PaymentOrderUpsert {
 	u.SetExcluded(paymentorder.FieldStatus)
+	return u
+}
+
+// SetRefundState sets the "refund_state" field.
+func (u *PaymentOrderUpsert) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldRefundState, v)
+	return u
+}
+
+// UpdateRefundState sets the "refund_state" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateRefundState() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldRefundState)
+	return u
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (u *PaymentOrderUpsert) ClearRefundState() *PaymentOrderUpsert {
+	u.SetNull(paymentorder.FieldRefundState)
 	return u
 }
 
@@ -2002,6 +2031,27 @@ func (u *PaymentOrderUpsertOne) SetStatus(v string) *PaymentOrderUpsertOne {
 func (u *PaymentOrderUpsertOne) UpdateStatus() *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetRefundState sets the "refund_state" field.
+func (u *PaymentOrderUpsertOne) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundState(v)
+	})
+}
+
+// UpdateRefundState sets the "refund_state" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateRefundState() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundState()
+	})
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (u *PaymentOrderUpsertOne) ClearRefundState() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundState()
 	})
 }
 
@@ -2934,6 +2984,27 @@ func (u *PaymentOrderUpsertBulk) SetStatus(v string) *PaymentOrderUpsertBulk {
 func (u *PaymentOrderUpsertBulk) UpdateStatus() *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetRefundState sets the "refund_state" field.
+func (u *PaymentOrderUpsertBulk) SetRefundState(v *domain.PaymentRefundState) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetRefundState(v)
+	})
+}
+
+// UpdateRefundState sets the "refund_state" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateRefundState() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateRefundState()
+	})
+}
+
+// ClearRefundState clears the value of the "refund_state" field.
+func (u *PaymentOrderUpsertBulk) ClearRefundState() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearRefundState()
 	})
 }
 

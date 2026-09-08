@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/user"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // PaymentOrder is the model entity for the PaymentOrder schema.
@@ -63,6 +64,8 @@ type PaymentOrder struct {
 	ProviderSnapshot map[string]interface{} `json:"provider_snapshot,omitempty"`
 	// Status holds the value of the "status" field.
 	Status string `json:"status,omitempty"`
+	// RefundState holds the value of the "refund_state" field.
+	RefundState *domain.PaymentRefundState `json:"refund_state,omitempty"`
 	// RefundAmount holds the value of the "refund_amount" field.
 	RefundAmount float64 `json:"refund_amount,omitempty"`
 	// RefundReason holds the value of the "refund_reason" field.
@@ -128,7 +131,7 @@ func (*PaymentOrder) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case paymentorder.FieldProviderSnapshot:
+		case paymentorder.FieldProviderSnapshot, paymentorder.FieldRefundState:
 			values[i] = new([]byte)
 		case paymentorder.FieldForceRefund:
 			values[i] = new(sql.NullBool)
@@ -303,6 +306,14 @@ func (_m *PaymentOrder) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field status", values[i])
 			} else if value.Valid {
 				_m.Status = value.String
+			}
+		case paymentorder.FieldRefundState:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field refund_state", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.RefundState); err != nil {
+					return fmt.Errorf("unmarshal field refund_state: %w", err)
+				}
 			}
 		case paymentorder.FieldRefundAmount:
 			if value, ok := values[i].(*sql.NullFloat64); !ok {
@@ -540,6 +551,9 @@ func (_m *PaymentOrder) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("status=")
 	builder.WriteString(_m.Status)
+	builder.WriteString(", ")
+	builder.WriteString("refund_state=")
+	builder.WriteString(fmt.Sprintf("%v", _m.RefundState))
 	builder.WriteString(", ")
 	builder.WriteString("refund_amount=")
 	builder.WriteString(fmt.Sprintf("%v", _m.RefundAmount))

@@ -1515,6 +1515,16 @@ func StatusContainsFold(v string) predicate.PaymentOrder {
 	return predicate.PaymentOrder(sql.FieldContainsFold(FieldStatus, v))
 }
 
+// RefundStateIsNil applies the IsNil predicate on the "refund_state" field.
+func RefundStateIsNil() predicate.PaymentOrder {
+	return predicate.PaymentOrder(sql.FieldIsNull(FieldRefundState))
+}
+
+// RefundStateNotNil applies the NotNil predicate on the "refund_state" field.
+func RefundStateNotNil() predicate.PaymentOrder {
+	return predicate.PaymentOrder(sql.FieldNotNull(FieldRefundState))
+}
+
 // RefundAmountEQ applies the EQ predicate on the "refund_amount" field.
 func RefundAmountEQ(v float64) predicate.PaymentOrder {
 	return predicate.PaymentOrder(sql.FieldEQ(FieldRefundAmount, v))

@@ -722,7 +722,7 @@ func TestLatestRefundPendingDetailRequiresExplicitRollbackOK(t *testing.T) {
 	require.Equal(t, "rf_ok", detail.RefundID)
 }
 
-func TestQueryAndFinalizeRefundSkipsDeductionWhenPendingAuditMissing(t *testing.T) {
+func TestQueryAndFinalizeRefundRejectsMissingRecoveryState(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	order := createPendingRefundOrderForTest(t, ctx, client, "query-finalize-no-audit")
@@ -747,10 +747,12 @@ func TestQueryAndFinalizeRefundSkipsDeductionWhenPendingAuditMissing(t *testing.
 	defer restore()
 
 	result, err := svc.QueryAndFinalizeRefund(ctx, order.ID)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Zero(t, deducted)
+	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
-	require.True(t, result.Success)
-	require.Zero(t, deducted, "missing REFUND_PENDING audit must not deduct again")
-	require.Zero(t, result.BalanceDeducted)
+	require.Equal(t, OrderStatusRefundPending, reloaded.Status)
 }
 
 type refundSuccessProviderTestDouble struct {
