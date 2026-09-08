@@ -5,30 +5,42 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
-// Mirrors payment orders GET registration: static paths before /:id.
-func TestPaymentOrdersRefundEligibleProvidersNotSwallowedByID(t *testing.T) {
+func TestPaymentOrdersRefundEligibleProvidersRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-
 	router := gin.New()
-	orders := router.Group("/orders")
-	{
-		orders.GET("/my", func(c *gin.Context) { c.String(http.StatusOK, "my") })
-		orders.GET("/refund-eligible-providers", func(c *gin.Context) { c.String(http.StatusOK, "providers") })
-		orders.GET("/:id", func(c *gin.Context) { c.String(http.StatusOK, "id:"+c.Param("id")) })
-	}
+	var matchedPath, matchedHandler, orderID string
+	// Capture the production route at the auth boundary without invoking storage.
+	auth := middleware.JWTAuthMiddleware(func(c *gin.Context) {
+		matchedPath, matchedHandler, orderID = c.FullPath(), c.HandlerName(), c.Param("id")
+		c.AbortWithStatus(http.StatusUnauthorized)
+	})
+	noop := func(c *gin.Context) { c.Next() }
+	RegisterPaymentRoutes(router.Group("/api/v1"), &handler.PaymentHandler{},
+		&handler.PaymentWebhookHandler{}, &admin.PaymentHandler{}, auth,
+		middleware.AdminAuthMiddleware(noop), middleware.AuditLogMiddleware(noop), nil, nil)
 
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/orders/refund-eligible-providers", nil))
-	if rec.Code != http.StatusOK || rec.Body.String() != "providers" {
-		t.Fatalf("static path swallowed by :id: code=%d body=%q", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/orders/42", nil))
-	if rec.Code != http.StatusOK || rec.Body.String() != "id:42" {
-		t.Fatalf("param route broken: code=%d body=%q", rec.Code, rec.Body.String())
+	for _, tc := range []struct {
+		path, route, handler, id string
+	}{
+		{"/api/v1/payment/orders/refund-eligible-providers", "/api/v1/payment/orders/refund-eligible-providers", "GetRefundEligibleProviders", ""},
+		{"/api/v1/payment/orders/42", "/api/v1/payment/orders/:id", "GetOrder", "42"},
+		{"/api/v1/payment/orders/my", "/api/v1/payment/orders/my", "GetMyOrders", ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			matchedPath, matchedHandler, orderID = "", "", ""
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			require.Equal(t, tc.route, matchedPath)
+			require.Contains(t, matchedHandler, ".(*PaymentHandler)."+tc.handler+"-fm")
+			require.Equal(t, tc.id, orderID)
+		})
 	}
 }
