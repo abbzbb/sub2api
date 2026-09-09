@@ -157,8 +157,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("normalize Grok chat reasoning effort: %w", err)
 		}
+		upstreamBody, err = sanitizeGrokUnsupportedFields(upstreamBody)
+		if err != nil {
+			return nil, fmt.Errorf("sanitize Grok unsupported fields: %w", err)
+		}
 	}
 	upstreamBody = applyOllamaCloudRawChatCompletionsRequest(account, upstreamBody)
+	upstreamBody = clampOllamaCloudUpstreamMaxTokens(account, upstreamBody)
 
 	// Extract after Grok/GLM/Ollama rewrites so billing matches the outbound body
 	// (same contract as Responses extract-from-patchedBody).

@@ -276,6 +276,7 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
+	// Windows 单调时钟步进约 0.5ms，两次相邻调用可能读到同一时刻，需反复调用才能观察到 TTL 过期。
 	require.Eventually(t, func() bool {
 		// Refresh is non-blocking; a read that races with the initial load lock
 		// must retrigger the stale snapshot refresh.
@@ -286,6 +287,9 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 		_, calls := repo.calls()
 		return calls >= 2
 	}, time.Second, time.Millisecond)
+	decision, err = svc.Check(context.Background(), input)
+	require.NoError(t, err)
+	require.True(t, decision.Blocked)
 }
 
 func TestContentModerationRuntimeSnapshotRefreshFailureBacksOff(t *testing.T) {

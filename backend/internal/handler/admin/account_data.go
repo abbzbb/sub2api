@@ -308,22 +308,21 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 					}
 					existingUser := proxy.Username
 					existingPass := proxy.Password
-					existingMode := existingFallbackMode
 					existingWarn := item.ExpiryWarnDays
 					_, _ = h.adminService.UpdateProxy(ctx, existingID, &service.UpdateProxyInput{
-						Status:                normalizedStatus,
-						ExpiresAtProvided:     true,
-						ExpiresAt:             existingExpiresAt,
-						FallbackMode:          &existingMode,
-						BackupProxyIDProvided: true,
-						BackupProxyID:         existingBackupProxyID,
-						ExpiryWarnDays:        &existingWarn,
-						Name:                  proxy.Name,
-						Protocol:              proxy.Protocol,
-						Host:                  proxy.Host,
-						Port:                  proxy.Port,
-						Username:              &existingUser,
-						Password:              &existingPass,
+						Status:         normalizedStatus,
+						ExpiresAt:      existingExpiresAt,
+						ClearExpiresAt: existingExpiresAt == nil,
+						FallbackMode:   existingFallbackMode,
+						BackupProxyID:  existingBackupProxyID,
+						ClearBackupID:  existingBackupProxyID == nil,
+						ExpiryWarnDays: &existingWarn,
+						Name:           proxy.Name,
+						Protocol:       proxy.Protocol,
+						Host:           proxy.Host,
+						Port:           proxy.Port,
+						Username:       &existingUser,
+						Password:       &existingPass,
 					})
 				}
 			}
@@ -388,22 +387,21 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			// 新建后同步 status 时，传入完整字段，避免零值覆盖刚创建的有效期/fallback 配置。
 			createdUser := created.Username
 			createdPass := created.Password
-			mode := fallbackMode
 			warnDays := item.ExpiryWarnDays
 			_, _ = h.adminService.UpdateProxy(ctx, created.ID, &service.UpdateProxyInput{
-				Status:                normalizedStatus,
-				ExpiresAtProvided:     true,
-				ExpiresAt:             expiresAt,
-				FallbackMode:          &mode,
-				BackupProxyIDProvided: true,
-				BackupProxyID:         backupProxyID,
-				ExpiryWarnDays:        &warnDays,
-				Name:                  created.Name,
-				Protocol:              created.Protocol,
-				Host:                  created.Host,
-				Port:                  created.Port,
-				Username:              &createdUser,
-				Password:              &createdPass,
+				Status:         normalizedStatus,
+				ExpiresAt:      expiresAt,
+				ClearExpiresAt: expiresAt == nil,
+				FallbackMode:   fallbackMode,
+				BackupProxyID:  backupProxyID,
+				ClearBackupID:  backupProxyID == nil,
+				ExpiryWarnDays: &warnDays,
+				Name:           created.Name,
+				Protocol:       created.Protocol,
+				Host:           created.Host,
+				Port:           created.Port,
+				Username:       &createdUser,
+				Password:       &createdPass,
 			})
 		}
 	}

@@ -566,6 +566,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 							bareErrorAccountSideEffectsPending = false
 						}
 					}
+					if eventType == "response.failed" {
+						// Once semantic output is committed, failover replay is unsafe. Keep
+						// the terminal event on the existing stream, but retain the upstream
+						// request ID and payload for operations diagnostics.
+						s.recordOpenAIStreamUpstreamError(c, account, false, upstreamRequestID, "stream_failed", dataBytes, failedMessage)
+					}
 				}
 				if !clientDisconnected && !outputStarted {
 					shouldFailover := false

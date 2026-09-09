@@ -45,12 +45,14 @@ func isGatewayAPIPath(path string) bool {
 
 // OpenAIErrorWriter 按 OpenAI API 规范输出错误
 func OpenAIErrorWriter(c *gin.Context, status int, message string) {
-	c.JSON(status, gin.H{
-		"error": gin.H{
-			"type":    openAIErrorTypeForStatus(status),
-			"message": message,
-		},
-	})
+	payload := gin.H{
+		"type":    openAIErrorTypeForStatus(status),
+		"message": message,
+	}
+	if status == http.StatusNotFound {
+		payload["code"] = "model_not_found"
+	}
+	c.JSON(status, gin.H{"error": payload})
 }
 
 // GatewayProtocolErrorWriter selects Completions/Responses/Anthropic/Gemini envelopes.

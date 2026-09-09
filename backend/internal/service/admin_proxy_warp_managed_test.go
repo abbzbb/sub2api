@@ -163,7 +163,7 @@ func TestAdminService_UpdateProxy_AllowsWarpExpiresAt(t *testing.T) {
 	exp := time.Date(2031, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	got, err := svc.UpdateProxy(context.Background(), p.ID, &UpdateProxyInput{
-		ExpiresAtProvided: true, ExpiresAt: &exp,
+		ExpiresAt: &exp,
 	})
 	if err != nil {
 		t.Fatalf("expires_at update on warp-* should be allowed: %v", err)

@@ -2205,6 +2205,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 							bareErrorAccountSideEffectsPending = false
 						}
 					}
+					if eventType == "response.failed" {
+						// The stream cannot be replayed after semantic output. Preserve the
+						// terminal event, while making the upstream failure queryable.
+						s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "stream_failed", dataBytes, failedMessage)
+					}
 				}
 				if !clientDisconnected && !outputStarted {
 					shouldFailover := false

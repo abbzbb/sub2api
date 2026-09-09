@@ -75,12 +75,10 @@ func TestBothProxyUpdateServicesUseRepositoryUpdateBoundary(t *testing.T) {
 			},
 		}
 		svc := &adminServiceImpl{proxyRepo: repo}
-
-		mode := FallbackModeNone
 		warnDays := 7
 		_, err := svc.UpdateProxy(context.Background(), 9, &UpdateProxyInput{
 			Host:           "new.example",
-			FallbackMode:   &mode,
+			FallbackMode:   FallbackModeNone,
 			ExpiryWarnDays: &warnDays,
 		})
 
@@ -122,7 +120,7 @@ func TestAdminService_UpdateProxy_PartialDoesNotClearExpiry(t *testing.T) {
 	require.Equal(t, "p1", repo.proxy.Password)
 
 	// Explicit clear of expires_at.
-	_, err = svc.UpdateProxy(context.Background(), 11, &UpdateProxyInput{ExpiresAtProvided: true, ExpiresAt: nil})
+	_, err = svc.UpdateProxy(context.Background(), 11, &UpdateProxyInput{ClearExpiresAt: true})
 	require.NoError(t, err)
 	require.Nil(t, repo.proxy.ExpiresAt)
 

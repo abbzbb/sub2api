@@ -136,17 +136,17 @@ type CreateProxyRequest struct {
 
 // UpdateProxyRequest represents update proxy request
 type UpdateProxyRequest struct {
-	Name           string `json:"name"`
-	Protocol       string `json:"protocol" binding:"omitempty,oneof=http https socks5 socks5h"`
-	Host           string `json:"host"`
-	Port           int    `json:"port" binding:"omitempty,min=1,max=65535"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	Status         string `json:"status" binding:"omitempty,oneof=active inactive"`
-	ExpiresAt      *int64 `json:"expires_at"`
-	FallbackMode   string `json:"fallback_mode" binding:"omitempty,oneof=none proxy direct"`
-	BackupProxyID  *int64 `json:"backup_proxy_id"`
-	ExpiryWarnDays int    `json:"expiry_warn_days" binding:"omitempty,min=0"`
+	Name           string                 `json:"name"`
+	Protocol       string                 `json:"protocol" binding:"omitempty,oneof=http https socks5 socks5h"`
+	Host           string                 `json:"host"`
+	Port           int                    `json:"port" binding:"omitempty,min=1,max=65535"`
+	Username       string                 `json:"username"`
+	Password       string                 `json:"password"`
+	Status         string                 `json:"status" binding:"omitempty,oneof=active inactive"`
+	ExpiresAt      dto.NullableInt64Field `json:"expires_at"`
+	FallbackMode   string                 `json:"fallback_mode" binding:"omitempty,oneof=none proxy direct"`
+	BackupProxyID  dto.NullableInt64Field `json:"backup_proxy_id"`
+	ExpiryWarnDays *int                   `json:"expiry_warn_days" binding:"omitempty,min=0"`
 }
 
 // List handles listing all proxies with pagination
@@ -299,12 +299,23 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		}
 	}
 
+	var expiresAt *time.Time
+	if req.ExpiresAt.Value != nil && *req.ExpiresAt.Value > 0 {
+		t := time.Unix(*req.ExpiresAt.Value, 0).UTC()
+		expiresAt = &t
+	}
 	input := &service.UpdateProxyInput{
-		Name:     strings.TrimSpace(req.Name),
-		Protocol: strings.TrimSpace(req.Protocol),
-		Host:     strings.TrimSpace(req.Host),
-		Port:     req.Port,
-		Status:   strings.TrimSpace(req.Status),
+		Name:           strings.TrimSpace(req.Name),
+		Protocol:       strings.TrimSpace(req.Protocol),
+		Host:           strings.TrimSpace(req.Host),
+		Port:           req.Port,
+		Status:         strings.TrimSpace(req.Status),
+		ExpiresAt:      expiresAt,
+		ClearExpiresAt: req.ExpiresAt.Set && expiresAt == nil,
+		FallbackMode:   strings.TrimSpace(req.FallbackMode),
+		BackupProxyID:  req.BackupProxyID.Value,
+		ClearBackupID:  req.BackupProxyID.Set && req.BackupProxyID.Value == nil,
+		ExpiryWarnDays: req.ExpiryWarnDays,
 	}
 	if _, ok := raw["username"]; ok {
 		u := strings.TrimSpace(req.Username)
@@ -314,28 +325,6 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		p := strings.TrimSpace(req.Password)
 		input.Password = &p
 	}
-	if rawExp, ok := raw["expires_at"]; ok {
-		input.ExpiresAtProvided = true
-		if string(rawExp) != "null" && req.ExpiresAt != nil && *req.ExpiresAt > 0 {
-			t := time.Unix(*req.ExpiresAt, 0).UTC()
-			input.ExpiresAt = &t
-		}
-	}
-	if _, ok := raw["fallback_mode"]; ok {
-		mode := strings.TrimSpace(req.FallbackMode)
-		input.FallbackMode = &mode
-	}
-	if rawBackup, ok := raw["backup_proxy_id"]; ok {
-		input.BackupProxyIDProvided = true
-		if string(rawBackup) != "null" {
-			input.BackupProxyID = req.BackupProxyID
-		}
-	}
-	if _, ok := raw["expiry_warn_days"]; ok {
-		d := req.ExpiryWarnDays
-		input.ExpiryWarnDays = &d
-	}
-
 	proxy, err := h.adminService.UpdateProxy(c.Request.Context(), proxyID, input)
 	if err != nil {
 		response.ErrorFrom(c, err)
