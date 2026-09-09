@@ -316,8 +316,8 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 		mismatchCmds[i] = pipe.Get(ctx, crUserMismatch(userID, win-i))
 	}
 	// evidence samples (optional)
-	sampleIPs := pipe.ZRevRange(ctx, crKeyIPSet(keyID), 0, 19)
-	sampleUAs := pipe.ZRevRange(ctx, crKeyUASet(keyID), 0, 19)
+	sampleIPs := pipe.ZRangeArgs(ctx, redis.ZRangeArgs{Key: crKeyIPSet(keyID), Start: 0, Stop: 19, Rev: true})
+	sampleUAs := pipe.ZRangeArgs(ctx, redis.ZRangeArgs{Key: crKeyUASet(keyID), Start: 0, Stop: 19, Rev: true})
 	pipe.ZRemRangeByRank(ctx, crKeyIPSet(keyID), 0, int64(-(crEvidenceIPCap + 1)))
 	pipe.ZRemRangeByRank(ctx, crKeyUASet(keyID), 0, int64(-(crEvidenceUACap + 1)))
 
@@ -600,7 +600,12 @@ func (c *connectionSignalCache) listActive(ctx context.Context, key string, limi
 	if limit <= 0 {
 		limit = 2000
 	}
-	members, err := c.rdb.ZRevRange(ctx, key, 0, int64(limit-1)).Result()
+	members, err := c.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   key,
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}

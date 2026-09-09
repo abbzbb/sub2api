@@ -626,7 +626,7 @@ func runUpstreamToClient(
 				openAIWSRelayDiscardActiveTurnTiming(state)
 			}
 		}
-		emitTurnComplete(onTurnComplete, state, observedEvent, false)
+		emitTurnComplete(onTurnComplete, state, observedEvent, dropDownstream)
 		if dropDownstream {
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
