@@ -5868,10 +5868,11 @@ const handleCreateGroup = async () => {
   if (!validateProfitControlForm(createForm)) {
     return;
   }
-  // 模型白名单：开启且没有任何条目时阻止提交，与后端 400 对齐。
+  // 模型白名单：开启且有效 payload 没有任何条目时阻止提交，与后端 400 对齐。
+  // 用 buildModelAllowlistConfig 而不是已水合选中数：候选延迟/失败时仍提交已保存 models。
   if (
     createModelAllowlistState.enabled &&
-    createModelAllowlistSelectedCount.value === 0
+    buildModelAllowlistConfig(createModelAllowlistState).models.length === 0
   ) {
     appStore.showError(t("admin.groups.modelAllowlist.emptySelectionError"));
     return;
@@ -6199,10 +6200,11 @@ const handleUpdateGroup = async () => {
   if (!validateProfitControlForm(editForm)) {
     return;
   }
-  // 模型白名单：开启且没有任何条目时阻止提交，与后端 400 对齐。
+  // 模型白名单：开启且有效 payload 没有任何条目时阻止提交，与后端 400 对齐。
+  // 用 buildModelAllowlistConfig 而不是已水合选中数：候选延迟/失败时仍提交已保存 models。
   if (
     editModelAllowlistState.enabled &&
-    editModelAllowlistSelectedCount.value === 0
+    buildModelAllowlistConfig(editModelAllowlistState).models.length === 0
   ) {
     appStore.showError(t("admin.groups.modelAllowlist.emptySelectionError"));
     return;

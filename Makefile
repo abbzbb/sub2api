@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical
+.PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical test-frontend-all
 
 FRONTEND_CRITICAL_VITEST := \
 	src/i18n/__tests__/localeKeyCompleteness.spec.ts \
@@ -40,5 +40,10 @@ test-frontend:
 	@pnpm --dir frontend run typecheck
 	@$(MAKE) test-frontend-critical
 
+# 本地快速路径：lint + typecheck + 16 个关键 vitest
 test-frontend-critical:
 	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
+
+# 全量 vitest（CI 使用）；不含 lint/typecheck
+test-frontend-all:
+	@pnpm --dir frontend exec vitest run

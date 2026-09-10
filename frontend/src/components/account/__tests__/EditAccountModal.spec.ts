@@ -671,6 +671,68 @@ describe('EditAccountModal', () => {
     })
   })
 
+  it('defaults MiniMax API-key accounts with a missing base_url to the official MiniMax endpoint', async () => {
+    const account = buildAccount()
+    account.platform = 'minimax'
+    account.credentials = {
+      api_key: 'sk-minimax',
+      account_mode: 'payg',
+      api_protocol: 'chat_completions'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const baseUrlInput = wrapper.findAll('input').find((input) => {
+      const el = input.element as HTMLInputElement
+      return el.type === 'text' && el.value.startsWith('http')
+    })
+    expect(baseUrlInput).toBeDefined()
+    expect((baseUrlInput!.element as HTMLInputElement).value).toBe('https://api.minimaxi.com/v1')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://api.minimaxi.com/v1'
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials.base_url).not.toBe('https://api.anthropic.com')
+    wrapper.unmount()
+  })
+
+  it('persists the official MiniMax URL when a cleared base_url is saved', async () => {
+    const account = buildAccount()
+    account.platform = 'minimax'
+    account.credentials = {
+      api_key: 'sk-minimax',
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://relay.example.com/v1'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    const baseUrlInput = wrapper.findAll('input').find((input) => {
+      const el = input.element as HTMLInputElement
+      return el.type === 'text' && el.value === 'https://relay.example.com/v1'
+    })
+    expect(baseUrlInput).toBeDefined()
+    await baseUrlInput!.setValue('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'chat_completions',
+      base_url: 'https://api.minimaxi.com/v1'
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials.base_url).not.toBe('https://api.anthropic.com')
+    wrapper.unmount()
+  })
+
   it('preserves model mappings when editing the whitelist', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = {

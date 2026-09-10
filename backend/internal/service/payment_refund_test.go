@@ -12,6 +12,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -538,10 +539,32 @@ func TestQueryAndFinalizeRefundFinalizesProviderStatuses(t *testing.T) {
 	}
 }
 
+func TestFinalizePendingRefundSuccessRejectsUnconfirmedClaim(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	order := createPendingRefundOrderForTest(t, ctx, client, "finalize-unconfirmed")
+
+	deductions := 0
+	svc := &PaymentService{
+		entClient: client,
+		userRepo: &mockUserRepo{deductAvailableBalanceFn: func(ctx context.Context, id int64, amount float64) (float64, error) {
+			deductions++
+			return amount, nil
+		}},
+	}
+
+	result, err := svc.finalizePendingRefundSuccess(ctx, svc.refundFinalizePlan(order))
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Equal(t, "CONFLICT", infraerrors.Reason(err))
+	require.Equal(t, 0, deductions)
+}
+
 func TestFinalizePendingRefundSuccessRejectsStaleCallerBeforeSecondDeduction(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	order := createPendingRefundOrderForTest(t, ctx, client, "finalize-stale")
+	order = seedConfirmedRefundSuccessState(t, ctx, client, order, "finalize-stale-attempt")
 
 	deductions := 0
 	svc := &PaymentService{
@@ -574,6 +597,7 @@ func TestFinalizePendingRefundSuccessRollsBackPostDeductionFailure(t *testing.T)
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	order := createPendingRefundOrderForTest(t, ctx, client, "finalize-rollback")
+	order = seedConfirmedRefundSuccessState(t, ctx, client, order, "finalize-rollback-attempt")
 	_, err := client.User.UpdateOneID(order.UserID).SetBalance(100).Save(ctx)
 	require.NoError(t, err)
 
@@ -671,6 +695,24 @@ func createPendingRefundOrderForTest(t *testing.T, ctx context.Context, client *
 		Save(ctx)
 	require.NoError(t, err)
 	return order
+}
+
+func seedConfirmedRefundSuccessState(t *testing.T, ctx context.Context, client *dbent.Client, order *dbent.PaymentOrder, attemptID string) *dbent.PaymentOrder {
+	t.Helper()
+	state := &domain.PaymentRefundState{
+		Version:         1,
+		AttemptID:       attemptID,
+		ProviderStatus:  payment.ProviderStatusSuccess,
+		RefundID:        "rf_test",
+		OutRequestNo:    attemptID,
+		RefundAmount:    order.RefundAmount,
+		GatewayAmount:   order.RefundAmount,
+		DeductionType:   payment.DeductionTypeBalance,
+		BalanceToDeduct: order.RefundAmount,
+	}
+	updated, err := client.PaymentOrder.UpdateOne(order).SetRefundState(state).Save(ctx)
+	require.NoError(t, err)
+	return updated
 }
 
 func replacePaymentProviderFactoryForTest(t *testing.T, prov payment.Provider) func() {

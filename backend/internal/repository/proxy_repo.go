@@ -962,7 +962,7 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 		target, change := service.ResolveProxyFallbackTarget(p, byID, now)
 		if !change && p.FallbackMode == service.FallbackModeProxy {
 			// 配置了 proxy 回退但链路无解（成环或全部已过期），记录告警日志
-			logger.LegacyPrintf("repository.proxy", "[ProxyExpiry] proxy %d expired but fallback chain unresolved (cycle/all-expired); accounts kept", p.ID)
+			logger.LegacyPrintf("repository.proxy", "[ProxyExpiry] proxy %d expired but fallback chain unresolved (cycle/inactive/error/expired/missing); accounts kept", p.ID)
 		}
 
 		changedAccountIDs, sweepErr := r.sweepOneExpiredProxy(ctx, p.ID, target, change)

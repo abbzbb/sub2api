@@ -46,14 +46,14 @@ func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payme
 		// Fallback only for true legacy "sub2_N" DB-ID payloads when the
 		// current out_trade_no lookup genuinely did not find an order.
 		if oid, ok := parseLegacyPaymentOrderID(n.OrderID, err); ok {
-			return s.confirmPayment(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata)
+			return s.confirmPaymentByID(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata)
 		}
 		if dbent.IsNotFound(err) {
 			return fmt.Errorf("%w: out_trade_no=%s", ErrOrderNotFound, n.OrderID)
 		}
 		return fmt.Errorf("lookup order failed for out_trade_no %s: %w", n.OrderID, err)
 	}
-	return s.confirmPayment(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata)
+	return s.confirmPayment(ctx, order, n.TradeNo, n.Amount, pk, n.Metadata)
 }
 
 func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
@@ -75,12 +75,30 @@ func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 	return oid, true
 }
 
-func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string) error {
-	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
-	if err != nil {
-		slog.Error("order not found", "orderID", oid)
+func paymentOrderGetError(err error, oid int64) error {
+	if err == nil {
 		return nil
 	}
+	if dbent.IsNotFound(err) {
+		return fmt.Errorf("%w: order_id=%d", ErrOrderNotFound, oid)
+	}
+	return fmt.Errorf("get payment order %d: %w", oid, err)
+}
+
+func (s *PaymentService) confirmPaymentByID(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string) error {
+	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			slog.Error("order not found", "orderID", oid)
+		} else {
+			slog.Error("payment order lookup failed", "orderID", oid, "error", err)
+		}
+		return paymentOrderGetError(err, oid)
+	}
+	return s.confirmPayment(ctx, o, tradeNo, paid, pk, metadata)
+}
+
+func (s *PaymentService) confirmPayment(ctx context.Context, o *dbent.PaymentOrder, tradeNo string, paid float64, pk string, metadata map[string]string) error {
 	instanceProviderKey := ""
 	if inst, instErr := s.getOrderProviderInstance(ctx, o); instErr == nil && inst != nil {
 		instanceProviderKey = inst.ProviderKey
@@ -189,7 +207,12 @@ func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, trad
 func (s *PaymentService) alreadyProcessed(ctx context.Context, o *dbent.PaymentOrder) error {
 	cur, err := s.entClient.PaymentOrder.Get(ctx, o.ID)
 	if err != nil {
-		return nil
+		if dbent.IsNotFound(err) {
+			slog.Error("order not found", "orderID", o.ID)
+		} else {
+			slog.Error("reload processed payment order failed", "orderID", o.ID, "error", err)
+		}
+		return paymentOrderGetError(err, o.ID)
 	}
 	switch cur.Status {
 	case OrderStatusCompleted, OrderStatusRefunded:

@@ -22,9 +22,10 @@ const (
 
 // Alipay response constants.
 const (
-	alipayFundChangeYes    = "Y"
-	alipayErrTradeNotExist = "ACQ.TRADE_NOT_EXIST"
-	alipayRefundSuffix     = "-refund"
+	alipayFundChangeYes       = "Y"
+	alipayErrTradeNotExist    = "ACQ.TRADE_NOT_EXIST"
+	alipayRefundSuffix        = "-refund"
+	alipayRefundStatusSuccess = "REFUND_SUCCESS"
 )
 
 var (
@@ -36,6 +37,12 @@ var (
 	}
 	alipayTradePagePay = func(client *alipay.Client, param alipay.TradePagePay) (*url.URL, error) {
 		return client.TradePagePay(param)
+	}
+	alipayTradeRefund = func(ctx context.Context, client *alipay.Client, param alipay.TradeRefund) (*alipay.TradeRefundRsp, error) {
+		return client.TradeRefund(ctx, param)
+	}
+	alipayTradeFastPayRefundQuery = func(ctx context.Context, client *alipay.Client, param alipay.TradeFastPayRefundQuery) (*alipay.TradeFastPayRefundQueryRsp, error) {
+		return client.TradeFastPayRefundQuery(ctx, param)
 	}
 )
 
@@ -331,6 +338,24 @@ func (a *Alipay) VerifyNotification(ctx context.Context, rawBody string, _ map[s
 	}, nil
 }
 
+func alipayOutRequestNo(req payment.RefundRequest) string {
+	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
+		return key
+	}
+	orderID := strings.TrimSpace(req.OrderID)
+	if orderID == "" {
+		orderID = "refund"
+	}
+	return fmt.Sprintf("%s-refund-%d", orderID, time.Now().UnixNano())
+}
+
+func alipayQueryOutRequestNo(req payment.RefundQueryRequest) string {
+	if id := strings.TrimSpace(req.OutRequestNo); id != "" {
+		return id
+	}
+	return strings.TrimSpace(req.RefundID)
+}
+
 // Refund requests a refund through Alipay.
 func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
 	client, err := a.getClient()
@@ -338,14 +363,18 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		return nil, err
 	}
 
-	result, err := client.TradeRefund(ctx, alipay.TradeRefund{
+	outRequestNo := alipayOutRequestNo(req)
+	result, err := alipayTradeRefund(ctx, client, alipay.TradeRefund{
 		OutTradeNo:   req.OrderID,
 		RefundAmount: req.Amount,
 		RefundReason: req.Reason,
-		OutRequestNo: fmt.Sprintf("%s-refund-%d", req.OrderID, time.Now().UnixNano()),
+		OutRequestNo: outRequestNo,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alipay TradeRefund: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("alipay TradeRefund: empty response")
 	}
 
 	refundStatus := payment.ProviderStatusPending
@@ -355,12 +384,65 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 
 	refundID := result.TradeNo
 	if refundID == "" {
+		refundID = outRequestNo
+	}
+	if refundID == "" {
 		refundID = req.OrderID + alipayRefundSuffix
 	}
 
 	return &payment.RefundResponse{
 		RefundID: refundID,
 		Status:   refundStatus,
+	}, nil
+}
+
+// QueryRefund queries a previously requested Alipay refund by OutRequestNo.
+func (a *Alipay) QueryRefund(ctx context.Context, req payment.RefundQueryRequest) (*payment.RefundResponse, error) {
+	client, err := a.getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	outRequestNo := alipayQueryOutRequestNo(req)
+	if outRequestNo == "" {
+		return nil, fmt.Errorf("alipay query refund: missing out_request_no")
+	}
+
+	param := alipay.TradeFastPayRefundQuery{OutRequestNo: outRequestNo}
+	if orderID := strings.TrimSpace(req.OrderID); orderID != "" {
+		param.OutTradeNo = orderID
+	}
+	if tradeNo := strings.TrimSpace(req.TradeNo); tradeNo != "" {
+		param.TradeNo = tradeNo
+	}
+
+	result, err := alipayTradeFastPayRefundQuery(ctx, client, param)
+	if err != nil {
+		return nil, fmt.Errorf("alipay TradeFastPayRefundQuery: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("alipay TradeFastPayRefundQuery: empty response")
+	}
+	if result.IsFailure() {
+		return nil, fmt.Errorf("alipay TradeFastPayRefundQuery failed: %s", result.Error.Error())
+	}
+
+	refundID := strings.TrimSpace(result.TradeNo)
+	if refundID == "" {
+		refundID = outRequestNo
+	}
+
+	// Official fastpay.refund.query enumerates only REFUND_SUCCESS.
+	// Blank/missing/anything else is ambiguous (not received OR failed) and
+	// must stay pending — never a terminal failure that mints a new operation.
+	status := payment.ProviderStatusPending
+	if strings.EqualFold(strings.TrimSpace(result.RefundStatus), alipayRefundStatusSuccess) {
+		status = payment.ProviderStatusSuccess
+	}
+
+	return &payment.RefundResponse{
+		RefundID: refundID,
+		Status:   status,
 	}, nil
 }
 
@@ -407,4 +489,5 @@ var (
 	_ payment.Provider                 = (*Alipay)(nil)
 	_ payment.CancelableProvider       = (*Alipay)(nil)
 	_ payment.MerchantIdentityProvider = (*Alipay)(nil)
+	_ payment.RefundQueryProvider      = (*Alipay)(nil)
 )

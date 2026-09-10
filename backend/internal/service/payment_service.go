@@ -133,6 +133,12 @@ type RefundPlan struct {
 	BalanceToDeduct float64
 	SubDaysToDeduct int
 	SubscriptionID  int64
+	// IdempotencyKey is the operation-specific refund request id reused across
+	// retries of the same refund (Alipay OutRequestNo). Empty means mint one.
+	IdempotencyKey string
+	// PriorStatus is the order status before the Refunding lock. Restored on
+	// uncertain provider outcomes so a requested refund is not wiped to Completed.
+	PriorStatus string
 }
 
 type RefundResult struct {

@@ -183,15 +183,19 @@ type RefundRequest struct {
 	OrderID string
 	Amount  string // Refund amount formatted to 2 decimal places
 	Reason  string
+	// IdempotencyKey identifies one refund request across retries and
+	// response-loss. Alipay uses it as OutRequestNo; other providers ignore it.
+	IdempotencyKey string
 }
 
 // RefundQueryRequest contains identifiers needed to query a previously
 // requested refund.
 type RefundQueryRequest struct {
-	TradeNo  string
-	OrderID  string
-	RefundID string
-	Amount   string
+	TradeNo      string
+	OrderID      string
+	RefundID     string
+	Amount       string
+	OutRequestNo string // Optional provider refund request id (Alipay OutRequestNo)
 }
 
 // RefundResponse is returned after a refund request.

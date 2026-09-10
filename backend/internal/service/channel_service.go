@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -101,6 +102,7 @@ type channelCache struct {
 	// 冷路径（CRUD 操作）
 	byID     map[int64]*Channel
 	loadedAt time.Time
+	gen      uint64
 }
 
 // ChannelMappingResult 渠道映射查找结果
@@ -164,8 +166,10 @@ type ChannelService struct {
 	pricingService       *PricingService // 用于「可用渠道」展示时回落到全局定价；可为 nil（测试场景）
 	cachePubSub          ChannelCachePubSub
 
-	cache   atomic.Value // *channelCache
-	cacheSF singleflight.Group
+	cache    atomic.Value // *channelCache
+	cacheSF  singleflight.Group
+	cacheGen atomic.Uint64
+	cacheMu  sync.Mutex // 序列化 publish/clear，避免过期快照覆盖新快照
 }
 
 // NewChannelService 创建渠道服务实例。
@@ -183,31 +187,63 @@ func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCa
 	return s
 }
 
+// liveChannelCache 返回当前代际且未过期的快照；失效后的过期代际视为未命中。
+func (s *ChannelService) liveChannelCache() *channelCache {
+	cached, ok := s.cache.Load().(*channelCache)
+	if !ok || cached == nil {
+		return nil
+	}
+	if time.Since(cached.loadedAt) >= channelCacheTTL {
+		return nil
+	}
+	if cached.gen != s.cacheGen.Load() {
+		return nil
+	}
+	return cached
+}
+
+// publishCache 仅在 gen 仍匹配时发布快照，避免覆盖更新的缓存。
+func (s *ChannelService) publishCache(gen uint64, cache *channelCache) bool {
+	if cache == nil {
+		return false
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cacheGen.Load() != gen {
+		return false
+	}
+	cache.gen = gen
+	s.cache.Store(cache)
+	return true
+}
+
 // loadCache 加载或返回缓存的渠道数据
 func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
-	if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
-		if time.Since(cached.loadedAt) < channelCacheTTL {
+	for {
+		if cached := s.liveChannelCache(); cached != nil {
 			return cached, nil
 		}
-	}
 
-	result, err, _ := s.cacheSF.Do("channel_cache", func() (any, error) {
-		// 双重检查
-		if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
-			if time.Since(cached.loadedAt) < channelCacheTTL {
+		result, err, _ := s.cacheSF.Do("channel_cache", func() (any, error) {
+			if cached := s.liveChannelCache(); cached != nil {
 				return cached, nil
 			}
+			return s.buildCache(ctx, s.cacheGen.Load())
+		})
+		if err != nil {
+			return nil, err
 		}
-		return s.buildCache(ctx)
-	})
-	if err != nil {
-		return nil, err
+		cache, ok := result.(*channelCache)
+		if !ok {
+			return nil, fmt.Errorf("unexpected cache type")
+		}
+		if cached := s.liveChannelCache(); cached != nil {
+			return cached, nil
+		}
+		if cache != nil && cache.gen == s.cacheGen.Load() && time.Since(cache.loadedAt) < channelCacheTTL {
+			return cache, nil
+		}
 	}
-	cache, ok := result.(*channelCache)
-	if !ok {
-		return nil, fmt.Errorf("unexpected cache type")
-	}
-	return cache, nil
 }
 
 // newEmptyChannelCache 创建空的渠道缓存（所有 map 已初始化）
@@ -276,35 +312,36 @@ func expandMappingToCache(cache *channelCache, ch *Channel, gid int64, platform 
 }
 
 // storeErrorCache 存入短 TTL 空缓存，防止 DB 错误后紧密重试。
-// 通过回退 loadedAt 使剩余 TTL = channelErrorTTL。
-func (s *ChannelService) storeErrorCache() {
+// 通过回退 loadedAt 使剩余 TTL = channelErrorTTL。发布走同一代际栅栏。
+func (s *ChannelService) storeErrorCache(gen uint64) {
 	errorCache := newEmptyChannelCache()
 	errorCache.loadedAt = time.Now().Add(-(channelCacheTTL - channelErrorTTL))
-	s.cache.Store(errorCache)
+	s.publishCache(gen, errorCache)
 }
 
 // buildCache 从数据库构建渠道缓存。
 // 使用独立 context 避免请求取消导致空值被长期缓存。
-func (s *ChannelService) buildCache(ctx context.Context) (*channelCache, error) {
+// Store 与失效代际栅栏绑定：过期 loader 不得覆盖新快照。
+func (s *ChannelService) buildCache(ctx context.Context, gen uint64) (*channelCache, error) {
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), channelCacheDBTimeout)
 	defer cancel()
 
-	channels, groupPlatforms, err := s.fetchChannelData(dbCtx)
+	channels, groupPlatforms, err := s.fetchChannelData(dbCtx, gen)
 	if err != nil {
 		return nil, err
 	}
 
 	cache := populateChannelCache(channels, groupPlatforms)
-	s.cache.Store(cache)
+	s.publishCache(gen, cache)
 	return cache, nil
 }
 
 // fetchChannelData 从数据库加载渠道列表和分组平台映射。
-func (s *ChannelService) fetchChannelData(ctx context.Context) ([]Channel, map[int64]string, error) {
+func (s *ChannelService) fetchChannelData(ctx context.Context, gen uint64) ([]Channel, map[int64]string, error) {
 	channels, err := s.repo.ListAll(ctx)
 	if err != nil {
 		slog.Warn("failed to build channel cache", "error", err)
-		s.storeErrorCache()
+		s.storeErrorCache(gen)
 		return nil, nil, fmt.Errorf("list all channels: %w", err)
 	}
 
@@ -318,7 +355,7 @@ func (s *ChannelService) fetchChannelData(ctx context.Context) ([]Channel, map[i
 		groupPlatforms, err = s.repo.GetGroupPlatforms(ctx, allGroupIDs)
 		if err != nil {
 			slog.Warn("failed to load group platforms for channel cache", "error", err)
-			s.storeErrorCache()
+			s.storeErrorCache(gen)
 			return nil, nil, fmt.Errorf("get group platforms: %w", err)
 		}
 	}
@@ -396,18 +433,22 @@ func (s *ChannelService) invalidateCache() {
 	s.clearCache()
 
 	// 主动重建缓存，确保 CRUD 后立即生效
-	if _, err := s.buildCache(context.Background()); err != nil {
+	if _, err := s.buildCache(context.Background(), s.cacheGen.Load()); err != nil {
 		slog.Warn("failed to rebuild channel cache after invalidation", "error", err)
 	}
 
 	s.notifyCacheUpdate()
 }
 
-// clearCache clears only the in-process snapshot. Keeping this separate from
-// invalidateCache prevents notifications received from Redis from being
-// published again in a loop.
+// clearCache clears only the in-process snapshot and bumps the generation.
+// Redis SubscribeUpdates callbacks use this path so a late local loader cannot
+// republish. Keeping this separate from invalidateCache prevents notifications
+// received from Redis from being published again in a loop.
 func (s *ChannelService) clearCache() {
+	s.cacheMu.Lock()
+	s.cacheGen.Add(1)
 	s.cache.Store((*channelCache)(nil))
+	s.cacheMu.Unlock()
 	s.cacheSF.Forget("channel_cache")
 }
 

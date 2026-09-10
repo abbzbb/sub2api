@@ -8,6 +8,13 @@ import "time"
 //   - change=true, targetID=nil：改投为直连
 //   - change=true, targetID!=nil：改投到该备用代理 id
 //
+// 链路规则：
+//   - 仅 StatusActive 且未过期（IsExpired=false）的节点可作为 rebound 目标；
+//     inactive / error / expired / 缺失节点不会被选中。
+//   - 不可用节点若 FallbackModeProxy，则继续沿 BackupProxyID 往后走。
+//   - 不可用节点若 FallbackModeDirect，则改投直连（targetID=nil, change=true）。
+//   - 链路耗尽、节点缺失或成环：unresolved（change=false），sweep 将账号留在过期主代理上。
+//
 // byID 是「全部代理」的快照（id -> Proxy），now 为判定基准时间。
 func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time) (*int64, bool) {
 	switch start.FallbackMode {
@@ -27,7 +34,7 @@ func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time
 			if !ok {
 				return nil, false
 			}
-			if !(&p).IsExpired(now) && p.Status != StatusExpired {
+			if isAcceptableProxyFallbackTarget(p, now) {
 				id := p.ID
 				return &id, true
 			}
@@ -43,5 +50,18 @@ func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time
 		}
 	default:
 		return nil, false
+	}
+}
+
+// isAcceptableProxyFallbackTarget reports whether p may be a rebound target.
+// Only StatusActive + not-expired nodes qualify; inactive/error/expired are skipped.
+func isAcceptableProxyFallbackTarget(p Proxy, now time.Time) bool {
+	switch p.Status {
+	case StatusError, StatusInactive, StatusExpired:
+		return false
+	case StatusActive:
+		return !p.IsExpired(now)
+	default:
+		return false
 	}
 }

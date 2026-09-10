@@ -35,15 +35,17 @@
             type="text"
             class="input"
             :placeholder="
-              account.platform === 'openai'
-                ? 'https://api.openai.com'
-                : account.platform === 'gemini'
-                  ? 'https://generativelanguage.googleapis.com'
-                  : account.platform === 'antigravity'
-                    ? 'https://cloudcode-pa.googleapis.com'
-                    : account.platform === 'grok'
-                      ? 'https://api.x.ai/v1'
-                      : 'https://api.anthropic.com'
+              isCNApiKeyAccount
+                ? defaultBaseUrl
+                : account.platform === 'openai'
+                  ? 'https://api.openai.com'
+                  : account.platform === 'gemini'
+                    ? 'https://generativelanguage.googleapis.com'
+                    : account.platform === 'antigravity'
+                      ? 'https://cloudcode-pa.googleapis.com'
+                      : account.platform === 'grok'
+                        ? 'https://api.x.ai/v1'
+                        : 'https://api.anthropic.com'
             "
           />
           <p v-if="baseUrlHint" class="input-hint">{{ baseUrlHint }}</p>
@@ -3734,13 +3736,9 @@ const defaultBaseUrl = computed(() => {
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
   if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
   if (props.account?.platform === 'grok') return 'https://api.x.ai/v1'
-  // CN 供应商：按当前模式/协议回落到官方预设（清空输入框提交时使用），
+  // CN 供应商（含 MiniMax）：按当前模式/协议回落到官方预设（清空输入框提交时使用），
   // 不能落到 anthropic 默认值（会被当 CC base 拼出错误端点）。
-  if (
-    props.account?.platform === 'kimi' ||
-    props.account?.platform === 'zhipu' ||
-    props.account?.platform === 'deepseek'
-  ) {
+  if (props.account && isCNProviderPlatform(props.account.platform)) {
     return defaultCNBaseUrl(props.account.platform, editAccountMode.value, editApiProtocol.value)
   }
   return 'https://api.anthropic.com'
@@ -4188,21 +4186,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         editZhipuProject.value = typeof credentials.zhipu_project === 'string' ? credentials.zhipu_project : ''
       }
     }
-    const platformDefaultUrl =
-      newAccount.platform === 'openai'
-        ? 'https://api.openai.com'
-        : newAccount.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : newAccount.platform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : newAccount.platform === 'kimi' ||
-                newAccount.platform === 'zhipu' ||
-                newAccount.platform === 'deepseek'
-              ? defaultCNBaseUrl(newAccount.platform, editAccountMode.value, editApiProtocol.value)
-              : 'https://api.anthropic.com'
+    const storedBaseUrl = typeof credentials.base_url === 'string' ? credentials.base_url.trim() : ''
+    // CN 初始化必须自己写好官方默认值：syncingForm 期间 mode/protocol watcher 会直接 return，
+    // 不能依赖 watcher 把 MiniMax 从 anthropic 占位修回来。
     editBaseUrl.value = isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
-      : (credentials.base_url as string) || platformDefaultUrl
+      : storedBaseUrl || defaultBaseUrl.value
 
     // Load model mappings and detect mode
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)

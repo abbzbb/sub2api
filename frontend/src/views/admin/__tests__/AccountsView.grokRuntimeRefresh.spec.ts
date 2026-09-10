@@ -208,12 +208,21 @@ describe('admin AccountsView Grok runtime state refresh', () => {
   })
 
   it('refreshes the row immediately after an account connection test', async () => {
+    const refreshedAccount: Account = {
+      ...pendingAccount,
+      updated_at: '2026-07-15T00:02:00Z',
+      grok_free_recovery_pending: true
+    }
+    getAccountById
+      .mockResolvedValueOnce({ ...pendingAccount })
+      .mockResolvedValueOnce({ ...refreshedAccount })
+
     const wrapper = mountView()
     await flushPromises()
 
     ;(wrapper.vm as any).handleTest({ ...baseAccount })
     await flushPromises()
-    expect(wrapper.get('[data-testid="test-account-state"]').text()).toBe('false')
+    expect(wrapper.get('[data-testid="test-account-state"]').text()).toBe('true')
 
     await wrapper.get('[data-testid="test-completed"]').trigger('click')
     await flushPromises()

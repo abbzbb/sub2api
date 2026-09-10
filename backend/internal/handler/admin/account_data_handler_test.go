@@ -317,3 +317,48 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
 }
+
+func TestImportDataResolvesForwardBackupReference(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.proxies = nil
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{
+				{
+					"name":              "primary",
+					"protocol":          "http",
+					"host":              "primary.test",
+					"port":              8080,
+					"fallback_mode":     service.FallbackModeProxy,
+					"backup_proxy_name": "backup",
+				},
+				{
+					"name":          "backup",
+					"protocol":      "http",
+					"host":          "backup.test",
+					"port":          8081,
+					"fallback_mode": service.FallbackModeNone,
+				},
+			},
+			"accounts": []map[string]any{},
+		},
+	}
+	body, err := json.Marshal(dataPayload)
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdProxies, 2)
+	primary := findProxyByName(t, adminSvc.proxies, "primary")
+	backup := findProxyByName(t, adminSvc.proxies, "backup")
+	require.Equal(t, service.FallbackModeProxy, primary.FallbackMode)
+	require.NotNil(t, primary.BackupProxyID)
+	require.Equal(t, backup.ID, *primary.BackupProxyID)
+}

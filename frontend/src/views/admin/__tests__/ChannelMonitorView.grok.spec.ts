@@ -8,6 +8,7 @@ import {
   DEFAULT_GROK_MODEL,
   PROVIDERS,
   PROVIDER_GROK,
+  PROVIDER_MINIMAX,
 } from '@/constants/channelMonitor'
 
 const { listTemplates, accountsList, accountsGetById } = vi.hoisted(() => ({
@@ -100,8 +101,10 @@ describe('channel monitor Grok provider', () => {
     await flushPromises()
 
     expect(PROVIDERS).toContain(PROVIDER_GROK)
+    expect(PROVIDERS).toContain(PROVIDER_MINIMAX)
     const providerButtons = wrapper.findAll('[data-testid^="monitor-provider-"]')
-    expect(providerButtons).toHaveLength(8)
+    expect(providerButtons).toHaveLength(PROVIDERS.length)
+    expect(wrapper.get('[data-testid="monitor-provider-minimax"]').exists()).toBe(true)
     expect(providerButtons[0].element.parentElement?.className).toContain('grid-cols-2')
     expect(providerButtons[0].element.parentElement?.className).toContain('sm:grid-cols-4')
 

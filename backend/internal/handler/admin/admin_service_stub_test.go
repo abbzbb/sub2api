@@ -651,18 +651,84 @@ func (s *stubAdminService) GetProxiesByIDs(ctx context.Context, ids []int64) ([]
 
 func (s *stubAdminService) CreateProxy(ctx context.Context, input *service.CreateProxyInput) (*service.Proxy, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.createdProxies = append(s.createdProxies, input)
-	s.mu.Unlock()
-	proxy := service.Proxy{ID: 400, Name: input.Name, Status: service.StatusActive}
-	return &proxy, nil
+	nextID := int64(1)
+	for i := range s.proxies {
+		if s.proxies[i].ID >= nextID {
+			nextID = s.proxies[i].ID + 1
+		}
+	}
+	mode := input.FallbackMode
+	if mode == "" {
+		mode = service.FallbackModeNone
+	}
+	proxy := service.Proxy{
+		ID:             nextID,
+		Name:           input.Name,
+		Protocol:       input.Protocol,
+		Host:           input.Host,
+		Port:           input.Port,
+		Username:       input.Username,
+		Password:       input.Password,
+		Status:         service.StatusActive,
+		ExpiresAt:      input.ExpiresAt,
+		FallbackMode:   mode,
+		BackupProxyID:  input.BackupProxyID,
+		ExpiryWarnDays: input.ExpiryWarnDays,
+	}
+	s.proxies = append(s.proxies, proxy)
+	cp := proxy
+	return &cp, nil
 }
 
 func (s *stubAdminService) UpdateProxy(ctx context.Context, id int64, input *service.UpdateProxyInput) (*service.Proxy, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.updatedProxyIDs = append(s.updatedProxyIDs, id)
 	s.updatedProxies = append(s.updatedProxies, input)
-	s.mu.Unlock()
-	proxy := service.Proxy{ID: id, Name: input.Name, Status: service.StatusActive}
+	for i := range s.proxies {
+		if s.proxies[i].ID != id {
+			continue
+		}
+		p := &s.proxies[i]
+		if input.Name != "" {
+			p.Name = input.Name
+		}
+		if input.Protocol != "" {
+			p.Protocol = input.Protocol
+		}
+		if input.Host != "" {
+			p.Host = input.Host
+		}
+		if input.Port != 0 {
+			p.Port = input.Port
+		}
+		if input.Username != nil {
+			p.Username = *input.Username
+		}
+		if input.Password != nil {
+			p.Password = *input.Password
+		}
+		if input.Status != "" {
+			p.Status = input.Status
+		}
+		if input.ExpiresAt != nil || input.ClearExpiresAt {
+			p.ExpiresAt = input.ExpiresAt
+		}
+		if input.FallbackMode != "" {
+			p.FallbackMode = input.FallbackMode
+		}
+		if input.BackupProxyID != nil || input.ClearBackupID {
+			p.BackupProxyID = input.BackupProxyID
+		}
+		if input.ExpiryWarnDays != nil {
+			p.ExpiryWarnDays = *input.ExpiryWarnDays
+		}
+		cp := *p
+		return &cp, nil
+	}
+	proxy := service.Proxy{ID: id, Name: input.Name, Status: service.StatusActive, FallbackMode: input.FallbackMode, BackupProxyID: input.BackupProxyID}
 	return &proxy, nil
 }
 

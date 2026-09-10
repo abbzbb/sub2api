@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"entgo.io/ent/dialect/sql"
+	"entgo.io/ent/dialect/sql/sqljson"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -299,6 +301,9 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	if err := s.prepareLegacyRefundDeduction(ctx, p); err != nil {
 		return nil, err
 	}
+	if p != nil && strings.TrimSpace(p.PriorStatus) == "" && p.Order != nil {
+		p.PriorStatus = p.Order.Status
+	}
 	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)).SetStatus(OrderStatusRefunding).Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lock: %w", err)
@@ -310,6 +315,10 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	// provider failure cannot leave balance/subscription already deducted.
 	resp, err := s.gwRefund(ctx, p)
 	if err != nil {
+		if infraerrors.Reason(err) == "REFUND_IN_FLIGHT" {
+			s.restoreStatus(ctx, p)
+			return nil, err
+		}
 		return s.handleGwFail(ctx, p, err)
 	}
 	return s.finishRefund(ctx, p, resp)
@@ -336,12 +345,16 @@ func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.
 		})
 		return nil, err
 	}
+	if err := s.ensureRefundIdempotencyKey(ctx, p); err != nil {
+		return nil, err
+	}
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 	resp, err := prov.Refund(ctx, payment.RefundRequest{
-		TradeNo: strings.TrimSpace(p.Order.PaymentTradeNo),
-		OrderID: p.Order.OutTradeNo,
-		Amount:  formatGatewayRefundAmount(p.GatewayAmount, p.Order),
-		Reason:  p.Reason,
+		TradeNo:        strings.TrimSpace(p.Order.PaymentTradeNo),
+		OrderID:        p.Order.OutTradeNo,
+		Amount:         formatGatewayRefundAmount(p.GatewayAmount, p.Order),
+		Reason:         p.Reason,
+		IdempotencyKey: p.IdempotencyKey,
 	})
 	finishProviderCall()
 	if err != nil {
@@ -360,6 +373,8 @@ func formatGatewayRefundAmount(amount float64, order *dbent.PaymentOrder) string
 	return payment.FormatAmountForCurrency(amount, PaymentOrderCurrency(order))
 }
 
+var errRefundProviderFailed = errors.New("payment refund failed")
+
 func validateRefundProviderResponse(resp *payment.RefundResponse) error {
 	if resp == nil {
 		return fmt.Errorf("payment refund response missing")
@@ -369,7 +384,7 @@ func validateRefundProviderResponse(resp *payment.RefundResponse) error {
 	case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded, payment.ProviderStatusPending:
 		return nil
 	case payment.ProviderStatusFailed:
-		return fmt.Errorf("payment refund failed: status %s", status)
+		return fmt.Errorf("%w: status %s", errRefundProviderFailed, status)
 	default:
 		return fmt.Errorf("payment refund returned unknown status: %s", status)
 	}
@@ -407,13 +422,81 @@ func (s *PaymentService) finishRefund(ctx context.Context, p *RefundPlan, resp *
 	return result, nil
 }
 
+func refundOrderCanReconcile(o *dbent.PaymentOrder) bool {
+	if o == nil {
+		return false
+	}
+	if o.Status == OrderStatusRefundPending {
+		return true
+	}
+	return hasInFlightPendingRefund(o.RefundState)
+}
+
+func refundConfirmationStatusPredicate(o *dbent.PaymentOrder) predicate.PaymentOrder {
+	if hasInFlightPendingRefund(o.RefundState) {
+		return paymentorder.StatusIn(OrderStatusRefundPending, OrderStatusRefunding, OrderStatusCompleted, OrderStatusRefundRequested)
+	}
+	return paymentorder.StatusEQ(OrderStatusRefundPending)
+}
+
+func refundFinalizeClaimPredicate(o *dbent.PaymentOrder) predicate.PaymentOrder {
+	if o == nil {
+		return paymentorder.StatusEQ(OrderStatusRefundPending)
+	}
+	preds := []predicate.PaymentOrder{
+		paymentorder.IDEQ(o.ID),
+		paymentorder.StatusEQ(OrderStatusRefundPending),
+		refundProviderStatusConfirmedPredicate(),
+	}
+	if o.RefundState != nil {
+		if id := strings.TrimSpace(o.RefundState.AttemptID); id != "" {
+			preds = append(preds, refundAttemptIDPredicate(id))
+		}
+	}
+	return paymentorder.And(preds...)
+}
+
+func refundProviderStatusConfirmedPredicate() predicate.PaymentOrder {
+	return func(s *sql.Selector) {
+		s.Where(sql.Or(
+			sqljson.ValueEQ(paymentorder.FieldRefundState, payment.ProviderStatusSuccess, sqljson.Path("provider_status")),
+			sqljson.ValueEQ(paymentorder.FieldRefundState, payment.ProviderStatusRefunded, sqljson.Path("provider_status")),
+		))
+	}
+}
+
+func refundProviderStatusPendingPredicate() predicate.PaymentOrder {
+	return func(s *sql.Selector) {
+		s.Where(sqljson.ValueEQ(paymentorder.FieldRefundState, payment.ProviderStatusPending, sqljson.Path("provider_status")))
+	}
+}
+
+func refundInFlightRestorePredicate(p *RefundPlan) predicate.PaymentOrder {
+	preds := []predicate.PaymentOrder{
+		paymentorder.IDEQ(p.OrderID),
+		paymentorder.StatusEQ(OrderStatusRefunding),
+	}
+	if p != nil && p.Order != nil && hasInFlightPendingRefund(p.Order.RefundState) {
+		if id := strings.TrimSpace(p.Order.RefundState.AttemptID); id != "" {
+			preds = append(preds, refundAttemptIDPredicate(id), refundProviderStatusPendingPredicate())
+		}
+	}
+	return paymentorder.And(preds...)
+}
+
+func refundAttemptIDPredicate(attemptID string) predicate.PaymentOrder {
+	return func(s *sql.Selector) {
+		s.Where(sqljson.ValueEQ(paymentorder.FieldRefundState, attemptID, sqljson.Path("attempt_id")))
+	}
+}
+
 func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) (*RefundResult, error) {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		return nil, infraerrors.NotFound("NOT_FOUND", "order not found")
 	}
-	if o.Status != OrderStatusRefundPending {
-		return nil, infraerrors.BadRequest("INVALID_STATUS", "only refund pending orders can be finalized")
+	if !refundOrderCanReconcile(o) {
+		return nil, infraerrors.BadRequest("INVALID_STATUS", "only in-flight refunds can be finalized")
 	}
 	state, err := s.loadRefundRecovery(ctx, o)
 	if err != nil {
@@ -436,17 +519,18 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 	resp, err := queryProvider.QueryRefund(ctx, payment.RefundQueryRequest{
-		TradeNo:  o.PaymentTradeNo,
-		OrderID:  o.OutTradeNo,
-		RefundID: state.RefundID,
-		Amount:   formatGatewayRefundAmount(o.RefundAmount, o),
+		TradeNo:      o.PaymentTradeNo,
+		OrderID:      o.OutTradeNo,
+		RefundID:     state.RefundID,
+		Amount:       formatGatewayRefundAmount(plan.GatewayAmount, o),
+		OutRequestNo: state.OutRequestNo,
 	})
 	finishProviderCall()
 	if err != nil {
 		return nil, fmt.Errorf("query refund: %w", err)
 	}
-	if err := validateRefundProviderResponse(resp); err != nil {
-		return s.finalizeRefundFailed(ctx, o, err)
+	if resp == nil {
+		return nil, fmt.Errorf("query refund: empty response")
 	}
 
 	switch strings.TrimSpace(resp.Status) {
@@ -457,21 +541,18 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 		if id := refundResponseID(resp); id != "" {
 			state.RefundID = id
 		}
-		updated, err := s.entClient.PaymentOrder.Update().
-			Where(paymentorder.IDEQ(oid), paymentorder.StatusEQ(OrderStatusRefundPending), refundQueryStatePredicate(o)).
-			SetRefundState(state).Save(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("persist refund confirmation: %w", err)
-		}
-		if updated == 0 {
-			return nil, infraerrors.Conflict("CONFLICT", "order status changed")
+		if err := s.persistRefundConfirmation(ctx, o, state); err != nil {
+			return nil, err
 		}
 		return s.finalizePendingRefundSuccess(ctx, plan)
-	case payment.ProviderStatusPending:
+	case payment.ProviderStatusFailed:
+		return s.finalizeRefundFailed(ctx, o, fmt.Errorf("%w: status %s", errRefundProviderFailed, payment.ProviderStatusFailed))
+	case payment.ProviderStatusPending, "":
 		s.writeAuditLog(ctx, oid, "REFUND_QUERY_PENDING", "admin", map[string]any{"refundID": resp.RefundID})
 		return &RefundResult{Success: false, Warning: "gateway refund is still pending confirmation"}, nil
 	default:
-		return s.finalizeRefundFailed(ctx, o, fmt.Errorf("payment refund returned unknown status: %s", strings.TrimSpace(resp.Status)))
+		s.writeAuditLog(ctx, oid, "REFUND_QUERY_PENDING", "admin", map[string]any{"refundID": resp.RefundID, "status": strings.TrimSpace(resp.Status)})
+		return &RefundResult{Success: false, Warning: "gateway refund is still pending confirmation"}, nil
 	}
 }
 
@@ -488,7 +569,7 @@ func (s *PaymentService) finalizePendingRefundSuccess(ctx context.Context, p *Re
 	txCtx := dbent.NewTxContext(ctx, tx)
 
 	claimed, err := tx.PaymentOrder.Update().
-		Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusEQ(OrderStatusRefundPending)).
+		Where(refundFinalizeClaimPredicate(p.Order)).
 		SetStatus(OrderStatusRefunding).
 		Save(txCtx)
 	if err != nil {
@@ -559,9 +640,15 @@ func (s *PaymentService) applyRefundFinalDeduction(ctx context.Context, p *Refun
 
 func (s *PaymentService) finalizeRefundFailed(ctx context.Context, o *dbent.PaymentOrder, gErr error) (*RefundResult, error) {
 	now := time.Now()
-	updated, err := s.entClient.PaymentOrder.Update().
-		Where(paymentorder.IDEQ(o.ID), paymentorder.StatusEQ(OrderStatusRefundPending), refundQueryStatePredicate(o)).
-		SetStatus(OrderStatusRefundFailed).SetFailedAt(now).SetFailedReason(psErrMsg(gErr)).Save(ctx)
+	upd := s.entClient.PaymentOrder.Update().
+		Where(paymentorder.IDEQ(o.ID), refundConfirmationStatusPredicate(o), refundQueryStatePredicate(o)).
+		SetStatus(OrderStatusRefundFailed).SetFailedAt(now).SetFailedReason(psErrMsg(gErr))
+	if o.RefundState != nil {
+		st := *o.RefundState
+		st.ProviderStatus = payment.ProviderStatusFailed
+		upd = upd.SetRefundState(&st)
+	}
+	updated, err := upd.Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("persist refund failure: %w", err)
 	}
@@ -621,7 +708,17 @@ func (s *PaymentService) handleGwFail(ctx context.Context, p *RefundPlan, gErr e
 	// nothing to roll back — clear planned amounts to avoid inventing a credit.
 	p.BalanceToDeduct = 0
 	p.SubDaysToDeduct = 0
-	s.restoreStatus(ctx, p)
+	persistedKey := ""
+	if p != nil && p.Order != nil && p.Order.RefundState != nil {
+		persistedKey = strings.TrimSpace(p.Order.RefundState.OutRequestNo)
+	}
+	if errors.Is(gErr, errRefundProviderFailed) && persistedKey != "" {
+		if err := s.persistRefundTerminalFailure(ctx, p, gErr); err != nil {
+			slog.Error("persist refund terminal failure", "orderID", p.OrderID, "error", err)
+		}
+	} else {
+		s.restoreStatus(ctx, p)
+	}
 	s.writeAuditLog(ctx, p.OrderID, "REFUND_GATEWAY_FAILED", "admin", map[string]any{"detail": psErrMsg(gErr)})
 	return &RefundResult{Success: false, Warning: "gateway failed: " + psErrMsg(gErr)}, nil
 }
@@ -676,10 +773,31 @@ func (s *PaymentService) RollbackRefund(ctx context.Context, p *RefundPlan, gErr
 	return true
 }
 
-func (s *PaymentService) restoreStatus(ctx context.Context, p *RefundPlan) {
-	rs := OrderStatusCompleted
-	if p.Order.Status == OrderStatusRefundRequested {
-		rs = OrderStatusRefundRequested
+func refundRestoreStatus(p *RefundPlan) string {
+	if p == nil {
+		return OrderStatusCompleted
 	}
-	_, _ = s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(rs).Save(ctx)
+	rs := strings.TrimSpace(p.PriorStatus)
+	if rs == "" && p.Order != nil && p.Order.RefundState != nil {
+		rs = strings.TrimSpace(p.Order.RefundState.PriorStatus)
+	}
+	switch rs {
+	case OrderStatusRefundRequested, OrderStatusCompleted, OrderStatusRefundFailed, OrderStatusRefundPending:
+		return rs
+	default:
+		if p.Order != nil && p.Order.Status == OrderStatusRefundRequested {
+			return OrderStatusRefundRequested
+		}
+		return OrderStatusCompleted
+	}
+}
+
+func (s *PaymentService) restoreStatus(ctx context.Context, p *RefundPlan) {
+	if p == nil {
+		return
+	}
+	_, _ = s.entClient.PaymentOrder.Update().
+		Where(refundInFlightRestorePredicate(p)).
+		SetStatus(refundRestoreStatus(p)).
+		Save(ctx)
 }

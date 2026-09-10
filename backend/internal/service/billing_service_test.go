@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -283,6 +285,27 @@ func TestGetModelPricing_UnknownGeminiVariantsFallBackByTier(t *testing.T) {
 		pricing, err := svc.GetModelPricing(model)
 		require.NoError(t, err, "model %s", model)
 		require.InDelta(t, 2e-6, pricing.InputPricePerToken, 1e-12, "model %s should bill at pro tier", model)
+	}
+}
+
+func TestBillingService_Gemini35FlashThinkingTierUsesCatalogRates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+	svc := NewBillingService(&config.Config{}, pricingSvc)
+
+	for _, model := range []string{"gemini-3.5-flash", "gemini-3.5-flash-low", "models/gemini-3.5-flash-low"} {
+		t.Run(model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(model)
+			require.NoError(t, err)
+			require.InDelta(t, 1.5e-6, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, 9e-6, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, 0.15e-6, pricing.CacheReadPricePerToken, 1e-12)
+		})
 	}
 }
 

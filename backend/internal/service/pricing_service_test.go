@@ -572,9 +572,13 @@ func TestPricingService_GeminiFlashThinkingTiersUseBasePricing(t *testing.T) {
 		OutputCostPerToken:      7.5e-6,
 		CacheReadInputTokenCost: 0.15e-6,
 	}
-	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
+	for _, baseModel := range []string{"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
 		svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{baseModel: basePricing}}
-		for _, tier := range []string{"", "-high", "-low", "-medium", "-tiered"} {
+		tiers := []string{"", "-high", "-low", "-medium", "-tiered"}
+		if baseModel == "gemini-3.5-flash" {
+			tiers = append(tiers, "-extra-low")
+		}
+		for _, tier := range tiers {
 			model := baseModel + tier
 			t.Run(model, func(t *testing.T) {
 				require.Same(t, basePricing, svc.GetModelPricing(model))
@@ -587,7 +591,7 @@ func TestPricingService_GeminiFlashThinkingTiersUseBasePricing(t *testing.T) {
 func TestPricingService_GeminiFlashTierSpecificPricingTakesPrecedence(t *testing.T) {
 	basePricing := &LiteLLMModelPricing{InputCostPerToken: 1.5e-6}
 	tierPricing := &LiteLLMModelPricing{InputCostPerToken: 2e-6}
-	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
+	for _, baseModel := range []string{"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
 		t.Run(baseModel, func(t *testing.T) {
 			svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
 				baseModel:          basePricing,
@@ -617,6 +621,27 @@ func TestBillingService_Gemini36FlashThinkingTierFallbacksAreBillable(t *testing
 			require.InDelta(t, 7.5, cost.OutputCost, 1e-12)
 			require.InDelta(t, 0.15, cost.CacheReadCost, 1e-12)
 			require.InDelta(t, 9.15, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
+func TestDefaultPricingIncludesGemini35FlashRates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	pricingSvc := &PricingService{}
+	pricingData, err := pricingSvc.parsePricingData(data)
+	require.NoError(t, err)
+	pricingSvc.pricingData = pricingData
+	billingSvc := NewBillingService(&config.Config{}, pricingSvc)
+
+	for _, model := range []string{"gemini-3.5-flash", "gemini-3.5-flash-low", "models/gemini-3.5-flash-low"} {
+		t.Run(model, func(t *testing.T) {
+			pricing, err := billingSvc.GetModelPricing(model)
+			require.NoError(t, err)
+			require.InDelta(t, 1.5e-6, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, 9e-6, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, 0.15e-6, pricing.CacheReadPricePerToken, 1e-12)
 		})
 	}
 }

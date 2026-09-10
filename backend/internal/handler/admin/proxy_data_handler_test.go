@@ -280,3 +280,180 @@ func TestProxyImportDataReusesAndTriggersLatencyProbe(t *testing.T) {
 		return len(adminSvc.testedProxyIDs) == 1
 	}, time.Second, 10*time.Millisecond)
 }
+
+func findProxyByName(t *testing.T, proxies []service.Proxy, name string) service.Proxy {
+	t.Helper()
+	for i := range proxies {
+		if proxies[i].Name == name {
+			return proxies[i]
+		}
+	}
+	t.Fatalf("proxy %q not found", name)
+	return service.Proxy{}
+}
+
+func importProxyBatch(t *testing.T, router *gin.Engine, proxies []DataProxy) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"data": DataPayload{
+		Proxies:  proxies,
+		Accounts: []DataAccount{},
+	}})
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp proxyImportResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, 0, resp.Data.ProxyFailed)
+}
+
+func TestProxyImportDataResolvesForwardBackupReference(t *testing.T) {
+	cases := []struct {
+		name    string
+		proxies []DataProxy
+	}{
+		{
+			name: "forward",
+			proxies: []DataProxy{
+				{Name: "primary", Protocol: "http", Host: "primary.test", Port: 8080, FallbackMode: service.FallbackModeProxy, BackupProxyName: "backup"},
+				{Name: "backup", Protocol: "http", Host: "backup.test", Port: 8081, FallbackMode: service.FallbackModeNone},
+			},
+		},
+		{
+			name: "reversed",
+			proxies: []DataProxy{
+				{Name: "backup", Protocol: "http", Host: "backup.test", Port: 8081, FallbackMode: service.FallbackModeNone},
+				{Name: "primary", Protocol: "http", Host: "primary.test", Port: 8080, FallbackMode: service.FallbackModeProxy, BackupProxyName: "backup"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, adminSvc := setupProxyDataRouter()
+			adminSvc.proxies = nil
+			importProxyBatch(t, router, tc.proxies)
+
+			require.Len(t, adminSvc.createdProxies, 2)
+			primary := findProxyByName(t, adminSvc.proxies, "primary")
+			backup := findProxyByName(t, adminSvc.proxies, "backup")
+			require.Equal(t, service.FallbackModeProxy, primary.FallbackMode)
+			require.NotNil(t, primary.BackupProxyID)
+			require.Equal(t, backup.ID, *primary.BackupProxyID)
+			require.Equal(t, service.FallbackModeNone, backup.FallbackMode)
+			require.Nil(t, backup.BackupProxyID)
+		})
+	}
+}
+
+func TestProxyImportDataResolvesExistingBackupByName(t *testing.T) {
+	router, adminSvc := setupProxyDataRouter()
+	adminSvc.proxies = []service.Proxy{{
+		ID:           2,
+		Name:         "backup",
+		Protocol:     "http",
+		Host:         "backup.test",
+		Port:         8081,
+		Status:       service.StatusActive,
+		FallbackMode: service.FallbackModeNone,
+	}}
+
+	importProxyBatch(t, router, []DataProxy{
+		{Name: "primary", Protocol: "http", Host: "primary.test", Port: 8080, FallbackMode: service.FallbackModeProxy, BackupProxyName: "backup"},
+	})
+
+	primary := findProxyByName(t, adminSvc.proxies, "primary")
+	backup := findProxyByName(t, adminSvc.proxies, "backup")
+	require.Equal(t, service.FallbackModeProxy, primary.FallbackMode)
+	require.NotNil(t, primary.BackupProxyID)
+	require.Equal(t, backup.ID, *primary.BackupProxyID)
+}
+
+func TestProxyExportDataIncludesTransitiveBackupDependencies(t *testing.T) {
+	router, adminSvc := setupProxyDataRouter()
+	backupID := int64(2)
+	adminSvc.proxies = []service.Proxy{
+		{
+			ID:            1,
+			Name:          "primary",
+			Protocol:      "http",
+			Host:          "primary.test",
+			Port:          8080,
+			Status:        service.StatusActive,
+			FallbackMode:  service.FallbackModeProxy,
+			BackupProxyID: &backupID,
+		},
+		{
+			ID:           2,
+			Name:         "backup",
+			Protocol:     "http",
+			Host:         "backup.test",
+			Port:         8081,
+			Status:       service.StatusActive,
+			FallbackMode: service.FallbackModeNone,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/proxies/data?ids=1", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp proxyDataResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Len(t, resp.Data.Proxies, 2)
+
+	byName := make(map[string]DataProxy, len(resp.Data.Proxies))
+	for _, p := range resp.Data.Proxies {
+		byName[p.Name] = p
+	}
+	require.Contains(t, byName, "primary")
+	require.Contains(t, byName, "backup")
+	require.Equal(t, service.FallbackModeProxy, byName["primary"].FallbackMode)
+	require.Equal(t, "backup", byName["primary"].BackupProxyName)
+
+	importRouter, importSvc := setupProxyDataRouter()
+	importSvc.proxies = nil
+	importProxyBatch(t, importRouter, resp.Data.Proxies)
+	primary := findProxyByName(t, importSvc.proxies, "primary")
+	backup := findProxyByName(t, importSvc.proxies, "backup")
+	require.Equal(t, service.FallbackModeProxy, primary.FallbackMode)
+	require.NotNil(t, primary.BackupProxyID)
+	require.Equal(t, backup.ID, *primary.BackupProxyID)
+}
+
+func TestProxyImportDataMissingBackupDowngradesFallback(t *testing.T) {
+	router, adminSvc := setupProxyDataRouter()
+	adminSvc.proxies = nil
+	importProxyBatch(t, router, []DataProxy{
+		{Name: "primary", Protocol: "http", Host: "primary.test", Port: 8080, FallbackMode: service.FallbackModeProxy, BackupProxyName: "missing-backup"},
+	})
+	primary := findProxyByName(t, adminSvc.proxies, "primary")
+	require.Equal(t, service.FallbackModeNone, primary.FallbackMode)
+	require.Nil(t, primary.BackupProxyID)
+}
+
+func TestProxyExportDataMissingBackupReturnsError(t *testing.T) {
+	router, adminSvc := setupProxyDataRouter()
+	missingID := int64(99)
+	adminSvc.proxies = []service.Proxy{{
+		ID:            1,
+		Name:          "primary",
+		Protocol:      "http",
+		Host:          "primary.test",
+		Port:          8080,
+		Status:        service.StatusActive,
+		FallbackMode:  service.FallbackModeProxy,
+		BackupProxyID: &missingID,
+	}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/proxies/data?ids=1", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
