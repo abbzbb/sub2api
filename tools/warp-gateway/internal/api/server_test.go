@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"sync/atomic"
+	"strconv"
 	"testing"
 	"time"
 
@@ -18,18 +20,16 @@ import (
 	"github.com/Wei-Shaw/sub2api/tools/warp-gateway/internal/store"
 )
 
-var apiPortBase = atomic.Uint64{}
-
 func setupAPI(t *testing.T) (http.Handler, *service.Manager) {
 	t.Helper()
 	dir := t.TempDir()
-	base := 44000 + int(apiPortBase.Add(50))
+	start, end := freeListenPortRange(t, 16)
 	cfg := config.Default()
 	cfg.DataDir = dir
 	cfg.Runtime = "mock"
 	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = base
-	cfg.PortRangeEnd = base + 40
+	cfg.PortRangeStart = start
+	cfg.PortRangeEnd = end
 	cfg.HealthInterval = time.Hour
 	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
 	if err != nil {
@@ -40,6 +40,47 @@ func setupAPI(t *testing.T) (http.Handler, *service.Manager) {
 		mgr.Shutdown(context.Background())
 	})
 	return api.NewServer(mgr, "test-token").Handler(), mgr
+}
+
+// freeListenPortRange reserves n consecutive 127.0.0.1 ports via kernel-assigned
+// :0, then releases them so the mock runtime can bind the same range.
+func freeListenPortRange(t *testing.T, n int) (int, int) {
+	t.Helper()
+	if n < 1 {
+		t.Fatal("port range size must be positive")
+	}
+	var lastErr error
+	for attempt := 0; attempt < 64; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen 127.0.0.1:0: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		if port > 65535-n+1 {
+			_ = ln.Close()
+			lastErr = errors.New("ephemeral port too high for range")
+			continue
+		}
+		lns := []net.Listener{ln}
+		ok := true
+		for p := port + 1; p < port+n; p++ {
+			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+			if err != nil {
+				lastErr = err
+				ok = false
+				break
+			}
+			lns = append(lns, l)
+		}
+		for _, l := range lns {
+			_ = l.Close()
+		}
+		if ok && len(lns) == n {
+			return port, port + n - 1
+		}
+	}
+	t.Fatalf("could not reserve %d consecutive 127.0.0.1 ports: %v", n, lastErr)
+	return 0, 0
 }
 
 func TestAPICreatePoolAndSnapshot(t *testing.T) {

@@ -3,10 +3,11 @@ package service_test
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,26 +17,73 @@ import (
 	"github.com/Wei-Shaw/sub2api/tools/warp-gateway/internal/store"
 )
 
-var testManagerPortBase atomic.Int64
-
 func testManager(t *testing.T) *service.Manager {
 	t.Helper()
-	dir := t.TempDir()
+	return newTestManager(t, t.TempDir(), runtime.NewMockManager())
+}
+
+func newTestManager(t *testing.T, dir string, rt runtime.Manager) *service.Manager {
+	t.Helper()
 	cfg := config.Default()
 	cfg.DataDir = dir
 	cfg.Runtime = "mock"
 	cfg.ProbeURL = "mock://local"
-	start := 43000 + int(testManagerPortBase.Add(50))
+	start, end := freeListenPortRange(t, 16)
 	cfg.PortRangeStart = start
-	cfg.PortRangeEnd = start + 40
+	cfg.PortRangeEnd = end
 	cfg.HealthInterval = time.Hour
 	cfg.UnhealthyAfter = 2
 	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := runtime.NewMockManager()
-	return service.NewManager(cfg, st, rt, nil)
+	if rt == nil {
+		rt = runtime.NewMockManager()
+	}
+	mgr := service.NewManager(cfg, st, rt, nil)
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	return mgr
+}
+
+// freeListenPortRange reserves n consecutive 127.0.0.1 ports via kernel-assigned
+// :0, then releases them so the mock runtime can bind the same range.
+func freeListenPortRange(t *testing.T, n int) (int, int) {
+	t.Helper()
+	if n < 1 {
+		t.Fatal("port range size must be positive")
+	}
+	var lastErr error
+	for attempt := 0; attempt < 64; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen 127.0.0.1:0: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		if port > 65535-n+1 {
+			_ = ln.Close()
+			lastErr = errors.New("ephemeral port too high for range")
+			continue
+		}
+		lns := []net.Listener{ln}
+		ok := true
+		for p := port + 1; p < port+n; p++ {
+			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+			if err != nil {
+				lastErr = err
+				ok = false
+				break
+			}
+			lns = append(lns, l)
+		}
+		for _, l := range lns {
+			_ = l.Close()
+		}
+		if ok && len(lns) == n {
+			return port, port + n - 1
+		}
+	}
+	t.Fatalf("could not reserve %d consecutive 127.0.0.1 ports: %v", n, lastErr)
+	return 0, 0
 }
 
 func TestCreateStartHealthPoolRotate(t *testing.T) {
@@ -182,19 +230,7 @@ func TestRestartAfterCancelledContextStillStarts(t *testing.T) {
 
 func TestDeleteRemovesInstanceDirectory(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.DataDir = dir
-	cfg.Runtime = "mock"
-	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42101
-	cfg.PortRangeEnd = 42140
-	cfg.HealthInterval = time.Hour
-	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mgr := service.NewManager(cfg, st, runtime.NewMockManager(), nil)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	mgr := newTestManager(t, dir, runtime.NewMockManager())
 
 	ctx := context.Background()
 	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "dir-me", Profile: store.Profile{MockExitIP: "203.0.113.9"}})
@@ -218,7 +254,6 @@ func TestDeleteRemovesInstanceDirectory(t *testing.T) {
 
 func TestWatchHandleRecordsRuntimeErr(t *testing.T) {
 	mgr := testManager(t)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
 	ctx := context.Background()
 	auto := false
 	inst, err := mgr.Create(ctx, service.CreateRequest{
@@ -250,7 +285,6 @@ func TestWatchHandleRecordsRuntimeErr(t *testing.T) {
 
 func TestDeleteClearsPerInstanceMaps(t *testing.T) {
 	mgr := testManager(t)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
 	ctx := context.Background()
 	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "forget-maps", Profile: store.Profile{MockExitIP: "203.0.113.35"}})
 	if err != nil {
@@ -271,25 +305,12 @@ func TestDeleteClearsPerInstanceMaps(t *testing.T) {
 }
 
 func TestStartSerializesAndSecondIsNoop(t *testing.T) {
-	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.DataDir = dir
-	cfg.Runtime = "mock"
-	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42201
-	cfg.PortRangeEnd = 42240
-	cfg.HealthInterval = time.Hour
-	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
 	delay := &delayedRuntime{
 		inner:   runtime.NewMockManager(),
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	mgr := service.NewManager(cfg, st, delay, nil)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	mgr := newTestManager(t, t.TempDir(), delay)
 	ctx := context.Background()
 	auto := false
 	inst, err := mgr.Create(ctx, service.CreateRequest{
@@ -313,25 +334,12 @@ func TestStartSerializesAndSecondIsNoop(t *testing.T) {
 }
 
 func TestStartHonorsDesiredStoppedBeforeReturn(t *testing.T) {
-	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.DataDir = dir
-	cfg.Runtime = "mock"
-	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42301
-	cfg.PortRangeEnd = 42340
-	cfg.HealthInterval = time.Hour
-	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
 	delay := &delayedRuntime{
 		inner:   runtime.NewMockManager(),
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	mgr := service.NewManager(cfg, st, delay, nil)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	mgr := newTestManager(t, t.TempDir(), delay)
 	ctx := context.Background()
 	auto := false
 	inst, err := mgr.Create(ctx, service.CreateRequest{
@@ -387,20 +395,7 @@ func (d *delayedRuntime) Start(ctx context.Context, inst *store.Instance) (runti
 }
 
 func TestStartAfterCompletedStopBringsInstanceBack(t *testing.T) {
-	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.DataDir = dir
-	cfg.Runtime = "mock"
-	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42401
-	cfg.PortRangeEnd = 42440
-	cfg.HealthInterval = time.Hour
-	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mgr := service.NewManager(cfg, st, runtime.NewMockManager(), nil)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	mgr := testManager(t)
 	ctx := context.Background()
 	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "stop-then-start", Profile: store.Profile{MockExitIP: "203.0.113.32"}})
 	if err != nil {
@@ -439,7 +434,6 @@ func TestStartAfterCompletedStopBringsInstanceBack(t *testing.T) {
 
 func TestStopAfterStartDoesNotTimeoutWhileWatchHandleConsumesDone(t *testing.T) {
 	mgr := testManager(t)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
 	ctx := context.Background()
 	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "stop-watch", Profile: store.Profile{MockExitIP: "203.0.113.33"}})
 	if err != nil {
@@ -477,7 +471,6 @@ func TestRotateRejectsEmptyProfile(t *testing.T) {
 
 func TestReconcileDoesNotOverrideDesiredStopped(t *testing.T) {
 	mgr := testManager(t)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
 	ctx := context.Background()
 	inst, err := mgr.Create(ctx, service.CreateRequest{Name: "recon-stop", Profile: store.Profile{MockExitIP: "203.0.113.40"}})
 	if err != nil {
@@ -515,21 +508,8 @@ func (f *failRuntime) Start(ctx context.Context, inst *store.Instance) (runtime.
 }
 
 func TestReconcileStartBackoffSkipsImmediateRetry(t *testing.T) {
-	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.DataDir = dir
-	cfg.Runtime = "mock"
-	cfg.ProbeURL = "mock://local"
-	cfg.PortRangeStart = 42501
-	cfg.PortRangeEnd = 42540
-	cfg.HealthInterval = time.Hour
-	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
 	fail := &failRuntime{err: errors.New("start failed")}
-	mgr := service.NewManager(cfg, st, fail, nil)
-	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	mgr := newTestManager(t, t.TempDir(), fail)
 	ctx := context.Background()
 	auto := false
 	inst, err := mgr.Create(ctx, service.CreateRequest{
