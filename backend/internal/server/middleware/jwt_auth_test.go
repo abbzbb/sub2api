@@ -259,9 +259,9 @@ func TestJWTAuth_UserLookupErrors(t *testing.T) {
 				handler   gin.HandlerFunc
 				websocket bool
 			}{
-				{"user", gin.HandlerFunc(NewJWTAuthMiddleware(authSvc, userSvc, nil, nil)), false},
-				{"admin", gin.HandlerFunc(NewAdminAuthMiddleware(authSvc, userSvc, nil, nil)), false},
-				{"admin websocket", gin.HandlerFunc(NewAdminAuthMiddleware(authSvc, userSvc, nil, nil)), true},
+				{"user", gin.HandlerFunc(NewJWTAuthMiddleware(authSvc, userSvc, nil, nil, nil)), false},
+				{"admin", gin.HandlerFunc(NewAdminAuthMiddleware(authSvc, userSvc, nil, nil, nil)), false},
+				{"admin websocket", gin.HandlerFunc(NewAdminAuthMiddleware(authSvc, userSvc, nil, nil, nil)), true},
 			} {
 				t.Run(route.name, func(t *testing.T) {
 					called := false
