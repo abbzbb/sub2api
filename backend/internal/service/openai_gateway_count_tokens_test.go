@@ -190,6 +190,18 @@ func TestOpenAIGatewayService_OpenAIOAuthInputTokensFallbackUsesMinimumWhenEstim
 	require.JSONEq(t, `{"input_tokens":1}`, rec.Body.String())
 }
 
+// OpenCode 没有 input_tokens 端点，且默认 base_url 为空，必须与国产供应商一样本地估算，
+// 不能落到 host 判定被当成官方 OpenAI 外呼。
+func TestShouldEstimateOpenAIInputTokensLocally_OpenCodeGo(t *testing.T) {
+	require.True(t, shouldEstimateOpenAIInputTokensLocally(&Account{Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey}))
+	require.True(t, shouldEstimateOpenAIInputTokensLocally(&Account{
+		Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"account_mode": AccountModeZen, "base_url": DefaultOpenCodeZenBaseURL},
+	}))
+	require.True(t, shouldEstimateOpenAIInputTokensLocally(&Account{Platform: PlatformKimi, Type: AccountTypeAPIKey}))
+	require.False(t, shouldEstimateOpenAIInputTokensLocally(&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}))
+}
+
 func TestEstimateOpenAIInputTokens_RequestSamples(t *testing.T) {
 	cases := []struct {
 		name string

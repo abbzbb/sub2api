@@ -147,7 +147,9 @@ func prepareNativeOpenAIInputTokensCountRequest(body []byte, account *Account) (
 }
 
 func shouldEstimateOpenAIInputTokensLocally(account *Account) bool {
-	if account == nil || account.IsGrok() || account.IsCNProvider() || account.Type == AccountTypeUpstream {
+	// OpenCode 与国产供应商一样没有 input_tokens 端点，且默认 base_url 为空，
+	// 若走下方的 host 判定会被当成官方 OpenAI 直接外呼；与 ForwardCountTokensAsAnthropic 保持同一口径。
+	if account == nil || account.IsGrok() || account.IsCNProvider() || account.IsOpenCodeGo() || account.Type == AccountTypeUpstream {
 		return true
 	}
 	if account.Type != AccountTypeAPIKey {

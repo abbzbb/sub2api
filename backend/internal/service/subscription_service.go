@@ -634,7 +634,7 @@ func (s *SubscriptionService) RestoreSubscription(ctx context.Context, subscript
 	}
 
 	restoredStatus := sub.Status
-	now := time.Now()
+	now := s.now()
 	if restoredStatus == SubscriptionStatusActive && !sub.ExpiresAt.After(now) {
 		restoredStatus = SubscriptionStatusExpired
 	}

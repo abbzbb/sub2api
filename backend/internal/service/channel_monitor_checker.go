@@ -231,8 +231,74 @@ var providerDeepseekChatAdapter = newOpenAICompatibleChatAdapter(providerOpenAIP
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
 var providerMiniMaxChatAdapter = newOpenAICompatibleChatAdapter(providerOpenAIPath)
 
+// providerOpenCodeGoChatAdapter 按 OpenCode 端点表为探活模型选择原生协议：
+// GPT / Grok / Muse Spark 仅有 Responses 端点，Claude / Qwen / MiniMax 仅有
+// Anthropic Messages 端点，其余走 Chat Completions。监控项不绑定账号模式，
+// 因此合并 Go / Zen 两张默认路由表（见 openCodeGoMonitorProtocol）。
+// 三种端点同属 opencode.ai 且共用同一密钥，鉴权头同时带 Bearer 与 x-api-key，
+// 多余的头对非对应端点无害。
+//
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
-var providerOpenCodeGoChatAdapter = newOpenAICompatibleChatAdapter(providerOpenAIPath)
+var providerOpenCodeGoChatAdapter = providerAdapter{
+	buildPath: func(model string) string {
+		switch openCodeGoMonitorProtocol(model) {
+		case APIProtocolResponses:
+			return providerOpenAIResponsesPath
+		case APIProtocolAnthropic:
+			return providerAnthropicPath
+		default:
+			return providerOpenAIPath
+		}
+	},
+	buildBody: func(model, prompt string) ([]byte, error) {
+		switch openCodeGoMonitorProtocol(model) {
+		case APIProtocolResponses:
+			return providerOpenAIResponsesAdapter.buildBody(model, prompt)
+		case APIProtocolAnthropic:
+			return json.Marshal(map[string]any{
+				"model":      model,
+				"messages":   []map[string]string{{"role": "user", "content": prompt}},
+				"max_tokens": monitorChallengeMaxTokens,
+			})
+		default:
+			return json.Marshal(map[string]any{
+				"model":      model,
+				"messages":   []map[string]string{{"role": "user", "content": prompt}},
+				"max_tokens": monitorChallengeMaxTokens,
+				"stream":     false,
+			})
+		}
+	},
+	buildHeaders: func(apiKey string) map[string]string {
+		return map[string]string{
+			"Authorization":     "Bearer " + apiKey,
+			"x-api-key":         apiKey,
+			"anthropic-version": monitorAnthropicAPIVersion,
+		}
+	},
+	extractText: func(respBytes []byte) string {
+		if text := gjson.GetBytes(respBytes, "choices.0.message.content").String(); strings.TrimSpace(text) != "" {
+			return text
+		}
+		if text := extractAnthropicMonitorText(respBytes); strings.TrimSpace(text) != "" {
+			return text
+		}
+		return extractOpenAIResponsesText(respBytes)
+	},
+}
+
+// openCodeGoMonitorProtocol 返回探活模型在 OpenCode 上游的原生协议。
+// 依次匹配 Go 与 Zen 的默认路由表（首个命中生效），未命中回退 Chat Completions。
+func openCodeGoMonitorProtocol(model string) string {
+	for _, rules := range [][]OpenCodeGoProtocolRule{DefaultOpenCodeGoProtocolRules(), DefaultOpenCodeZenProtocolRules()} {
+		for _, rule := range rules {
+			if openCodeGoPatternMatches(rule.Pattern, model) {
+				return rule.Protocol
+			}
+		}
+	}
+	return APIProtocolChatCompletions
+}
 
 func newOpenAICompatibleChatAdapter(path string) providerAdapter {
 	return providerAdapter{
@@ -463,11 +529,12 @@ var bodyMergeKeyDenyList = map[string]map[string]bool{
 	MonitorProviderAnthropic: {"model": true, "messages": true},
 	MonitorProviderGemini:    {"contents": true},
 	// 国产 3 家与 OpenAI Chat Completions 同构。
-	MonitorProviderKimi:       {"model": true, "messages": true, "stream": true},
-	MonitorProviderZhipu:      {"model": true, "messages": true, "stream": true},
-	MonitorProviderDeepseek:   {"model": true, "messages": true, "stream": true},
-	MonitorProviderMiniMax:    {"model": true, "messages": true, "stream": true},
-	MonitorProviderOpenCodeGo: {"model": true, "messages": true, "stream": true},
+	MonitorProviderKimi:     {"model": true, "messages": true, "stream": true},
+	MonitorProviderZhipu:    {"model": true, "messages": true, "stream": true},
+	MonitorProviderDeepseek: {"model": true, "messages": true, "stream": true},
+	MonitorProviderMiniMax:  {"model": true, "messages": true, "stream": true},
+	// OpenCode 按模型在 Chat / Responses / Anthropic 三种 body 间切换，保护三者的路由字段。
+	MonitorProviderOpenCodeGo: {"model": true, "messages": true, "stream": true, "instructions": true, "input": true},
 }
 
 func checkAPIMode(opts *CheckOptions) string {
@@ -486,10 +553,12 @@ func bodyMergeDenyKey(provider, apiMode string) string {
 
 // isOpenAICompatibleChatProvider 该 provider 的探活请求是否为 OpenAI Chat
 // Completions 同构（replace 模式的 body 校验按 messages 必填处理）。
+// OpenCode 的 body 形态随模型变化（Responses 模型无 messages），不做本地校验，
+// 由上游回包判定，与 anthropic / gemini 一致。
 func isOpenAICompatibleChatProvider(provider string) bool {
 	switch provider {
 	case MonitorProviderOpenAI, MonitorProviderGrok,
-		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek, MonitorProviderMiniMax, MonitorProviderOpenCodeGo:
+		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek, MonitorProviderMiniMax:
 		return true
 	default:
 		return false

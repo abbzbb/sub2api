@@ -248,7 +248,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload == "" || payload == "[DONE]" {
-					cw.Fprintf("%s\n", line)
+					// 下方会丢弃上游的事件分隔空行，这里必须自带 "\n\n" 终止符，
+					// 否则 [DONE] / 空 data 事件会与下一个事件粘连或在 EOF 处丢失。
+					cw.Fprintf("%s\n\n", trimmed)
 					continue
 				}
 

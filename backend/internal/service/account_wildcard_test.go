@@ -307,11 +307,32 @@ func TestAccountIsModelSupported(t *testing.T) {
 			requestedModel: "any-model",
 			expected:       true,
 		},
+		{
+			// Ollama Cloud 挂 deepseek 平台：模型由 ollama.com 提供，不受官方白名单约束。
+			name:     "deepseek ollama cloud empty mapping allows ollama model ids",
+			platform: PlatformDeepseek,
+			credentials: map[string]any{
+				"base_url": "https://ollama.com",
+				"api_key":  "sk-ollama",
+			},
+			requestedModel: "deepseek-v3.1:671b",
+			expected:       true,
+		},
+		{
+			name:     "deepseek custom relay empty mapping still uses whitelist",
+			platform: PlatformDeepseek,
+			credentials: map[string]any{
+				"base_url": "https://relay.example.com/v1",
+			},
+			requestedModel: "deepseek-v3.1:671b",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			account := &Account{
+				Type:        AccountTypeAPIKey,
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
 			}

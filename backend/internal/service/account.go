@@ -1085,7 +1085,9 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
-		if a.Platform == PlatformDeepseek {
+		// 挂在 deepseek 平台下、base_url 指向 ollama.com 的账号由 Ollama Cloud
+		// 提供模型（deepseek-v3.1:671b 等非官方命名），官方白名单不适用。
+		if a.Platform == PlatformDeepseek && !IsOllamaCloudUsageAccount(a) {
 			return isDeepseekServableModel(requestedModel)
 		}
 		return true // 无映射 = 允许所有

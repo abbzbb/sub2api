@@ -1430,6 +1430,39 @@ func TestHandleGeminiStreamingResponse_EventSeparatorIsExactlyOneBlankLine(t *te
 	}
 }
 
+// 空 data / [DONE] 事件不经过 JSON 重写，但上游分隔空行同样被丢弃，
+// 因此必须自带事件终止符，否则会与后一事件粘连或在 EOF 处丢失。
+func TestHandleGeminiStreamingResponse_DoneAndEmptyDataKeepEventTerminator(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+
+	first := `{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3}}`
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		fmt.Fprintf(pw, "data:\n\n")
+		fmt.Fprintf(pw, "data: %s\n\n", first)
+		fmt.Fprintf(pw, "data: [DONE]\r\n\r\n")
+	}()
+
+	_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+	_ = pr.Close()
+	require.NoError(t, err)
+
+	body := rec.Body.String()
+	require.Equal(t, "data:\n\ndata: "+first+"\n\ndata: [DONE]\n\n", body)
+	require.NotContains(t, body, "\n\n\n")
+}
+
 func TestHandleGeminiStreamingResponse_ThoughtsTokenCount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newAntigravityTestService(&config.Config{
