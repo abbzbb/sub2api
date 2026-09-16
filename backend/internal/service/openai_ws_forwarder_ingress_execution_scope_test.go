@@ -57,6 +57,22 @@ func writeOpenAIWSExecutionScopeRequest(t *testing.T, conn *coderws.Conn, body s
 	require.NoError(t, conn.Write(ctx, coderws.MessageText, []byte(body)))
 }
 
+// closeOpenAIWSExecutionScopeClient 主动关客户端连接。对端若已因同线程抢占
+// 先发了 TryAgainLater 关闭帧，coder/websocket 的 Close 会把它当作错误返回；
+// 这是关闭握手竞态，不是业务失败。
+func closeOpenAIWSExecutionScopeClient(t *testing.T, conn *coderws.Conn) {
+	t.Helper()
+	err := conn.Close(coderws.StatusNormalClosure, "done")
+	if err == nil {
+		return
+	}
+	var closeErr coderws.CloseError
+	if errors.As(err, &closeErr) && closeErr.Code == coderws.StatusTryAgainLater {
+		return
+	}
+	require.NoError(t, err)
+}
+
 // 场景：codex 子智能体与父线程共用 session-id 头，只有 x-codex-turn-metadata 的 thread_id 不同。
 // ctx_pool 下的 turn state 绑定与 store=false 的上游连接绑定必须落在执行作用域键下，
 // 不能落在按 session-id 算出的会话哈希下，否则子智能体会覆盖父线程的绑定。
@@ -314,9 +330,9 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 	cancelA()
 	if aReadErr == nil {
 		require.Equal(t, "resp_thread_a", gjson.GetBytes(completedA, "response.id").String())
-		require.NoError(t, connA.Close(coderws.StatusNormalClosure, "done"))
+		closeOpenAIWSExecutionScopeClient(t, connA)
 	}
-	require.NoError(t, connB.Close(coderws.StatusNormalClosure, "done"))
+	closeOpenAIWSExecutionScopeClient(t, connB)
 
 	for i := 0; i < 2; i++ {
 		select {
