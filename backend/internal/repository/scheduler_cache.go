@@ -956,6 +956,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
+	// Candidate-list admission evaluates the account override before hydrating
+	// the full account. Dropping it silently falls back to the platform threshold.
 	keys := []string{
 		"model_mapping",
 		"compact_model_mapping",
@@ -966,6 +968,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"plan",
 		"subscription_tier",
 		"entitlement_status",
+		"account_scheduling_threshold",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
@@ -984,6 +987,13 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		// Anthropic shared-window and Fable-only threshold checks run on this
+		// projection. UpdateExtra refreshes both payloads without a bucket rebuild.
+		"session_window_utilization",
+		"passive_usage_7d_utilization",
+		"passive_usage_7d_reset",
+		"passive_usage_7d_oi_utilization",
+		"passive_usage_7d_oi_reset",
 		"quota_limit",
 		"quota_used",
 		"quota_daily_limit",
