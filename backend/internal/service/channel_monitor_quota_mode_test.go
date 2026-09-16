@@ -369,6 +369,7 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 	for _, p := range []string{
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderMiniMax, MonitorProviderOpenCodeGo,
 	} {
 		require.True(t, providerSupportsProbe(p), p)
 	}
@@ -376,6 +377,7 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderAntigravity,
 		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderMiniMax, MonitorProviderOpenCodeGo,
 	} {
 		require.NoError(t, validateProvider(p), p)
 	}
@@ -520,6 +522,15 @@ func TestMonitorAccountQuotaCapability_Matrix(t *testing.T) {
 		{
 			name:    "antigravity ok",
 			account: &Account{ID: 15, Platform: domain.PlatformAntigravity},
+		},
+		{
+			name:    "opencode go plan ok",
+			account: &Account{ID: 17, Platform: domain.PlatformOpenCodeGo, Credentials: map[string]any{"account_mode": AccountModeGo}},
+		},
+		{
+			name:    "opencode zen has no quota window",
+			account: &Account{ID: 18, Platform: domain.PlatformOpenCodeGo, Credentials: map[string]any{"account_mode": AccountModeZen}},
+			wantErr: ErrChannelMonitorAccountNotSupportable,
 		},
 	}
 	for _, tc := range cases {

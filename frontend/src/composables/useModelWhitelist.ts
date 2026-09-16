@@ -89,7 +89,7 @@ const antigravityModels = [
   'gemini-3.1-flash-lite',
   'gemini-pro-agent',
   'gemini-3-pro-image',
-  // Gemini 3.5 / 3.6 / 3.7
+  // Gemini 3.5 / 3.6 / 3.7 / 3.8
   'gemini-3.5-flash-low',
   'gemini-3.5-flash-extra-low',
   'gemini-3.6-flash',
@@ -102,6 +102,11 @@ const antigravityModels = [
   'gemini-3.7-flash-low',
   'gemini-3.7-flash-medium',
   'gemini-3.7-flash-tiered',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-low',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-tiered',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview',
@@ -396,9 +401,12 @@ const antigravityPresetMappings = [
   { label: 'Opus 4.6', from: 'claude-opus-4-6', to: 'claude-opus-4-6-thinking', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' },
   { label: 'Opus 4.6-thinking', from: 'claude-opus-4-6-thinking', to: 'claude-opus-4-6-thinking', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' },
   { label: '3.6-Flash→tiered', from: 'gemini-3.6-flash', to: 'gemini-3.6-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
-  { label: '3.7-Flash→tiered', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.7-Flash透传', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
   { label: '3.7-Flash-high透传', from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
-  { label: '3.7-Flash-tiered透传', from: 'gemini-3.7-flash-tiered', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' }
+  { label: '3.7-Flash-tiered透传', from: 'gemini-3.7-flash-tiered', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash透传', from: 'gemini-3.8-flash', to: 'gemini-3.8-flash', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash-high透传', from: 'gemini-3.8-flash-high', to: 'gemini-3.8-flash-high', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash-tiered透传', from: 'gemini-3.8-flash-tiered', to: 'gemini-3.8-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' }
 ]
 
 // Bedrock 预设映射（与后端 DefaultBedrockModelMapping 保持一致）

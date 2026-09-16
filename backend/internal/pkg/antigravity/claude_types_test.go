@@ -60,6 +60,18 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	}
 }
 
+func TestDefaultModels_HasUniqueIDs(t *testing.T) {
+	t.Parallel()
+
+	seen := make(map[string]int, len(DefaultModels()))
+	for _, m := range DefaultModels() {
+		seen[m.ID]++
+		if seen[m.ID] > 1 {
+			t.Fatalf("DefaultModels has duplicate id %q", m.ID)
+		}
+	}
+}
+
 // DefaultModels must expose every client-facing key from the default mapping so
 // /v1/models and /antigravity/models stay aligned with schedulable models (#3701).
 func TestDefaultModels_CoversDefaultAntigravityMappingKeys(t *testing.T) {

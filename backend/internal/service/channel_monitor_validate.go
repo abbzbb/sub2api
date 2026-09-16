@@ -23,6 +23,7 @@ var monitorProviders = map[string]struct{}{
 	MonitorProviderZhipu:       {},
 	MonitorProviderDeepseek:    {},
 	MonitorProviderMiniMax:     {},
+	MonitorProviderOpenCodeGo:  {},
 }
 
 // probeCapableProviders 支持探活（probe / quota_probe）的 provider。
@@ -38,6 +39,7 @@ var probeCapableProviders = map[string]struct{}{
 	MonitorProviderZhipu:     {},
 	MonitorProviderDeepseek:  {},
 	MonitorProviderMiniMax:   {},
+	MonitorProviderOpenCodeGo: {},
 }
 
 // validateProvider 校验 provider 字符串。
@@ -212,13 +214,17 @@ func normalizeMonitorPrimaryModel(provider, checkMode, model string) string {
 //   - kimi/zhipu/deepseek/minimax coding：GetCodingPlanProvider 须识别官方域名
 //     （deepseek coding、自定义中转、minimax payg 无法路由额度端点）
 //   - kimi/zhipu/deepseek/minimax payg：仅 kimi/deepseek 有公开余额端点
+//   - opencode_go：仅 Go 订阅有额度窗口；Zen 按量无额度端点
 //   - anthropic：OAuth / Setup Token（API-Key 型无 usage 通道，永久 error）
 //   - openai：OAuth（API-Key 型无 usage 通道）
 //   - gemini/grok/antigravity：本地统计/值通道降级，不会永久 error，放行
 func monitorAccountQuotaCapability(account *Account) error {
 	switch account.Platform {
 	case PlatformOpenCodeGo:
-		return nil
+		if account.IsOpenCodeGoPlan() {
+			return nil
+		}
+		return ErrChannelMonitorAccountNotSupportable
 	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax:
 		if account.IsCodingPlan() {
 			if p := account.GetCodingPlanProvider(); p != PlatformKimi && p != PlatformZhipu && p != PlatformMiniMax {

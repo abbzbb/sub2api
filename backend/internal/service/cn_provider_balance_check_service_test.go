@@ -10,9 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 周期任务对 coding plan 账号的额度探测行为（runOnce 集成路径）：
+// 周期任务对 coding plan / OpenCode Go 账号的额度探测行为（runOnce 集成路径）：
 //   - kimi coding 账号（含已被阈值停调的）→ 额度探测被调用；
-//   - 智谱 coding 账号 → 额度探测被调用（智谱不进 kimi/deepseek 余额循环）；
+//   - 智谱 / MiniMax coding 账号 → 额度探测被调用（不进 kimi/deepseek 余额循环）；
+//   - OpenCode Go 订阅账号 → 额度探测被调用；OpenCode Zen 按量跳过（无额度窗口）；
 //   - payg 账号不经过额度探测（走余额路径，本测试不放 payg 账号避免真实网络）；
 //   - 非激活账号完全跳过。
 
@@ -51,11 +52,17 @@ func TestCNProviderBalanceCheckRunOnceProbesCodingPlanQuota(t *testing.T) {
 		Credentials: map[string]any{"account_mode": "coding"}}
 	minimaxCoding := Account{ID: 5, Platform: PlatformMiniMax, Type: AccountTypeAPIKey, Status: StatusActive,
 		Credentials: map[string]any{"account_mode": "coding"}}
+	openCodeGo := Account{ID: 6, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"account_mode": AccountModeGo}}
+	// Zen 按量无额度窗口，不得进入周期探测（否则每轮都打 QueryUsage 报错）。
+	openCodeZen := Account{ID: 7, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: map[string]any{"account_mode": AccountModeZen}}
 
 	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{
-		PlatformKimi:    {kimiActive, kimiPaused, kimiInactive},
-		PlatformZhipu:   {zhipuCoding},
-		PlatformMiniMax: {minimaxCoding},
+		PlatformKimi:       {kimiActive, kimiPaused, kimiInactive},
+		PlatformZhipu:      {zhipuCoding},
+		PlatformMiniMax:    {minimaxCoding},
+		PlatformOpenCodeGo: {openCodeGo, openCodeZen},
 	}}
 	prober := &fakeCNQuotaProber{}
 	svc := &CNProviderBalanceCheckService{
@@ -66,7 +73,7 @@ func TestCNProviderBalanceCheckRunOnceProbesCodingPlanQuota(t *testing.T) {
 
 	svc.runOnce()
 
-	require.ElementsMatch(t, []int64{1, 2, 4, 5}, prober.probed)
+	require.ElementsMatch(t, []int64{1, 2, 4, 5, 6}, prober.probed)
 }
 
 // runOnceZhipuQuota 在 quotaService 缺失时安全跳过（Start 门控不启动的老部署路径）。

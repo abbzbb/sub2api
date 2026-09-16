@@ -52,10 +52,16 @@ describe('useModelWhitelist', () => {
     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
     expect(getModelsByPlatform('antigravity')).toContain('claude-opus-4-6-thinking')
     expect(getModelsByPlatform('antigravity')).toContain('claude-sonnet-4-6')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.7-flash')
     expect(getModelsByPlatform('antigravity')).toContain('gemini-3.7-flash-tiered')
     expect(getModelsByPlatform('antigravity')).toContain('gemini-3.7-flash-high')
     expect(getModelsByPlatform('antigravity')).toContain('gemini-3.7-flash-medium')
     expect(getModelsByPlatform('antigravity')).toContain('gemini-3.7-flash-low')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.8-flash')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.8-flash-tiered')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.8-flash-high')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.8-flash-medium')
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.8-flash-low')
     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
     expect(getModelsByPlatform('antigravity')).toContain('claude-opus-4-8')
   })
@@ -119,6 +125,19 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('antigravity')
 
     expect(models).toContain('gemini-3.1-pro')
+  })
+
+  it('antigravity 预设映射对 3.7/3.8 Flash 走透传，3.6 仍映射到 tiered', () => {
+    expect(getPresetMappingsByPlatform('antigravity')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '3.6-Flash→tiered', from: 'gemini-3.6-flash', to: 'gemini-3.6-flash-tiered' }),
+      expect.objectContaining({ label: '3.7-Flash透传', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash' }),
+      expect.objectContaining({ label: '3.8-Flash透传', from: 'gemini-3.8-flash', to: 'gemini-3.8-flash' }),
+      expect.objectContaining({ label: '3.8-Flash-high透传', from: 'gemini-3.8-flash-high', to: 'gemini-3.8-flash-high' }),
+      expect.objectContaining({ label: '3.8-Flash-tiered透传', from: 'gemini-3.8-flash-tiered', to: 'gemini-3.8-flash-tiered' })
+    ]))
+    expect(getPresetMappingsByPlatform('antigravity')).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'gemini-3.7-flash', to: 'gemini-3.7-flash-tiered' })
+    ]))
   })
 
   it('whitelist 模式会忽略通配符条目', () => {

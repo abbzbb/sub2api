@@ -28,5 +28,5 @@ export const KEY_GROUP_PROVIDER_ICONS: Record<KeyGroupProvider, GroupPlatform[]>
   anthropic: ['anthropic'],
   openai: ['openai'],
   domestic: ['deepseek', 'kimi'],
-  other: ['gemini', 'grok']
+  other: ['gemini', 'grok', 'antigravity', 'opencode_go']
 }
