@@ -25,8 +25,9 @@ const cnQuotaProbeConcurrency = 4
 //     调度阈值评估（cnProviderThresholdCandidates）据此自动停调/恢复。
 //
 // 克隆自 AccountExpiryService 的 Start/Stop/runOnce + ticker 骨架。
-// 余额探测仅覆盖有公开余额端点的 kimi / deepseek；智谱无余额端点，仅靠响应式 429/402。
-// 额度探测覆盖 kimi / zhipu 的 coding plan 账号（deepseek 无 coding 套餐）。
+// 余额探测仅覆盖有公开余额端点的 kimi / deepseek；智谱 / MiniMax / OpenCode 无余额端点，仅靠响应式 429/402。
+// 额度探测覆盖 kimi / zhipu / MiniMax 的 coding plan，以及 OpenCode Go 订阅账号
+// （deepseek 无 coding 套餐；OpenCode Zen 按量无额度窗口）。
 type CNProviderBalanceCheckService struct {
 	accountRepo    AccountRepository
 	balanceService *CNProviderBalanceService
@@ -120,15 +121,17 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 			if IsOllamaCloudUsageAccount(account) {
 				continue
 			}
-			// coding 账号：探测滚动窗口并落快照（不要求 Schedulable——已被
-			// 阈值停调的账号也需要新鲜快照决定是否续停）。
-			if account.IsCodingPlan() {
+			// coding / OpenCode Go：探测滚动窗口并落快照（不要求 Schedulable——
+			// 已被阈值停调的账号也需要新鲜快照决定是否续停）。
+			// OpenCode Go 的 account_mode 是 go 而不是 coding，IsCodingPlan()
+			// 为 false，必须单独识别，否则周期任务永远扫不到。
+			if account.IsCodingPlan() || account.IsOpenCodeGoPlan() {
 				quotaTargets = append(quotaTargets, quotaTarget{id: account.ID, platform: account.Platform})
 				continue
 			}
-			// payg 余额探测仅 kimi/deepseek（智谱 / MiniMax 无公开余额端点，
-			// payg 账号依赖响应式 402/429 处理）。
-			if platform != PlatformZhipu && platform != PlatformMiniMax && account.Schedulable {
+			// payg 余额探测仅 kimi/deepseek（智谱 / MiniMax / OpenCode 无公开余额端点，
+			// payg / Zen 账号依赖响应式 402/429 处理）。
+			if platform != PlatformZhipu && platform != PlatformMiniMax && platform != PlatformOpenCodeGo && account.Schedulable {
 				paygTargets = append(paygTargets, account)
 			}
 		}
@@ -141,9 +144,9 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 		}
 		collect(platform, accounts)
 	}
-	// 智谱 / MiniMax 无余额端点，仅进额度探测。
+	// 智谱 / MiniMax / OpenCode 无余额端点，仅进额度探测。
 	if s.quotaService != nil {
-		for _, platform := range []string{PlatformZhipu, PlatformMiniMax} {
+		for _, platform := range []string{PlatformZhipu, PlatformMiniMax, PlatformOpenCodeGo} {
 			accounts, err := s.accountRepo.ListByPlatform(context.Background(), platform)
 			if err != nil {
 				log.Printf("[CNBalance] list %s accounts failed: %v", platform, err)

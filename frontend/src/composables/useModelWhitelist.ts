@@ -89,7 +89,7 @@ const antigravityModels = [
   'gemini-3.1-flash-lite',
   'gemini-pro-agent',
   'gemini-3-pro-image',
-  // Gemini 3.5 / 3.6 / 3.7
+  // Gemini 3.5 / 3.6 / 3.7 / 3.8
   'gemini-3.5-flash-low',
   'gemini-3.5-flash-extra-low',
   'gemini-3.6-flash',
@@ -102,6 +102,11 @@ const antigravityModels = [
   'gemini-3.7-flash-low',
   'gemini-3.7-flash-medium',
   'gemini-3.7-flash-tiered',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-low',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-tiered',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview',
@@ -134,7 +139,7 @@ const qwenModels = [
 
 // DeepSeek
 const deepseekModels = [
-  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
+  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-flash',
   'deepseek-coder',
   'deepseek-v3', 'deepseek-v3-0324',
   'deepseek-r1', 'deepseek-r1-0528',
@@ -396,9 +401,12 @@ const antigravityPresetMappings = [
   { label: 'Opus 4.6', from: 'claude-opus-4-6', to: 'claude-opus-4-6-thinking', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' },
   { label: 'Opus 4.6-thinking', from: 'claude-opus-4-6-thinking', to: 'claude-opus-4-6-thinking', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' },
   { label: '3.6-Flash→tiered', from: 'gemini-3.6-flash', to: 'gemini-3.6-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
-  { label: '3.7-Flash→tiered', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.7-Flash透传', from: 'gemini-3.7-flash', to: 'gemini-3.7-flash', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
   { label: '3.7-Flash-high透传', from: 'gemini-3.7-flash-high', to: 'gemini-3.7-flash-high', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
-  { label: '3.7-Flash-tiered透传', from: 'gemini-3.7-flash-tiered', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' }
+  { label: '3.7-Flash-tiered透传', from: 'gemini-3.7-flash-tiered', to: 'gemini-3.7-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash透传', from: 'gemini-3.8-flash', to: 'gemini-3.8-flash', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash-high透传', from: 'gemini-3.8-flash-high', to: 'gemini-3.8-flash-high', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
+  { label: '3.8-Flash-tiered透传', from: 'gemini-3.8-flash-tiered', to: 'gemini-3.8-flash-tiered', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' }
 ]
 
 // Bedrock 预设映射（与后端 DefaultBedrockModelMapping 保持一致）
@@ -473,6 +481,18 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'yi': return yiModels
     case 'moonshot':
     case 'kimi': return moonshotModels
+    case 'opencode_go': return [
+      'grok-4.6', 'gpt-5.6-luna',
+      'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',
+      'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6',
+      'longcat-2.0',
+      'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
+      'mimo-v2.5', 'mimo-v2.5-pro',
+      'minimax-m3', 'minimax-m2.7', 'minimax-m2.5',
+      'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor',
+      'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-plus',
+      'hy4-preview', 'hy3', 'omen-alpha'
+    ]
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

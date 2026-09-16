@@ -914,7 +914,7 @@ func TestDefaultModelIDsForPlatform_CNProvidersKeepClaudeDefaults(t *testing.T) 
 }
 
 func TestDefaultCodexModelIDsForPlatform_DeepSeekUsesDeepSeekModels(t *testing.T) {
-	require.Equal(t, []string{"deepseek-v4-pro", "deepseek-v4-flash"}, defaultCodexModelIDsForPlatform(service.PlatformDeepseek))
+	require.Equal(t, []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"}, defaultCodexModelIDsForPlatform(service.PlatformDeepseek))
 	require.Equal(t, []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"}, defaultCodexModelIDsForPlatform(service.PlatformMiniMax))
 	require.Equal(t, defaultModelIDsForPlatform(service.PlatformAnthropic), defaultCodexModelIDsForPlatform(service.PlatformAnthropic))
 }
@@ -1228,6 +1228,40 @@ func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Empty(t, modelIDsForTest(got.Data))
+}
+
+// Scenario: an OpenCode group whose accounts have no model_mapping must fall back to the
+// OpenCode catalogue, not to the Claude default list.
+func TestGatewayModels_OpenCodeGoUnmappedAccountsFallbackToOpenCodeCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(26)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformOpenCodeGo, Type: service.AccountTypeAPIKey},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenCodeGo},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	require.ElementsMatch(t, service.DefaultOpenCodeGoModelIDs(), ids)
+	require.NotContains(t, ids, "claude-opus-4-6")
 }
 
 func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T) {

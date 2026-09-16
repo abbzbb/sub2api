@@ -499,6 +499,77 @@ func TestValidateChallenge_AnthropicTextAfterThinking(t *testing.T) {
 	}
 }
 
+// OpenCode 探活按模型选原生端点：GPT/Grok/Muse Spark → Responses，
+// Claude/Qwen/MiniMax → Anthropic Messages，其余 → Chat Completions。
+func TestOpenCodeGoMonitorAdapterRoutesByModel(t *testing.T) {
+	adapter := providerAdapters[MonitorProviderOpenCodeGo]
+	cases := []struct {
+		model    string
+		wantPath string
+		wantKeys []string
+		denyKeys []string
+	}{
+		{"gpt-5.6-luna", providerOpenAIResponsesPath, []string{"instructions", "input"}, []string{"messages"}},
+		{"grok-4.6", providerOpenAIResponsesPath, []string{"instructions", "input"}, []string{"messages"}},
+		{"opencode-go/muse-spark-1.3-contributor", providerOpenAIResponsesPath, []string{"input"}, []string{"messages"}},
+		{"minimax-m3", providerAnthropicPath, []string{"messages", "max_tokens"}, []string{"stream", "instructions"}},
+		{"qwen3.8-max", providerAnthropicPath, []string{"messages"}, []string{"stream"}},
+		{"claude-sonnet-4-6", providerAnthropicPath, []string{"messages"}, []string{"stream"}},
+		{"glm-5.3", providerOpenAIPath, []string{"messages", "stream"}, []string{"instructions"}},
+		{"kimi-k3", providerOpenAIPath, []string{"messages"}, []string{"input"}},
+		{"deepseek-v4-pro", providerOpenAIPath, []string{"messages"}, []string{"input"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := adapter.buildPath(tc.model); got != tc.wantPath {
+				t.Fatalf("buildPath(%q) = %q, want %q", tc.model, got, tc.wantPath)
+			}
+			raw, err := adapter.buildBody(tc.model, "Reply with only 7.")
+			if err != nil {
+				t.Fatalf("buildBody() error = %v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if body["model"] != tc.model {
+				t.Fatalf("body.model = %v, want %q", body["model"], tc.model)
+			}
+			for _, key := range tc.wantKeys {
+				if _, ok := body[key]; !ok {
+					t.Errorf("body should contain %q: %s", key, raw)
+				}
+			}
+			for _, key := range tc.denyKeys {
+				if _, ok := body[key]; ok {
+					t.Errorf("body must not contain %q: %s", key, raw)
+				}
+			}
+		})
+	}
+
+	headers := adapter.buildHeaders("sk-opencode")
+	if headers["Authorization"] != "Bearer sk-opencode" || headers["x-api-key"] != "sk-opencode" {
+		t.Fatalf("expected bearer + x-api-key headers, got %v", headers)
+	}
+
+	// 三种回包形态都能抽出文本。
+	for name, resp := range map[string]string{
+		"chat":      `{"choices":[{"message":{"content":"7"}}]}`,
+		"anthropic": `{"content":[{"type":"text","text":"7"}]}`,
+		"responses": `{"output":[{"type":"message","content":[{"type":"output_text","text":"7"}]}]}`,
+	} {
+		if got := extractMonitorResponseText(adapter, []byte(resp)); strings.TrimSpace(got) != "7" {
+			t.Errorf("%s: extractText = %q, want 7", name, got)
+		}
+	}
+
+	// replace 模式不做本地 messages 必填校验（Responses 模型无 messages）。
+	if err := validateReplaceRequestBody(MonitorProviderOpenCodeGo, MonitorAPIModeChatCompletions, map[string]any{"input": "x"}); err != nil {
+		t.Fatalf("opencode replace body should not be validated locally: %v", err)
+	}
+}
+
 func TestGeminiMonitorBodyIncludesExplicitUserRole(t *testing.T) {
 	adapter := providerAdapters[MonitorProviderGemini]
 	body, err := adapter.buildBody("gemini-3.6-flash", "Reply with only 7.")

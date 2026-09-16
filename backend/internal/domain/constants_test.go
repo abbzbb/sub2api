@@ -112,15 +112,26 @@ func TestDefaultAntigravityModelMapping_Gemini36FlashModels(t *testing.T) {
 		"gemini-3.6-flash-low":    "gemini-3.6-flash-low",
 		"gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
 		"gemini-3.6-flash-tiered": "gemini-3.6-flash-tiered",
-		"gemini-3.7-flash":        "gemini-3.7-flash-tiered",
-		"gemini-3.7-flash-high":   "gemini-3.7-flash-high",
-		"gemini-3.7-flash-low":    "gemini-3.7-flash-low",
-		"gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
-		"gemini-3.7-flash-tiered": "gemini-3.7-flash-tiered",
 	}
 	for model, want := range cases {
 		if got := DefaultAntigravityModelMapping[model]; got != want {
 			t.Fatalf("expected %s to map to %q, got %q", model, want, got)
+		}
+	}
+}
+
+func TestDefaultAntigravityModelMapping_Gemini37FlashModels(t *testing.T) {
+	for _, model := range []string{"gemini-3.7-flash", "gemini-3.7-flash-high", "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-tiered"} {
+		if got := DefaultAntigravityModelMapping[model]; got != model {
+			t.Fatalf("expected %s to map to itself, got %q", model, got)
+		}
+	}
+}
+
+func TestDefaultAntigravityModelMapping_Gemini38FlashModels(t *testing.T) {
+	for _, model := range []string{"gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-tiered"} {
+		if got := DefaultAntigravityModelMapping[model]; got != model {
+			t.Fatalf("expected %s to map to itself, got %q", model, got)
 		}
 	}
 }

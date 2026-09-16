@@ -248,7 +248,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload == "" || payload == "[DONE]" {
-					cw.Fprintf("%s\n", line)
+					// 下方会丢弃上游的事件分隔空行，这里必须自带 "\n\n" 终止符，
+					// 否则 [DONE] / 空 data 事件会与下一个事件粘连或在 EOF 处丢失。
+					cw.Fprintf("%s\n\n", trimmed)
 					continue
 				}
 
@@ -285,6 +287,14 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				}
 
 				cw.Fprintf("data: %s\n\n", payload)
+				continue
+			}
+
+			// 上游每个 data 事件后面跟一个空行作为事件分隔。上面已经把 data 行写成
+			// "data: ...\n\n"，若再把这个空行透传出去，事件之间就会变成 "\n\n\n"。
+			// google-genai 的 Go SDK（Antigravity CLI 在用）按 "\n\n" 切事件，多出的
+			// "\n" 会粘到下一个事件开头，前缀变成 "\ndata" 而被判成 invalid stream chunk。
+			if trimmed == "" {
 				continue
 			}
 

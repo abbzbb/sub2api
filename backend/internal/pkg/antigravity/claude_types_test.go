@@ -44,6 +44,11 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 		"gemini-3.7-flash-low",
 		"gemini-3.7-flash-medium",
 		"gemini-3.7-flash-tiered",
+		"gemini-3.8-flash",
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-low",
+		"gemini-3.8-flash-medium",
+		"gemini-3.8-flash-tiered",
 	}
 
 	requiredIDs = append(requiredIDs, "claude-fable-5", "claude-opus-4-7", "claude-opus-4-8")
@@ -51,6 +56,18 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	for _, id := range requiredIDs {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("expected model %q to be exposed in DefaultModels", id)
+		}
+	}
+}
+
+func TestDefaultModels_HasUniqueIDs(t *testing.T) {
+	t.Parallel()
+
+	seen := make(map[string]int, len(DefaultModels()))
+	for _, m := range DefaultModels() {
+		seen[m.ID]++
+		if seen[m.ID] > 1 {
+			t.Fatalf("DefaultModels has duplicate id %q", m.ID)
 		}
 	}
 }

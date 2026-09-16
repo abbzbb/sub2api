@@ -74,9 +74,9 @@ func (f *clearThrottleStub) ListActiveKeys(context.Context, int) ([]int64, error
 func (f *clearThrottleStub) ListActiveUsers(context.Context, int) ([]int64, error) {
 	return nil, nil
 }
-func (f *clearThrottleStub) GetKeyOwner(context.Context, int64) (int64, error)    { return 0, nil }
-func (f *clearThrottleStub) GetKeyPrefix(context.Context, int64) (string, error)  { return "", nil }
-func (f *clearThrottleStub) TrimUAWindow(context.Context, int64, int64) error     { return nil }
+func (f *clearThrottleStub) GetKeyOwner(context.Context, int64) (int64, error)   { return 0, nil }
+func (f *clearThrottleStub) GetKeyPrefix(context.Context, int64) (string, error) { return "", nil }
+func (f *clearThrottleStub) TrimUAWindow(context.Context, int64, int64) error    { return nil }
 func (f *clearThrottleStub) SetThrottle(_ context.Context, keyID int64, _ int, _ int64) error {
 	f.throttled = append(f.throttled, keyID)
 	return nil
@@ -243,7 +243,7 @@ func TestConnectionRiskService_SuppressEventSetsKeyExempt(t *testing.T) {
 	fake := &clearThrottleStub{}
 	svc := &ConnectionRiskService{
 		signals: fake,
-		events: &suppressEventRepoStub{ev: &ConnectionRiskEvent{ID: 3, APIKeyID: &kid}},
+		events:  &suppressEventRepoStub{ev: &ConnectionRiskEvent{ID: 3, APIKeyID: &kid}},
 	}
 	require.NoError(t, svc.SuppressEvent(context.Background(), 3, nil))
 	require.Equal(t, []int64{9}, fake.cleared)
@@ -263,9 +263,11 @@ func (s *suppressEventRepoStub) GetByID(context.Context, int64) (*ConnectionRisk
 func (s *suppressEventRepoStub) List(context.Context, *ConnectionRiskEventFilter) (*ConnectionRiskEventList, error) {
 	return &ConnectionRiskEventList{}, nil
 }
-func (s *suppressEventRepoStub) UpdateStatus(context.Context, int64, string, *int64) error { return nil }
-func (s *suppressEventRepoStub) UpdateActionTaken(context.Context, int64, string) error    { return nil }
-func (s *suppressEventRepoStub) Delete(context.Context, int64) error                       { return nil }
+func (s *suppressEventRepoStub) UpdateStatus(context.Context, int64, string, *int64) error {
+	return nil
+}
+func (s *suppressEventRepoStub) UpdateActionTaken(context.Context, int64, string) error { return nil }
+func (s *suppressEventRepoStub) Delete(context.Context, int64) error                    { return nil }
 func (s *suppressEventRepoStub) DeleteOlderThan(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }

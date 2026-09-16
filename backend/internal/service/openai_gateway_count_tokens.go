@@ -147,7 +147,9 @@ func prepareNativeOpenAIInputTokensCountRequest(body []byte, account *Account) (
 }
 
 func shouldEstimateOpenAIInputTokensLocally(account *Account) bool {
-	if account == nil || account.IsGrok() || account.IsCNProvider() || account.Type == AccountTypeUpstream {
+	// OpenCode 与国产供应商一样没有 input_tokens 端点，且默认 base_url 为空，
+	// 若走下方的 host 判定会被当成官方 OpenAI 直接外呼；与 ForwardCountTokensAsAnthropic 保持同一口径。
+	if account == nil || account.IsGrok() || account.IsCNProvider() || account.IsOpenCodeGo() || account.Type == AccountTypeUpstream {
 		return true
 	}
 	if account.Type != AccountTypeAPIKey {
@@ -261,14 +263,14 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		return fmt.Errorf("count_tokens: missing account")
 	}
 
-	// 国产供应商（全部协议，含 anthropic）：一律本地估算，不发上游请求。
+	// 国产供应商与 OpenCode（全部协议，含 anthropic）：一律本地估算，不发上游请求。
 	// 依据（2026-08 核实）：三家的 Anthropic 兼容层均未提供
 	// /v1/messages/count_tokens——DeepSeek 官方 anthropic_api 文档无此端点
 	// （且注明 anthropic-version 头被忽略），聚合网关 OpenModel 明确标注
 	// count_tokens 为 "Anthropic only"，Kimi/智谱亦无任何文档承诺。转发上游
 	// 只会常态 404，且错误还会流入账号处置逻辑误伤整账号调度；Claude Code
 	// 高频调用此端点，本地 tiktoken 估算是与 Grok 一致的既有方案。
-	if account.IsCNProvider() {
+	if account.IsCNProvider() || account.IsOpenCodeGo() {
 		estimated, err := estimateAnthropicCountTokensLocally(body)
 		if err != nil {
 			writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")

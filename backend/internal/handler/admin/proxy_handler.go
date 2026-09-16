@@ -140,8 +140,8 @@ type UpdateProxyRequest struct {
 	Protocol       string                 `json:"protocol" binding:"omitempty,oneof=http https socks5 socks5h"`
 	Host           string                 `json:"host"`
 	Port           int                    `json:"port" binding:"omitempty,min=1,max=65535"`
-	Username       string                 `json:"username"`
-	Password       string                 `json:"password"`
+	Username       *string                `json:"username"`
+	Password       *string                `json:"password"`
 	Status         string                 `json:"status" binding:"omitempty,oneof=active inactive"`
 	ExpiresAt      dto.NullableInt64Field `json:"expires_at"`
 	FallbackMode   string                 `json:"fallback_mode" binding:"omitempty,oneof=none proxy direct"`
@@ -279,11 +279,6 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid request body")
 		return
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
-		return
-	}
 	// Re-validate known shape (oneof / port range) via typed bind.
 	// json.Unmarshal 不会执行 binding 标签，必须显式跑一遍校验器，
 	// 否则 protocol=ftp / port=99999 / status=bogus 会原样写库。
@@ -317,12 +312,12 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		ClearBackupID:  req.BackupProxyID.Set && req.BackupProxyID.Value == nil,
 		ExpiryWarnDays: req.ExpiryWarnDays,
 	}
-	if _, ok := raw["username"]; ok {
-		u := strings.TrimSpace(req.Username)
+	if req.Username != nil {
+		u := strings.TrimSpace(*req.Username)
 		input.Username = &u
 	}
-	if _, ok := raw["password"]; ok {
-		p := strings.TrimSpace(req.Password)
+	if req.Password != nil {
+		p := strings.TrimSpace(*req.Password)
 		input.Password = &p
 	}
 	proxy, err := h.adminService.UpdateProxy(c.Request.Context(), proxyID, input)
