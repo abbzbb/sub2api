@@ -73,11 +73,14 @@ func TestResolveGeminiThinkingVariant(t *testing.T) {
 		{"agy low (1000) -> -low", catalog, "gemini-3.8-flash", budget("1000"), "gemini-3.8-flash-low", true},
 		{"models/ prefix stripped", catalog, "models/gemini-3.8-flash", budget("1000"), "gemini-3.8-flash-low", true},
 		{"no thinkingConfig -> -high", catalog, "gemini-3.8-flash", []byte(`{"contents":[]}`), "gemini-3.8-flash-high", true},
-		// gemini-3.6/3.7/3.8-flash 的四个变体会被 resolveModelMapping 自动补齐，所以降级用一个不在默认表里的型号
+		// gemini-3.6/3.7/3.8-flash 的四个变体只在默认快照子集上补齐；小白名单
+		// fail-closed（#3701），所以降级用一个不在默认表里的型号，以及 catalog
+		// 里只有 -high 的 3.6（上游会无条件注入 -low，self 线不会）。
 		{"only -high exists: low request degrades to high", map[string]string{
 			"gemini-3.5-flash-high": "gemini-3.5-flash-high",
 		}, "gemini-3.5-flash", budget("1000"), "gemini-3.5-flash-high", true},
-		{"injected default variants are usable", catalog, "gemini-3.6-flash", budget("1000"), "gemini-3.6-flash-low", true},
+		{"partial catalog does not inject missing 3.6 variants", catalog, "gemini-3.6-flash", budget("1000"), "gemini-3.6-flash-high", true},
+		{"default 3.6-flash→tiered is not overridden by thinking variants", map[string]string{}, "gemini-3.6-flash", budget("1000"), "", false},
 		{"already suffixed: untouched", catalog, "gemini-3.8-flash-low", budget("-1"), "", false},
 		{"bare name explicitly mapped: untouched", catalog, "gemini-2.5-flash", budget("-1"), "", false},
 		{"no variants in mapping: untouched", catalog, "gemini-9.9-flash", budget("-1"), "", false},
