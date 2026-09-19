@@ -68,11 +68,17 @@ func (s *OpenAIGatewayService) ResolvePluginOutboundIdentity(ctx context.Context
 	}
 	ensureCodexIdentityHeaders(headers)
 	enforceCodexIdentityHeaders(headers)
+	// GetByID hydrates Proxy (including proxy-group members). Fail closed on
+	// exhausted groups instead of handing plugins a direct-exit identity.
+	proxyURL, err := resolveAccountProxyURL(ctx, nil, account)
+	if err != nil {
+		return nil, err
+	}
 	return &PluginOutboundIdentity{
 		AccountID:   account.ID,
 		Platform:    account.Platform,
 		AccountType: account.Type,
-		ProxyURL:    resolveAccountProxyURL(account),
+		ProxyURL:    proxyURL,
 		Token:       token,
 		Headers:     headers,
 	}, nil
