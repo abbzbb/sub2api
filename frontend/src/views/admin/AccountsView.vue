@@ -560,7 +560,7 @@ const proxies = ref<AccountProxy[]>([])
 const proxyGroups = ref<ProxyGroup[]>([])
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
-const proxyGroupsByID = computed(() => new Map(proxyGroups.value.map(group => [group.id, group])))
+const proxyGroupsByID = computed(() => new Map((proxyGroups.value ?? []).map(group => [group.id, group])))
 const accountGroupsForRow = (account: Pick<AccountListItem, 'group_ids'>): AdminGroup[] => {
   const groupIDs = account.group_ids ?? []
   if (groupIDs.length === 0) return []
@@ -2692,7 +2692,7 @@ onMounted(async () => {
     console.error('Failed to load proxies:', proxiesResult.reason)
   }
   if (proxyGroupsResult.status === 'fulfilled') {
-    proxyGroups.value = proxyGroupsResult.value
+    proxyGroups.value = Array.isArray(proxyGroupsResult.value) ? proxyGroupsResult.value : []
   } else {
     proxyGroups.value = []
     console.error('Failed to load proxy groups:', proxyGroupsResult.reason)

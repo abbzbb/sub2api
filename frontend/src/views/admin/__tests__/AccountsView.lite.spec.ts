@@ -12,6 +12,7 @@ const {
   getBatchTodayStats,
   getUpstreamBillingProbeSettings,
   getAllProxies,
+  getAllProxyGroups,
   getAllGroups,
   refreshCredentials,
   showError,
@@ -23,6 +24,7 @@ const {
   getBatchTodayStats: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
+  getAllProxyGroups: vi.fn(),
   getAllGroups: vi.fn(),
   refreshCredentials: vi.fn(),
   showError: vi.fn(),
@@ -44,7 +46,7 @@ vi.mock('@/api/admin', () => ({
       refreshCredentials
     },
     proxies: { getAll: getAllProxies },
-    proxyGroups: { getAll: vi.fn().mockResolvedValue([{ id: 9, name: 'grok-pool' }]) },
+    proxyGroups: { getAll: getAllProxyGroups },
     groups: { getAll: getAllGroups }
   }
 }))
@@ -168,6 +170,7 @@ describe('admin AccountsView lite account list', () => {
     getBatchTodayStats.mockReset().mockResolvedValue({ stats: {} })
     getUpstreamBillingProbeSettings.mockReset().mockResolvedValue({ enabled: true })
     getAllProxies.mockReset().mockResolvedValue([])
+    getAllProxyGroups.mockReset().mockResolvedValue([{ id: 9, name: 'grok-pool' }])
     getAllGroups.mockReset().mockResolvedValue([{ id: 7, name: 'codex', platform: 'openai' }])
     refreshCredentials.mockReset()
     showError.mockReset()
