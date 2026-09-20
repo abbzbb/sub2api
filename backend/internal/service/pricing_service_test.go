@@ -1191,3 +1191,28 @@ func TestCalculateCost_ClaudeSonnetCatalogLadderIsDataDriven(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, cost.LongContextBillingApplied, "恰好 200000 不进高档（严格大于）")
 }
+
+func TestWritePricingDataFile_CreatesFileAndOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model_pricing.sha256")
+
+	require.NoError(t, writePricingDataFile(path, []byte("abc\n")))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "abc\n", string(got))
+
+	// overwrite existing
+	require.NoError(t, writePricingDataFile(path, []byte("def\n")))
+	got, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "def\n", string(got))
+}
+
+func TestWritePricingDataFile_CreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "data", "model_pricing.json")
+	require.NoError(t, writePricingDataFile(path, []byte(`{"x":1}`)))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, `{"x":1}`, string(got))
+}

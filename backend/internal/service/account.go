@@ -840,6 +840,25 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
+// hasExplicitModelMapping reports whether the account credentials contain a
+// non-empty user-configured model_mapping. Platform default mappings (Grok,
+// Antigravity) are NOT treated as explicit configuration.
+func (a *Account) hasExplicitModelMapping() bool {
+	if a == nil || a.Credentials == nil {
+		return false
+	}
+	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
+	if len(rawMapping) == 0 {
+		return false
+	}
+	for _, v := range rawMapping {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）。
 //
@@ -852,12 +871,21 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // 例外：DeepSeek 平台的空映射不再是「允许所有」，改按官方模型白名单判定
 // （isDeepseekServableModel）——未知模型名透传上游只会得到 404/400，并误触发
 // per-(账号,模型) 30 分钟冷却；带 [1m] 上下文后缀的写法先归一化再比对。
+//
+// 例外：Grok 平台的默认 model_mapping 仅用于别名/展示归一化，不作为调度白名单。
+// 只有账号 credentials 里显式配置了 model_mapping 时，才按映射过滤（#4098）。
 func (a *Account) IsModelSupported(requestedModel string) bool {
 	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
 	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
 	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
 	// model_mapping 白名单错误排除出候选集，导致 no available accounts / 404（issue #4936）。
 	if a.IsOpenAIPassthroughEnabled() {
+		return true
+	}
+	// Grok default mapping is an alias table, not an allowlist. Without this,
+	// gateway selection rejects any model/id not present in xai.DefaultModelMapping
+	// even though admin "test connection" (direct account path) still succeeds.
+	if a != nil && a.IsGrok() && !a.hasExplicitModelMapping() {
 		return true
 	}
 	mapping := a.GetModelMapping()

@@ -545,9 +545,9 @@ func (s *PricingService) downloadPricingData() error {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
 
-	// 保存到本地文件
+	// 保存到本地文件（写失败只告警：内存数据已更新，服务可继续用）
 	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, body, 0644); err != nil {
+	if err := writePricingDataFile(pricingFile, body); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
 	}
 
@@ -558,7 +558,7 @@ func (s *PricingService) downloadPricingData() error {
 		syncHash = remoteHash
 	}
 	hashFile := s.getHashFilePath()
-	if err := os.WriteFile(hashFile, []byte(syncHash+"\n"), 0644); err != nil {
+	if err := writePricingDataFile(hashFile, []byte(syncHash+"\n")); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save hash: %v", err)
 	}
 
@@ -1081,11 +1081,49 @@ func (s *PricingService) useFallbackPricing() error {
 	}
 
 	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, data, 0644); err != nil { //nolint:gosec // G703: 路径为配置的数据目录 + 硬编码文件名，非请求输入
+	if err := writePricingDataFile(pricingFile, data); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to copy fallback: %v", err)
 	}
 
 	return s.loadPricingData(fallbackFile)
+}
+
+// writePricingDataFile 稳健写入定价数据/哈希文件。
+// Docker 卷里常见 root 拥有的只读 model_pricing.sha256：直接 WriteFile 会 permission denied。
+// 策略：确保父目录存在 → 同目录 .tmp 原子写 → 失败时尝试 chmod/删旧文件后重写。
+// 最终仍失败时返回 error（调用方只记日志，不阻断内存价目更新）。
+func writePricingDataFile(path string, data []byte) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty pricing file path")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("ensure pricing dir %s: %w", dir, err)
+	}
+
+	tmp := path + ".tmp." + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		// 同目录也不可写时，直接报错
+		return fmt.Errorf("write temp %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err == nil {
+		return nil
+	} else {
+		// Rename 失败常见原因：目标只读 / 跨设备 / 权限
+		_ = os.Remove(tmp)
+		if chmodErr := os.Chmod(path, 0644); chmodErr == nil {
+			if writeErr := os.WriteFile(path, data, 0644); writeErr == nil {
+				return nil
+			}
+		}
+		// 再试：删掉旧文件后写入（root 拥有的只读文件仍可能失败）
+		_ = os.Remove(path)
+		if writeErr := os.WriteFile(path, data, 0644); writeErr == nil {
+			return nil
+		} else {
+			return fmt.Errorf("open %s: %w", path, writeErr)
+		}
+	}
 }
 
 // fetchRemoteHash 从远程获取哈希值
