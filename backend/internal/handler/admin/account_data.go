@@ -65,6 +65,7 @@ type DataAccount struct {
 	Credentials        map[string]any `json:"credentials"`
 	Extra              map[string]any `json:"extra,omitempty"`
 	ProxyKey           *string        `json:"proxy_key,omitempty"`
+	ProxyGroupName     *string        `json:"proxy_group_name,omitempty"`
 	Concurrency        int            `json:"concurrency"`
 	Priority           int            `json:"priority"`
 	RateMultiplier     *float64       `json:"rate_multiplier,omitempty"`
@@ -87,10 +88,11 @@ type DataImportResult struct {
 }
 
 type DataImportError struct {
-	Kind     string `json:"kind"`
-	Name     string `json:"name,omitempty"`
-	ProxyKey string `json:"proxy_key,omitempty"`
-	Message  string `json:"message"`
+	Kind           string `json:"kind"`
+	Name           string `json:"name,omitempty"`
+	ProxyKey       string `json:"proxy_key,omitempty"`
+	ProxyGroupName string `json:"proxy_group_name,omitempty"`
+	Message        string `json:"message"`
 }
 
 func buildProxyKey(protocol, host string, port int, username, password string) string {
@@ -154,6 +156,12 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	}
 	dataProxies := dataProxiesFromService(proxies)
 
+	proxyGroupNameByID, err := h.resolveExportProxyGroupNames(ctx, accounts)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
 	dataAccounts := make([]DataAccount, 0, len(accounts))
 	for i := range accounts {
 		acc := accounts[i]
@@ -161,6 +169,12 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 		if acc.ProxyID != nil {
 			if key, ok := proxyKeyByID[*acc.ProxyID]; ok {
 				proxyKey = &key
+			}
+		}
+		var proxyGroupName *string
+		if acc.ProxyGroupID != nil {
+			if name, ok := proxyGroupNameByID[*acc.ProxyGroupID]; ok {
+				proxyGroupName = &name
 			}
 		}
 		var expiresAt *int64
@@ -176,6 +190,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			Credentials:        acc.Credentials,
 			Extra:              service.RedactOpenAICodexTicketExtra(acc.Extra),
 			ProxyKey:           proxyKey,
+			ProxyGroupName:     proxyGroupName,
 			Concurrency:        acc.Concurrency,
 			Priority:           acc.Priority,
 			RateMultiplier:     acc.RateMultiplier,
@@ -229,6 +244,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
 	var privacyAccounts []*service.Account
+	proxyGroupIDByName := make(map[string]*int64)
 
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
@@ -258,6 +274,36 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 		}
 
+		var proxyGroupID *int64
+		if name := strings.TrimSpace(derefDataString(item.ProxyGroupName)); name != "" {
+			if proxyID != nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:           "account",
+					Name:           item.Name,
+					ProxyKey:       derefDataString(item.ProxyKey),
+					ProxyGroupName: name,
+					Message:        "proxy_key and proxy_group_name cannot both be set",
+				})
+				continue
+			}
+			id, lookupErr := h.resolveImportProxyGroupID(ctx, name, proxyGroupIDByName)
+			if lookupErr != nil {
+				return result, lookupErr
+			}
+			if id == nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:           "account",
+					Name:           item.Name,
+					ProxyGroupName: name,
+					Message:        "proxy_group_name not found",
+				})
+				continue
+			}
+			proxyGroupID = id
+		}
+
 		enrichCredentialsFromIDToken(&item)
 
 		accountInput := &service.CreateAccountInput{
@@ -268,6 +314,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			Credentials:          item.Credentials,
 			Extra:                item.Extra,
 			ProxyID:              proxyID,
+			ProxyGroupID:         proxyGroupID,
 			Concurrency:          item.Concurrency,
 			Priority:             item.Priority,
 			RateMultiplier:       item.RateMultiplier,
@@ -424,6 +471,67 @@ func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []se
 		return nil, err
 	}
 	return expandBackupProxyChain(ctx, h.adminService, proxies)
+}
+
+func (h *AccountHandler) resolveExportProxyGroupNames(ctx context.Context, accounts []service.Account) (map[int64]string, error) {
+	if len(accounts) == 0 {
+		return map[int64]string{}, nil
+	}
+	seen := make(map[int64]struct{})
+	ids := make([]int64, 0)
+	for i := range accounts {
+		if accounts[i].ProxyGroupID == nil {
+			continue
+		}
+		id := *accounts[i].ProxyGroupID
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[int64]string{}, nil
+	}
+	groups, err := h.adminService.GetProxyGroupsByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]string, len(groups))
+	for i := range groups {
+		if groups[i].ID <= 0 || strings.TrimSpace(groups[i].Name) == "" {
+			continue
+		}
+		out[groups[i].ID] = groups[i].Name
+	}
+	return out, nil
+}
+
+func (h *AccountHandler) resolveImportProxyGroupID(ctx context.Context, name string, cache map[string]*int64) (*int64, error) {
+	if cached, ok := cache[name]; ok {
+		return cached, nil
+	}
+	group, err := h.adminService.FindProxyGroupByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if group == nil || group.ID <= 0 {
+		cache[name] = nil
+		return nil, nil
+	}
+	id := group.ID
+	cache[name] = &id
+	return &id, nil
+}
+
+func derefDataString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func parseAccountIDs(c *gin.Context) ([]int64, error) {

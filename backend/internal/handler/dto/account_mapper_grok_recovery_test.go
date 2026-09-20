@@ -52,3 +52,40 @@ func TestAccountFromServiceShallow_ExposesFalseWhenGrokRecoveryIsNotPending(t *t
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"grok_free_recovery_pending":false`)
 }
+
+func TestAccountListItemFromAccount_IncludesProxyGroupAndGrokRecovery(t *testing.T) {
+	groupID := int64(9)
+	nextProbeAt := time.Date(2026, 7, 18, 1, 5, 0, 0, time.UTC)
+	src := &Account{
+		ID:                              42,
+		ProxyGroupID:                    &groupID,
+		GrokFreeRecoveryPending:         true,
+		GrokFreeRecoveryNextProbeAt:     &nextProbeAt,
+		GrokFreeRecoveryLastProbeResult: "http_429",
+	}
+
+	got := AccountListItemFromAccount(src)
+	require.NotNil(t, got)
+	require.NotNil(t, got.ProxyGroupID)
+	require.Equal(t, groupID, *got.ProxyGroupID)
+	require.True(t, got.GrokFreeRecoveryPending)
+	require.Equal(t, nextProbeAt, *got.GrokFreeRecoveryNextProbeAt)
+	require.Equal(t, "http_429", got.GrokFreeRecoveryLastProbeResult)
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"proxy_group_id":9`)
+	require.Contains(t, string(raw), `"grok_free_recovery_pending":true`)
+}
+
+func TestAccountListItemFromAccount_EmitsNullProxyGroupAndFalseGrokRecovery(t *testing.T) {
+	got := AccountListItemFromAccount(&Account{ID: 43})
+	require.NotNil(t, got)
+	require.Nil(t, got.ProxyGroupID)
+	require.False(t, got.GrokFreeRecoveryPending)
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"proxy_group_id":null`)
+	require.Contains(t, string(raw), `"grok_free_recovery_pending":false`)
+}

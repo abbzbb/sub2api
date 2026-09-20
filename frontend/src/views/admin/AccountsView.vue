@@ -337,13 +337,20 @@
           </template>
           <template #cell-proxy="{ row }">
             <div class="flex flex-col gap-1">
+              <div v-if="accountProxyGroupName(row)" class="flex items-center gap-2" data-testid="account-proxy-group">
+                <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.proxyGroup') }}</span>
+                <span class="text-sm text-gray-700 dark:text-gray-300">{{ accountProxyGroupName(row) }}</span>
+              </div>
+              <div v-else-if="row.proxy_group_id" class="flex items-center gap-2" data-testid="account-proxy-group">
+                <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.proxyGroup') }}</span>
+              </div>
               <div v-if="row.proxy" class="flex items-center gap-2">
                 <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
                 <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
                   ({{ row.proxy.country_code }})
                 </span>
               </div>
-              <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
+              <span v-else-if="!row.proxy_group_id" class="text-sm text-gray-400 dark:text-dark-500">-</span>
               <div v-if="row.proxy && row.proxy.expires_at" class="flex items-center gap-2 text-xs">
                 <span class="text-gray-600 dark:text-gray-300">{{ formatDateTime(row.proxy.expires_at) }}</span>
                 <span :class="proxyExpiryBadge(row.proxy)">{{ proxyExpiryText(row.proxy) }}</span>
@@ -553,10 +560,16 @@ const proxies = ref<AccountProxy[]>([])
 const proxyGroups = ref<ProxyGroup[]>([])
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
+const proxyGroupsByID = computed(() => new Map(proxyGroups.value.map(group => [group.id, group])))
 const accountGroupsForRow = (account: Pick<AccountListItem, 'group_ids'>): AdminGroup[] => {
   const groupIDs = account.group_ids ?? []
   if (groupIDs.length === 0) return []
   return groupIDs.map(id => groupsByID.value.get(id)).filter((group): group is AdminGroup => Boolean(group))
+}
+const accountProxyGroupName = (account: Pick<AccountListItem, 'proxy_group_id'>): string => {
+  const id = account.proxy_group_id
+  if (id == null || id <= 0) return ''
+  return proxyGroupsByID.value.get(id)?.name || ''
 }
 const accountTableRef = ref<HTMLElement | null>(null)
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
@@ -1395,6 +1408,26 @@ const inAutoRefreshSilentWindow = () => {
   return Date.now() < autoRefreshSilentUntil.value
 }
 
+const mergeLiteAccountRow = (current: Account, next: Account): Account => {
+  const merged: Account = { ...next }
+  if (next.grok_free_recovery_pending === undefined) {
+    merged.grok_free_recovery_pending = current.grok_free_recovery_pending
+    if (next.grok_free_recovery_next_probe_at === undefined) {
+      merged.grok_free_recovery_next_probe_at = current.grok_free_recovery_next_probe_at
+    }
+    if (next.grok_free_recovery_last_probe_at === undefined) {
+      merged.grok_free_recovery_last_probe_at = current.grok_free_recovery_last_probe_at
+    }
+    if (next.grok_free_recovery_last_probe_result === undefined) {
+      merged.grok_free_recovery_last_probe_result = current.grok_free_recovery_last_probe_result
+    }
+  }
+  if (next.proxy_group_id === undefined) {
+    merged.proxy_group_id = current.proxy_group_id
+  }
+  return merged
+}
+
 const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
   return (
     current.updated_at !== next.updated_at ||
@@ -1405,6 +1438,8 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.status !== next.status ||
     current.rate_limit_reset_at !== next.rate_limit_reset_at ||
     current.grok_free_recovery_pending !== next.grok_free_recovery_pending ||
+    current.grok_free_recovery_next_probe_at !== next.grok_free_recovery_next_probe_at ||
+    current.proxy_group_id !== next.proxy_group_id ||
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
@@ -1431,10 +1466,11 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
       changed = true
       return nextRow
     }
-    if (shouldReplaceAutoRefreshRow(currentRow, nextRow)) {
+    const mergedRow = mergeLiteAccountRow(currentRow, nextRow)
+    if (shouldReplaceAutoRefreshRow(currentRow, mergedRow)) {
       changed = true
-      syncAccountRefs(nextRow)
-      return nextRow
+      syncAccountRefs(mergedRow)
+      return mergedRow
     }
     return currentRow
   })

@@ -29,7 +29,7 @@ export default {
       dataExportFailed: 'Failed to export data',
       dataImportTitle: 'Import Data',
       dataImportHint: 'Upload the exported JSON file to import accounts and proxies.',
-      dataImportWarning: 'Import will create new accounts/proxies; groups must be bound manually. Ensure existing data does not conflict.',
+      dataImportWarning: 'Import will create new accounts/proxies; scheduling groups must be bound manually. Proxy pools are restored by existing group name (pools are not created). A missing name fails that account. Ensure existing data does not conflict.',
       dataImportFile: 'Data file',
       dataImportButton: 'Start Import',
       dataImporting: 'Importing...',

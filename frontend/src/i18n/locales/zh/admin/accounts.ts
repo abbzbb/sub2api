@@ -29,7 +29,7 @@ export default {
       dataExportFailed: '数据导出失败',
       dataImportTitle: '导入数据',
       dataImportHint: '上传导出的 JSON 文件以批量导入账号与代理。',
-      dataImportWarning: '导入将创建新账号与代理，分组需手工绑定；请确认已有数据不会冲突。',
+      dataImportWarning: '导入将创建新账号与代理，调度分组需手工绑定；代理池按已有同名组还原（不会新建代理池），找不到同名组则该账号失败。请确认已有数据不会冲突。',
       dataImportFile: '数据文件',
       dataImportButton: '开始导入',
       dataImporting: '导入中...',
