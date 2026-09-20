@@ -2,7 +2,9 @@ package dto
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -56,6 +58,67 @@ func TestAccountFromServiceShallow_RedactsSensitiveCredentials(t *testing.T) {
 
 	// 原始 service.Account 不应被改动
 	require.Equal(t, "rt-secret", src.Credentials["refresh_token"])
+}
+
+func TestAccountFromServiceShallow_RedactsOllamaCloudManagedExtra(t *testing.T) {
+	snapshot := map[string]any{
+		"status":          service.OllamaCloudUsageStatusOK,
+		"last_attempt_at": "2026-07-22T12:00:00Z",
+		"next_refresh_at": "2026-07-22T13:00:00Z",
+		"data":            map[string]any{"plan": "Pro"},
+	}
+	src := &service.Account{
+		ID: 9, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://ollama.com", "api_key": "secret-key"},
+		Extra: map[string]any{
+			service.OllamaCloudUsageSessionExtraKey:     "ciphertext-secret",
+			service.OllamaCloudUsageAutoRefreshExtraKey: true,
+			service.OllamaCloudUsageSnapshotExtraKey:    snapshot,
+			"ordinary":                                  "kept",
+		},
+	}
+
+	got := AccountFromServiceShallow(src)
+	require.NotContains(t, got.Extra, service.OllamaCloudUsageSessionExtraKey)
+	require.NotContains(t, got.Extra, service.OllamaCloudUsageAutoRefreshExtraKey)
+	require.NotContains(t, got.Extra, service.OllamaCloudUsageSnapshotExtraKey)
+	require.Equal(t, "kept", got.Extra["ordinary"])
+	require.NotNil(t, got.OllamaCloudUsage)
+	require.True(t, got.OllamaCloudUsage.Configured)
+	require.True(t, got.OllamaCloudUsage.AutoRefreshEnabled)
+	require.Equal(t, "Pro", got.OllamaCloudUsage.Snapshot.Data.Plan)
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "ciphertext-secret")
+	require.NotContains(t, string(raw), "secret-key")
+	require.Contains(t, src.Extra, service.OllamaCloudUsageSessionExtraKey)
+}
+
+func TestAccountFromServiceShallow_RedactsCodexTurnTicketState(t *testing.T) {
+	blob := "gAAAAA" + strings.Repeat("B", 286)
+	src := &service.Account{
+		ID: 41, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Extra: map[string]any{
+			"codex_harvest_proxy_url": "http://user:legacy-proxy-secret@proxy.example.com:8080",
+			"codex_turn_ticket:gpt-6-astra": map[string]any{
+				"state":       blob,
+				"length":      292,
+				"model":       "gpt-6-astra",
+				"captured_at": time.Now().Add(-time.Minute),
+				"expires_at":  time.Now().Add(time.Hour),
+				"attempts":    3,
+			},
+		},
+	}
+	got := AccountFromServiceShallow(src)
+	require.NotContains(t, got.Extra, "codex_turn_ticket:gpt-6-astra")
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), blob)
+	require.NotContains(t, string(raw), "legacy-proxy-secret")
+	require.NotContains(t, got.Extra, "codex_harvest_proxy_url")
+	require.Contains(t, src.Extra, "codex_harvest_proxy_url")
 }
 
 func TestAccountFromServiceShallow_NilCredentialsOmitsStatus(t *testing.T) {

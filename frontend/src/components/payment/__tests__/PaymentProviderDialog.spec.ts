@@ -13,6 +13,7 @@ const messages: Record<string, string> = {
   'admin.settings.payment.customMethodType': 'Payment type',
   'admin.settings.payment.customMethodUpstreamType': 'Upstream type',
   'admin.settings.payment.customMethodDisplayName': 'Display name',
+  'admin.settings.payment.customMethodDisplayNamePlaceholder': '信用卡',
   'admin.settings.payment.paymentGuideTrigger': 'View payment guide',
   'admin.settings.payment.alipayGuideSummary': 'Desktop prefers QR precreate and falls back to cashier; mobile prefers WAP checkout.',
   'admin.settings.payment.wxpayGuideSummary': 'Desktop prefers Native QR; mobile routes to JSAPI or H5 based on browser context.',
@@ -165,7 +166,7 @@ describe('PaymentProviderDialog payment guide', () => {
     expect(payload.config.accountId).toBe('')
   })
 
-  it('serializes EasyPay custom methods and adds them to supported_types', async () => {
+  it.each(['epay', 'usdt.trc20'])('serializes EasyPay upstream type %s and adds the local type to supported_types', async (upstreamType) => {
     const provider = providerFactory({
       provider_key: 'easypay',
       name: 'EasyPay',
@@ -196,7 +197,7 @@ describe('PaymentProviderDialog payment guide', () => {
     }
 
     await ldcTypeInput.setValue('ldc')
-    await upstreamTypeInput.setValue('epay')
+    await upstreamTypeInput.setValue(upstreamType)
     await displayNameInput.setValue('LDC')
     await wrapper.find('form').trigger('submit.prevent')
 
@@ -204,11 +205,15 @@ describe('PaymentProviderDialog payment guide', () => {
       config: Record<string, string>
       supported_types: string[]
     }
-    expect(payload.config.customMethods).toBe('[{"type":"ldc","upstreamType":"epay","displayName":"LDC"}]')
+    expect(JSON.parse(payload.config.customMethods)).toEqual([{ type: 'ldc', upstreamType, displayName: 'LDC' }])
     expect(payload.supported_types).toEqual(['alipay', 'wxpay', 'ldc'])
   })
 
-  it('rejects custom EasyPay method types with built-in payment prefixes', async () => {
+  it.each([
+    ['alipay_hk', 'hkpay'],
+    ['usdt.trc20', 'usdt.trc20'],
+    ['usdt_trc20', 'usdt/trc20'],
+  ])('rejects invalid EasyPay mapping %s to %s', async (type, upstreamType) => {
     const provider = providerFactory({
       provider_key: 'easypay',
       name: 'EasyPay',
@@ -238,9 +243,9 @@ describe('PaymentProviderDialog payment guide', () => {
       throw new Error('custom method inputs not found')
     }
 
-    await typeInput.setValue('alipay_hk')
-    await upstreamTypeInput.setValue('hkpay')
-    await displayNameInput.setValue('Hong Kong Alipay')
+    await typeInput.setValue(type)
+    await upstreamTypeInput.setValue(upstreamType)
+    await displayNameInput.setValue('Custom payment')
     await wrapper.find('form').trigger('submit.prevent')
 
     expect(wrapper.emitted('save')).toBeUndefined()

@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogSinkHealth } from '@/api/admin/ops'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 const appStore = useAppStore()
 const { t } = useI18n()
+
+// 与 DataTable 一致：< 768px 切换为卡片视图，避免宽表在移动端被截断。
+const isDesktopViewport = useMediaQuery('(min-width: 768px)')
 
 const props = withDefaults(defineProps<{
   platformFilter?: string
@@ -36,6 +41,7 @@ const runtimeLoading = ref(false)
 const runtimeSaving = ref(false)
 const runtimeConfig = reactive<OpsRuntimeLogConfig>({
   level: 'info',
+  persist_access_logs: false,
   enable_sampling: false,
   sampling_initial: 100,
   sampling_thereafter: 100,
@@ -48,6 +54,7 @@ const filters = reactive({
   time_range: '1h' as '5m' | '30m' | '1h' | '6h' | '24h' | '7d' | '30d',
   start_time: '',
   end_time: '',
+  host: '',
   level: '',
   component: '',
   request_id: '',
@@ -175,6 +182,7 @@ const buildQuery = () => {
   }
   if (filters.start_time) query.start_time = toRFC3339(filters.start_time)
   if (filters.end_time) query.end_time = toRFC3339(filters.end_time)
+  if (filters.host.trim()) query.host = filters.host.trim()
   if (filters.level.trim()) query.level = filters.level.trim()
   if (filters.component.trim()) query.component = filters.component.trim()
   if (filters.request_id.trim()) query.request_id = filters.request_id.trim()
@@ -224,6 +232,7 @@ const loadRuntimeConfig = async () => {
   try {
     const cfg = await opsAPI.getRuntimeLogConfig()
     runtimeConfig.level = cfg.level
+    runtimeConfig.persist_access_logs = cfg.persist_access_logs
     runtimeConfig.enable_sampling = cfg.enable_sampling
     runtimeConfig.sampling_initial = cfg.sampling_initial
     runtimeConfig.sampling_thereafter = cfg.sampling_thereafter
@@ -242,6 +251,7 @@ const saveRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.updateRuntimeLogConfig({ ...runtimeConfig })
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter
@@ -265,6 +275,7 @@ const resetRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.resetRuntimeLogConfig()
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter
@@ -288,6 +299,7 @@ const cleanupCurrentFilter = async () => {
     const payload = {
       start_time: toRFC3339(filters.start_time),
       end_time: toRFC3339(filters.end_time),
+      host: filters.host.trim() || undefined,
       level: filters.level.trim() || undefined,
       component: filters.component.trim() || undefined,
       request_id: filters.request_id.trim() || undefined,
@@ -305,7 +317,11 @@ const cleanupCurrentFilter = async () => {
     await Promise.all([fetchLogs(), fetchHealth()])
   } catch (err: any) {
     console.error('[OpsSystemLogTable] Failed to cleanup logs', err)
-    appStore.showError(err?.response?.data?.detail || t('admin.ops.systemLogs.cleanupFailed'))
+    appStore.showError(
+      extractApiErrorMessage(err, t('admin.ops.systemLogs.cleanupFailed'), {
+        OPS_SYSTEM_LOG_CLEANUP_FILTER_REQUIRED: t('admin.ops.systemLogs.cleanupFilterRequired')
+      })
+    )
   }
 }
 
@@ -313,6 +329,7 @@ const resetFilters = () => {
   filters.time_range = '1h'
   filters.start_time = ''
   filters.end_time = ''
+  filters.host = ''
   filters.level = ''
   filters.component = ''
   filters.request_id = ''
@@ -406,6 +423,7 @@ onMounted(async () => {
         <label class="text-xs text-gray-600 dark:text-gray-300">
           {{ t('admin.ops.systemLogs.retentionDays') }}
           <input v-model.number="runtimeConfig.retention_days" type="number" min="1" max="3650" class="input mt-1" />
+          <span class="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">{{ t('admin.ops.systemLogs.retentionDaysHint') }}</span>
         </label>
         <div class="md:col-span-2 xl:col-span-6">
           <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -417,6 +435,10 @@ onMounted(async () => {
               <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
                 <input v-model="runtimeConfig.enable_sampling" type="checkbox" />
                 {{ t('admin.ops.systemLogs.sampling') }}
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <input v-model="runtimeConfig.persist_access_logs" type="checkbox" />
+                {{ t('admin.ops.systemLogs.persistAccessLogs') }}
               </label>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
@@ -430,6 +452,7 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.systemLogs.persistAccessLogsHint') }}</p>
       <p v-if="health.last_error" class="mt-2 text-xs text-red-600 dark:text-red-400">{{ t('admin.ops.systemLogs.latestWriteError') }} {{ health.last_error }}</p>
     </div>
 
@@ -453,6 +476,10 @@ onMounted(async () => {
       <label class="text-xs text-gray-600 dark:text-gray-300">
         {{ t('admin.ops.systemLogs.component') }}
         <input v-model="filters.component" type="text" class="input mt-1" :placeholder="t('admin.ops.systemLogs.componentPlaceholder')" />
+      </label>
+      <label class="text-xs text-gray-600 dark:text-gray-300">
+        {{ t('admin.ops.systemLogs.host') }}
+        <input v-model="filters.host" type="text" class="input mt-1" />
       </label>
       <label class="text-xs text-gray-600 dark:text-gray-300">
         request_id
@@ -498,11 +525,28 @@ onMounted(async () => {
     <div class="overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
       <div v-if="loading" class="px-4 py-8 text-center text-sm text-gray-500">{{ t('common.loading') }}</div>
       <div v-else-if="!hasData" class="px-4 py-8 text-center text-sm text-gray-500">{{ t('admin.ops.systemLogs.empty') }}</div>
+      <div v-else-if="!isDesktopViewport" class="divide-y divide-gray-100 dark:divide-dark-800">
+        <div v-for="row in logs" :key="row.id" class="space-y-1.5 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <span class="inline-flex rounded-full px-2 py-0.5 text-xs font-semibold" :class="levelBadgeClass(row.level)">
+              {{ row.level }}
+            </span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">{{ formatTime(row.created_at) }}</span>
+          </div>
+          <div v-if="row.host" class="truncate text-xs text-gray-500 dark:text-gray-400" :title="row.host">
+            {{ row.host }}
+          </div>
+          <div class="whitespace-normal break-all text-xs text-gray-700 dark:text-gray-300">
+            {{ formatSystemLogDetail(row) }}
+          </div>
+        </div>
+      </div>
       <div v-else class="overflow-auto">
         <table class="min-w-full table-fixed divide-y divide-gray-200 dark:divide-dark-700">
           <thead class="bg-gray-50 dark:bg-dark-900">
             <tr>
               <th class="w-[170px] px-3 py-2 text-left text-[11px] font-semibold text-gray-500">{{ t('admin.ops.systemLogs.time') }}</th>
+              <th class="w-[160px] px-3 py-2 text-left text-[11px] font-semibold text-gray-500">{{ t('admin.ops.systemLogs.host') }}</th>
               <th class="w-[80px] px-3 py-2 text-left text-[11px] font-semibold text-gray-500">{{ t('admin.ops.systemLogs.level') }}</th>
               <th class="px-3 py-2 text-left text-[11px] font-semibold text-gray-500">{{ t('admin.ops.systemLogs.logDetails') }}</th>
             </tr>
@@ -510,6 +554,9 @@ onMounted(async () => {
           <tbody class="divide-y divide-gray-100 dark:divide-dark-800">
             <tr v-for="row in logs" :key="row.id" class="align-top">
               <td class="px-3 py-2 text-xs text-gray-700 dark:text-gray-300">{{ formatTime(row.created_at) }}</td>
+              <td class="px-3 py-2 text-xs text-gray-700 dark:text-gray-300">
+                <span class="block truncate" :title="row.host || '-'">{{ row.host || '-' }}</span>
+              </td>
               <td class="px-3 py-2 text-xs">
                 <span class="inline-flex rounded-full px-2 py-0.5 font-semibold" :class="levelBadgeClass(row.level)">
                   {{ row.level }}

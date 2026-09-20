@@ -5,7 +5,7 @@
       <nav class="mx-auto flex max-w-6xl items-center justify-between">
         <router-link to="/home" class="flex items-center gap-3">
           <div class="h-10 w-10 overflow-hidden rounded-xl shadow-md">
-            <img :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
+            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
           </div>
           <span class="text-lg font-semibold tracking-tight text-gray-900 dark:text-white">{{ siteName }}</span>
         </router-link>
@@ -420,13 +420,16 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores'
+import { FeatureFlags, resolveFeatureFlag } from '@/utils/featureFlags'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { buildGatewayUrl } from '@/api/client'
+import { formatDateLocalInput } from '@/utils/format'
 import { sanitizeUrl } from '@/utils/url'
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
+const subscriptionFeatureEnabled = computed(() => resolveFeatureFlag(appStore.cachedPublicSettings, FeatureFlags.subscription))
 
 // ==================== Site Settings (same as HomeView) ====================
 
@@ -490,7 +493,6 @@ function setDateRange(key: DateRangeKey) {
 
 function getDateParams(): string {
   const now = new Date()
-  const fmt = (d: Date) => d.toISOString().split('T')[0]
   const params = new URLSearchParams()
 
   if (currentRange.value === 'custom') {
@@ -499,13 +501,13 @@ function getDateParams(): string {
       params.set('end_date', customEndDate.value)
     }
   } else {
-    const end = fmt(now)
+    const end = formatDateLocalInput(now)
     let start: string
     switch (currentRange.value) {
       case 'today': start = end; break
-      case '7d': start = fmt(new Date(now.getTime() - 7 * 86400000)); break
-      case '30d': start = fmt(new Date(now.getTime() - 30 * 86400000)); break
-      default: start = fmt(new Date(now.getTime() - 30 * 86400000))
+      case '7d': start = formatDateLocalInput(new Date(now.getTime() - 7 * 86400000)); break
+      case '30d': start = formatDateLocalInput(new Date(now.getTime() - 30 * 86400000)); break
+      default: start = formatDateLocalInput(new Date(now.getTime() - 30 * 86400000))
     }
     params.set('start_date', start)
     params.set('end_date', end)
@@ -728,7 +730,9 @@ const detailRows = computed<DetailRow[]>(() => {
   } else {
     rows.push({
       iconBg: 'bg-emerald-500/10', iconColor: 'text-emerald-500', iconSvg: ICON_CHECK,
-      label: t('keyUsage.subscriptionType'), value: data.planName || t('keyUsage.walletBalance'), valueClass: '',
+      // 订阅功能关闭后这一行只会是「钱包余额」，标签改用不带「订阅」字样的「计费方式」。
+      label: subscriptionFeatureEnabled.value ? t('keyUsage.subscriptionType') : t('keyUsage.billingType'),
+      value: data.planName || t('keyUsage.walletBalance'), valueClass: '',
     })
 
     if (data.subscription) {

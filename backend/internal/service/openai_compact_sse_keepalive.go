@@ -1,6 +1,9 @@
 package service
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -40,15 +43,30 @@ type openAICompactSSEKeepalive struct {
 // 响应构造都会先在心跳互斥锁下停拍，未被显式拦截的写回路径（如 Forward
 // 内部的本地拒绝）也不会与心跳 goroutine 产生数据竞争或字节交错。
 func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func() {
-	if c == nil || c.Writer == nil || interval <= 0 || !openAICompactClientWantsStream(c) {
+	if !openAICompactClientWantsStream(c) {
 		return func() {}
 	}
+	return startOpenAISSEKeepalive(c, interval)
+}
+
+// startOpenAISSEKeepalive 是不检查 compact 标记的内部入口，供【已经确定处于
+// SSE 流式上下文】的调用方使用（例如 /v1/responses 透传：进入流式循环时上游
+// 已返回 text/event-stream，SSE 响应头也已设好）。
+//
+// 心跳字节由 OpenAICompactKeepaliveAdjustedWrittenSize 统一排除，因此不会污染
+// "是否已向客户端写出语义响应"的 failover 判定（见 #3887）。
+func startOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
+	if c == nil || c.Writer == nil || interval <= 0 {
+		return func() {}
+	}
+	originalWriter := c.Writer
 	k := &openAICompactSSEKeepalive{
-		writer: c.Writer,
+		writer: originalWriter,
 		stop:   make(chan struct{}),
 	}
 	c.Set(openAICompactSSEKeepaliveKey, k)
-	c.Writer = &openAICompactKeepaliveWriter{ResponseWriter: c.Writer, k: k}
+	wrappedWriter := &openAICompactKeepaliveWriter{ResponseWriter: originalWriter, k: k}
+	c.Writer = wrappedWriter
 
 	var reqDone <-chan struct{}
 	if c.Request != nil {
@@ -71,7 +89,14 @@ func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func
 			timer.Reset(interval)
 		}
 	}()
-	return k.Stop
+	return func() {
+		k.Stop()
+		// Do not leave a pooled middleware writer reachable through the compact
+		// wrapper after the request finishes.
+		if current, ok := c.Writer.(*openAICompactKeepaliveWriter); ok && current == wrappedWriter {
+			c.Writer = originalWriter
+		}
+	}
 }
 
 // beat 在锁内提交（首次）响应头并写出一条 SSE 注释行；返回 false 表示心跳已
@@ -149,21 +174,28 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 	if c == nil || c.Writer == nil {
 		return -1
 	}
-	value, ok := c.Get(openAICompactSSEKeepaliveKey)
-	if !ok {
-		return c.Writer.Size()
+	streamKeepaliveBytes := 0
+	if value, ok := c.Get(openAIStreamKeepaliveBytesKey); ok {
+		streamKeepaliveBytes, _ = value.(int)
 	}
-	k, ok := value.(*openAICompactSSEKeepalive)
-	if !ok || k == nil {
-		return c.Writer.Size()
+	size := c.Writer.Size()
+	compactKeepaliveBytes := 0
+	if value, ok := c.Get(openAICompactSSEKeepaliveKey); ok {
+		if k, valid := value.(*openAICompactSSEKeepalive); valid && k != nil {
+			k.mu.Lock()
+			size = k.writer.Size()
+			compactKeepaliveBytes = k.bytes
+			k.mu.Unlock()
+		}
 	}
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	size := k.writer.Size()
 	if size < 0 {
 		return size
 	}
-	if real := size - k.bytes; real > 0 {
+	keepaliveBytes := compactKeepaliveBytes + streamKeepaliveBytes
+	if keepaliveBytes <= 0 {
+		return size
+	}
+	if real := size - keepaliveBytes; real > 0 {
 		return real
 	}
 	return -1
@@ -181,7 +213,7 @@ type openAICompactKeepaliveWriter struct {
 // suspend 停拍心跳；幂等。任何响应构造（含 Header 访问——写响应必先操作
 // 响应头）都视为请求侧接管 ResponseWriter。
 func (w *openAICompactKeepaliveWriter) suspend() {
-	if w == nil || w.k == nil {
+	if w.k == nil {
 		return
 	}
 	w.k.Stop()
@@ -189,7 +221,7 @@ func (w *openAICompactKeepaliveWriter) suspend() {
 
 func (w *openAICompactKeepaliveWriter) Header() http.Header {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return http.Header{}
 	}
 	return w.ResponseWriter.Header()
@@ -197,7 +229,7 @@ func (w *openAICompactKeepaliveWriter) Header() http.Header {
 
 func (w *openAICompactKeepaliveWriter) Write(data []byte) (int, error) {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return 0, nil
 	}
 	return w.ResponseWriter.Write(data)
@@ -205,7 +237,7 @@ func (w *openAICompactKeepaliveWriter) Write(data []byte) (int, error) {
 
 func (w *openAICompactKeepaliveWriter) WriteString(s string) (int, error) {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return 0, nil
 	}
 	return w.ResponseWriter.WriteString(s)
@@ -213,7 +245,7 @@ func (w *openAICompactKeepaliveWriter) WriteString(s string) (int, error) {
 
 func (w *openAICompactKeepaliveWriter) WriteHeader(code int) {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -221,7 +253,7 @@ func (w *openAICompactKeepaliveWriter) WriteHeader(code int) {
 
 func (w *openAICompactKeepaliveWriter) WriteHeaderNow() {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return
 	}
 	w.ResponseWriter.WriteHeaderNow()
@@ -229,50 +261,58 @@ func (w *openAICompactKeepaliveWriter) WriteHeaderNow() {
 
 func (w *openAICompactKeepaliveWriter) Flush() {
 	w.suspend()
-	if w == nil || w.ResponseWriter == nil {
+	if w.ResponseWriter == nil {
 		return
 	}
 	w.ResponseWriter.Flush()
 }
 
-func (w *openAICompactKeepaliveWriter) Status() int {
-	if w == nil {
-		return 0
-	}
-	if w.k != nil {
-		w.k.mu.Lock()
-		defer w.k.mu.Unlock()
-	}
+func (w *openAICompactKeepaliveWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w.ResponseWriter == nil {
+		return nil, nil, errors.New("response writer released")
+	}
+	return w.ResponseWriter.Hijack()
+}
+
+func (w *openAICompactKeepaliveWriter) CloseNotify() <-chan bool {
+	if w.ResponseWriter == nil {
+		ch := make(chan bool)
+		close(ch)
+		return ch
+	}
+	return w.ResponseWriter.CloseNotify()
+}
+
+func (w *openAICompactKeepaliveWriter) Pusher() http.Pusher {
+	if w.ResponseWriter == nil {
+		return nil
+	}
+	return w.ResponseWriter.Pusher()
+}
+
+func (w *openAICompactKeepaliveWriter) Status() int {
+	if w.k == nil || w.ResponseWriter == nil {
 		return 0
 	}
+	w.k.mu.Lock()
+	defer w.k.mu.Unlock()
 	return w.ResponseWriter.Status()
 }
 
 func (w *openAICompactKeepaliveWriter) Size() int {
-	if w == nil {
-		return -1
+	if w.k == nil || w.ResponseWriter == nil {
+		return 0
 	}
-	if w.k != nil {
-		w.k.mu.Lock()
-		defer w.k.mu.Unlock()
-	}
-	if w.ResponseWriter == nil {
-		return -1
-	}
+	w.k.mu.Lock()
+	defer w.k.mu.Unlock()
 	return w.ResponseWriter.Size()
 }
 
 func (w *openAICompactKeepaliveWriter) Written() bool {
-	if w == nil {
+	if w.k == nil || w.ResponseWriter == nil {
 		return false
 	}
-	if w.k != nil {
-		w.k.mu.Lock()
-		defer w.k.mu.Unlock()
-	}
-	if w.ResponseWriter == nil {
-		return false
-	}
+	w.k.mu.Lock()
+	defer w.k.mu.Unlock()
 	return w.ResponseWriter.Written()
 }

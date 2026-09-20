@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,6 +22,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	c *gin.Context,
 	account *Account,
 	reqBody map[string]any,
+	clientPromptCacheKey string,
+	executionScope string,
 	token string,
 	decision OpenAIWSProtocolDecision,
 	isCodexCLI bool,
@@ -30,10 +33,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	startTime time.Time,
 	attempt int,
 	lastFailureReason string,
+	agentTaskRecoveryTried *bool,
 ) (*OpenAIForwardResult, error) {
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	responseModelObserver := &upstreamResponseModelObserver{}
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
@@ -59,9 +64,22 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	payload := s.buildOpenAIWSCreatePayload(reqBody, account)
 	payloadStrategy, removedKeys := applyOpenAIWSRetryPayloadStrategy(payload, attempt)
+	turnState := ""
+	turnMetadata := ""
+	if c != nil && c.Request != nil {
+		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
+	}
+	setOpenAIWSTurnMetadata(payload, turnMetadata)
+	applyStagedCodexFingerprintClientMetadata(c, account, payload)
 	previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
 	previousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
-	promptCacheKey := openAIWSPayloadString(payload, "prompt_cache_key")
+	promptCacheKey := strings.TrimSpace(clientPromptCacheKey)
+	if promptCacheKey == "" {
+		// Fingerprint convergence may inject a default key when the client did
+		// not send one; retain that fallback without replacing an explicit raw key.
+		promptCacheKey = openAIWSPayloadString(payload, "prompt_cache_key")
+	}
 	_, hasTools := payload["tools"]
 	debugEnabled := isOpenAIWSModeDebugEnabled()
 	payloadBytes := -1
@@ -76,13 +94,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if raw, ok := payload["stream"]; ok {
 		streamValue = normalizeOpenAIWSLogValue(strings.TrimSpace(fmt.Sprintf("%v", raw)))
 	}
-	turnState := ""
-	turnMetadata := ""
-	if c != nil && c.Request != nil {
-		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
-		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
-	}
-	setOpenAIWSTurnMetadata(payload, turnMetadata)
 	payloadEventType := openAIWSPayloadString(payload, "type")
 	if payloadEventType == "" {
 		payloadEventType = "response.create"
@@ -114,6 +125,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
 	}
+	// 与 WS 接入路径共用执行作用域：codex 多智能体共用 session-id，turn state 与
+	// store=false 的连接绑定必须按线程隔离，同一线程在两条路径之间也才能共享状态。
+	// 作用域由 Forward 从改写前的原始请求算出后传入，reqBody 此时已带账号 namespace。
+	if executionScope = strings.TrimSpace(executionScope); executionScope != "" {
+		sessionHash = executionScope
+	}
 	if turnState == "" && stateStore != nil && sessionHash != "" {
 		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 			turnState = savedTurnState
@@ -134,7 +151,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
-	wsHeaders, sessionResolution, buildHdrErr := s.buildOpenAIWSHeaders(ctx, c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	wsHeaders, sessionResolution, buildHdrErr := s.buildOpenAIWSHeaders(
+		ctx,
+		c,
+		account,
+		token,
+		decision,
+		isCodexCLI,
+		turnState,
+		turnMetadata,
+		promptCacheKey,
+		openAIWSPayloadString(payload, "model"),
+		openAIWSPayloadString(payload, "service_tier"),
+	)
 	if buildHdrErr != nil {
 		return nil, fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
@@ -174,9 +203,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	defer acquireCancel()
 
 	lease, err := s.getOpenAIWSConnPool().Acquire(acquireCtx, openAIWSAcquireRequest{
-		Account:         account,
-		WSURL:           wsURL,
-		Headers:         wsHeaders,
+		Account: account,
+		WSURL:   wsURL,
+		Headers: wsHeaders,
+		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, error) {
+			return s.refreshOpenAIAgentIdentityHeaders(factoryCtx, account, headers)
+		},
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
 		ProxyURL: func() string {
@@ -187,6 +219,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}(),
 	})
 	if err != nil {
+		var agentDialErr *openAIWSDialError
+		if s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
+			*agentTaskRecoveryTried = true
+			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, account.GetCredential("task_id")); recoveryErr != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			return nil, &agentIdentityTaskRecoveredError{}
+		}
+		s.handleOpenAIWSDialTransientFailure(ctx, account, mappedModel, err)
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
 		logOpenAIWSModeInfo(
 			"acquire_fail account_id=%d account_type=%s transport=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_new_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
@@ -211,7 +252,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		)
 		var dialErr *openAIWSDialError
 		if errors.As(err, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
-			s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(err.Error()))
+			s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(err.Error()), mappedModel)
 		}
 		return nil, wrapOpenAIWSFallback(classifyOpenAIWSAcquireError(err), err)
 	}
@@ -227,12 +268,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}()
 	connID := strings.TrimSpace(lease.ConnID())
 	logOpenAIWSModeDebug(
-		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
+		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_idle_ms=%d conn_age_ms=%d upstream_pings=%d conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
 		account.ID,
 		account.Type,
 		normalizeOpenAIWSLogValue(string(decision.Transport)),
 		connID,
 		lease.Reused(),
+		lease.IdleBefore().Milliseconds(),
+		lease.AgeBefore().Milliseconds(),
+		lease.UpstreamPingCount(),
 		lease.ConnPickDuration().Milliseconds(),
 		lease.QueueWaitDuration().Milliseconds(),
 		previousResponseID != "",
@@ -339,6 +383,60 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	flushedBufferedEventCount := 0
 	firstEventType := ""
 	lastEventType := ""
+	upstreamTerminalEvent := ""
+	clientDisconnected := false
+	clientDisconnectDrainStartedAt := time.Time{}
+	readTimeout := s.openAIWSReadTimeout()
+	upstreamReadCtx := ctx
+	upstreamReadDetached := false
+	clientRequestCanceled := func() bool {
+		return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
+	}
+	markClientDisconnected := func(cause string) {
+		if clientDisconnected {
+			return
+		}
+		clientDisconnected = true
+		clientDisconnectDrainStartedAt = time.Now()
+		if !upstreamReadDetached {
+			upstreamReadCtx = context.WithoutCancel(ctx)
+			upstreamReadDetached = true
+		}
+		logOpenAIWSModeInfo(
+			"client_disconnected account_id=%d conn_id=%s cause=%s events=%d token_events=%d",
+			account.ID,
+			connID,
+			cause,
+			eventCount,
+			tokenEventCount,
+		)
+	}
+	markClientRequestCanceled := func() {
+		if clientRequestCanceled() {
+			markClientDisconnected("request_context_canceled")
+		}
+	}
+	resultWithUsage := func() *OpenAIForwardResult {
+		return &OpenAIForwardResult{
+			RequestID:                     responseID,
+			ResponseID:                    responseID,
+			Usage:                         *usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			UpstreamResponseModel:         responseModelObserver.Model(),
+			UpstreamResponseModelConflict: responseModelObserver.Conflict(),
+			UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
+			ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTier(reqBody)),
+			ReasoningEffort:               extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
+			Stream:                        reqStream,
+			OpenAIWSMode:                  true,
+			UpstreamTerminalEvent:         upstreamTerminalEvent,
+			ResponseHeaders:               lease.HandshakeHeaders(),
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
+		}
+	}
 
 	var flusher http.Flusher
 	if reqStream {
@@ -357,7 +455,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		flusher = f
 	}
 
-	clientDisconnected := false
 	flushBatchSize := s.openAIWSEventFlushBatchSize()
 	flushInterval := s.openAIWSEventFlushInterval()
 	pendingFlushEvents := 0
@@ -390,7 +487,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			flushStreamWriter(forceFlush)
 			return
 		}
-		clientDisconnected = true
+		markClientDisconnected("downstream_write_error")
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] client disconnected, continue draining upstream: account=%d", account.ID)
 	}
 	flushBufferedStreamEvents := func(reason string) {
@@ -417,10 +514,66 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 	}
 
-	readTimeout := s.openAIWSReadTimeout()
+	// Keep per-read timeouts unchanged for connected clients. Once a client
+	// disconnects, use the same timeout as a bounded total drain budget.
+	var pendingJSONDocuments [][]byte
 
+readLoop:
 	for {
-		message, readErr := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
+		markClientRequestCanceled()
+		var message []byte
+		var readErr error
+		readUsedDetachedContext := upstreamReadDetached
+		if len(pendingJSONDocuments) > 0 {
+			message = pendingJSONDocuments[0]
+			pendingJSONDocuments = pendingJSONDocuments[1:]
+		} else {
+			currentReadTimeout := readTimeout
+			if clientDisconnected && !clientDisconnectDrainStartedAt.IsZero() {
+				remaining := readTimeout - time.Since(clientDisconnectDrainStartedAt)
+				if remaining <= 0 {
+					lease.MarkBroken()
+					break readLoop
+				}
+				if remaining < currentReadTimeout {
+					currentReadTimeout = remaining
+				}
+			}
+			message, readErr = lease.ReadMessageWithContextTimeout(upstreamReadCtx, currentReadTimeout)
+			if readErr == nil {
+				if documents, repaired := splitOpenAIConcatenatedJSONDocuments(message); repaired {
+					logOpenAIWSModeInfo(
+						"concatenated_json_repaired account_id=%d conn_id=%s documents=%d bytes=%d",
+						account.ID,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						len(documents),
+						len(message),
+					)
+					message = documents[0]
+					pendingJSONDocuments = append(pendingJSONDocuments, documents[1:]...)
+				}
+			}
+		}
+		markClientRequestCanceled()
+		if readErr == nil && !json.Valid(message) {
+			eventType, _, _ := parseOpenAIWSEventEnvelope(message)
+			if eventType == "" {
+				eventType = "unknown"
+			}
+			lease.MarkBroken()
+			logOpenAIWSModeInfo(
+				"invalid_event_json account_id=%d conn_id=%s event_type=%s bytes=%d wrote_downstream=%v",
+				account.ID,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(eventType, openAIWSLogValueMaxLen),
+				len(message),
+				wroteDownstream,
+			)
+			if !wroteDownstream {
+				return nil, wrapOpenAIWSFallback("invalid_event_json", errors.New("upstream websocket returned malformed Responses event JSON"))
+			}
+			return nil, errors.New("upstream websocket returned malformed Responses event JSON after downstream output")
+		}
 		if readErr != nil {
 			lease.MarkBroken()
 			closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
@@ -440,20 +593,27 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
 				truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
 			)
+			if clientDisconnected {
+				if !readUsedDetachedContext && errors.Is(readErr, context.Canceled) && clientRequestCanceled() {
+					continue
+				}
+				break
+			}
 			if !wroteDownstream {
 				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
 			}
-			if clientDisconnected {
-				break
-			}
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
+		}
+		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
+			message = normalized
 		}
 
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
 		if eventType == "" {
 			continue
 		}
+		responseModelObserver.ObserveOpenAI(message, eventType)
 		eventCount++
 		if firstEventType == "" {
 			firstEventType = eventType
@@ -499,28 +659,21 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					message = corrected
 				}
 			}
+			message = restoreCodexToolNamesFromContext(c, message)
 		}
-		if openAIWSEventShouldParseUsage(eventType) {
+		if openAIWSMessageShouldParseUsage(eventType, message) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
 		}
 		imageCounter.AddSSEData(message)
 
-		if eventType == "response.failed" {
-			if hit, code, msg := detectOpenAICyberPolicy(message); hit {
-				MarkOpsCyberPolicy(c, CyberPolicyMark{
-					Code:           code,
-					Message:        msg,
-					Body:           truncateString(string(message), 4096),
-					UpstreamStatus: http.StatusOK,
-					UpstreamInTok:  usage.InputTokens,
-					UpstreamOutTok: usage.OutputTokens,
-				})
-			}
+		if eventType == "error" || eventType == "response.failed" {
+			markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage)
 		}
 
 		if eventType == "error" {
+			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
-			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, mappedModel)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "Upstream websocket error"
@@ -617,12 +770,25 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		if isTerminalEvent {
-			cleanExit = true
+			if !clientDisconnected {
+				markOpenAIWSClientVisibleFailure(c, eventType, message)
+			}
+			upstreamTerminalEvent = s.handleOpenAIWSTerminalTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
+			// A terminal event must be the final JSON document in its WS message.
+			// Ignore any tail for the completed client turn, but never reuse the
+			// ambiguous upstream connection for another request.
+			cleanExit = len(pendingJSONDocuments) == 0
 			break
 		}
 	}
 
+	if clientDisconnected && terminalEventCount == 0 {
+		return resultWithUsage(), fmt.Errorf("openai ws stream incomplete after client disconnect: %w", context.Canceled)
+	}
 	if !reqStream {
+		if clientDisconnected {
+			return resultWithUsage(), nil
+		}
 		if len(finalResponse) == 0 {
 			logOpenAIWSModeInfo(
 				"missing_final_response account_id=%d conn_id=%s events=%d token_events=%d terminal_events=%d wrote_downstream=%v",
@@ -684,21 +850,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		clientDisconnected,
 	)
 
-	return &OpenAIForwardResult{
-		RequestID:        responseID,
-		Usage:            *usage,
-		Model:            originalModel,
-		UpstreamModel:    mappedModel,
-		ImageCount:       imageCounter.Count(),
-		ImageOutputSizes: imageCounter.Sizes(),
-		ServiceTier:      extractOpenAIServiceTier(reqBody),
-		ReasoningEffort:  extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
-		Stream:           reqStream,
-		OpenAIWSMode:     true,
-		ResponseHeaders:  lease.HandshakeHeaders(),
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-	}, nil
+	result := resultWithUsage()
+	result.ImageCount = imageCounter.Count()
+	result.ImageOutputSizes = imageCounter.Sizes()
+	return result, nil
 }
 
 // ProxyResponsesWebSocketFromClient 处理客户端入站 WebSocket（OpenAI Responses WS Mode）并转发到上游。

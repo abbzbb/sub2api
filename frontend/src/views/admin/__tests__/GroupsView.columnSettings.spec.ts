@@ -7,30 +7,35 @@ import GroupsView from '../GroupsView.vue'
 const {
   listGroups,
   getAllGroups,
-  getModelsListCandidates,
+  getModelAllowlistCandidates,
   getUsageSummary,
   getCapacitySummary,
+  getLiveCapability,
   listAccounts,
   showError,
   showSuccess,
   isCurrentStep,
   nextStep,
+  authState,
 } = vi.hoisted(() => ({
   listGroups: vi.fn(),
   getAllGroups: vi.fn(),
-  getModelsListCandidates: vi.fn(),
+  getModelAllowlistCandidates: vi.fn(),
   getUsageSummary: vi.fn(),
   getCapacitySummary: vi.fn(),
+  getLiveCapability: vi.fn(),
   listAccounts: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
   isCurrentStep: vi.fn(),
   nextStep: vi.fn(),
+  authState: { isSimpleMode: false },
 }))
 
 const messages: Record<string, string> = {
   'admin.groups.columnSettings': 'Column Settings',
   'admin.groups.columns.name': 'Name',
+  'admin.groups.columns.id': 'ID',
   'admin.groups.columns.platform': 'Platform',
   'admin.groups.columns.billingType': 'Billing Type',
   'admin.groups.columns.rateMultiplier': 'Rate Multiplier',
@@ -40,6 +45,9 @@ const messages: Record<string, string> = {
   'admin.groups.columns.usage': 'Usage',
   'admin.groups.columns.status': 'Status',
   'admin.groups.columns.actions': 'Actions',
+  'admin.groups.usageToday': 'Today',
+  'admin.groups.usageYesterday': 'Yesterday',
+  'admin.groups.usageTotal': 'Total',
 }
 
 vi.mock('@/api/admin', () => ({
@@ -47,9 +55,10 @@ vi.mock('@/api/admin', () => ({
     groups: {
       list: listGroups,
       getAll: getAllGroups,
-      getModelsListCandidates,
+      getModelAllowlistCandidates,
       getUsageSummary,
       getCapacitySummary,
+      getLiveCapability,
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -66,6 +75,10 @@ vi.mock('@/stores/app', () => ({
     showError,
     showSuccess,
   }),
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => authState,
 }))
 
 vi.mock('@/stores/onboarding', () => ({
@@ -121,7 +134,7 @@ const createGroup = (overrides: Partial<AdminGroup> = {}): AdminGroup => ({
   account_count: 3,
   active_account_count: 2,
   rate_limited_account_count: 1,
-  models_list_config: undefined,
+  model_allowlist: undefined,
   sort_order: 10,
   ...overrides,
 })
@@ -147,6 +160,9 @@ const DataTableStub = {
     <div>
       <div data-test="columns">{{ columns.map((col) => col.key).join(',') }}</div>
       <div data-test="rows">{{ data.map((row) => row.name).join(',') }}</div>
+      <div v-if="data.length" data-test="usage-cell">
+        <slot name="cell-usage" :row="data[0]" />
+      </div>
     </div>
   `,
 }
@@ -223,14 +239,16 @@ describe('admin GroupsView column settings', () => {
 
     listGroups.mockReset()
     getAllGroups.mockReset()
-    getModelsListCandidates.mockReset()
+    getModelAllowlistCandidates.mockReset()
     getUsageSummary.mockReset()
     getCapacitySummary.mockReset()
+    getLiveCapability.mockReset()
     listAccounts.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
     isCurrentStep.mockReset()
     nextStep.mockReset()
+    authState.isSimpleMode = false
 
     listGroups.mockResolvedValue({
       items: [createGroup()],
@@ -240,18 +258,36 @@ describe('admin GroupsView column settings', () => {
       pages: 1,
     })
     getAllGroups.mockResolvedValue([])
-    getModelsListCandidates.mockResolvedValue([])
+    getModelAllowlistCandidates.mockResolvedValue([])
     getUsageSummary.mockResolvedValue([])
     getCapacitySummary.mockResolvedValue([])
+    getLiveCapability.mockResolvedValue({ supported: false })
     listAccounts.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, pages: 0 })
     isCurrentStep.mockReturnValue(false)
+  })
+
+  it('does not call advanced group APIs or expose the exclusive filter in simple mode', async () => {
+    authState.isSimpleMode = true
+    const wrapper = await mountView()
+
+    expect(getLiveCapability).not.toHaveBeenCalled()
+    expect(getModelAllowlistCandidates).not.toHaveBeenCalled()
+    expect(getUsageSummary).not.toHaveBeenCalled()
+    expect(getCapacitySummary).not.toHaveBeenCalled()
+    expect(listGroups).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      expect.objectContaining({ is_exclusive: undefined }),
+      expect.anything(),
+    )
+    expect(wrapper.find('select').text()).not.toContain('admin.groups.allGroups')
   })
 
   afterEach(() => {
     localStorage.clear()
   })
 
-  it('renders all group columns by default in the current order', async () => {
+  it('hides the id column by default while keeping other group columns visible', async () => {
     const wrapper = await mountView()
 
     expect(columnKeys(wrapper)).toEqual([
@@ -266,6 +302,8 @@ describe('admin GroupsView column settings', () => {
       'status',
       'actions',
     ])
+    expect(localStorage.getItem('group-hidden-columns')).toBe(JSON.stringify(['id']))
+    expect(localStorage.getItem('group-column-settings-version')).toBe('2')
   })
 
   it('applies saved hidden columns on mount and ignores unknown keys', async () => {
@@ -273,6 +311,26 @@ describe('admin GroupsView column settings', () => {
       'group-hidden-columns',
       JSON.stringify(['usage', 'capacity', 'removed_column', 'name', 'actions']),
     )
+    localStorage.setItem('group-column-settings-version', '2')
+
+    const wrapper = await mountView()
+
+    expect(columnKeys(wrapper)).toEqual([
+      'name',
+      'id',
+      'platform',
+      'billing_type',
+      'rate_multiplier',
+      'is_exclusive',
+      'account_count',
+      'status',
+      'actions',
+    ])
+  })
+
+  it('auto-hides id for existing saved column prefs after version bump', async () => {
+    localStorage.setItem('group-hidden-columns', JSON.stringify(['usage']))
+    // No version key → treated as version 1, migrate to 2 and hide id.
 
     const wrapper = await mountView()
 
@@ -283,9 +341,14 @@ describe('admin GroupsView column settings', () => {
       'rate_multiplier',
       'is_exclusive',
       'account_count',
+      'capacity',
       'status',
       'actions',
     ])
+    expect(JSON.parse(localStorage.getItem('group-hidden-columns')!)).toEqual(
+      expect.arrayContaining(['usage', 'id']),
+    )
+    expect(localStorage.getItem('group-column-settings-version')).toBe('2')
   })
 
   it('toggles a column and persists hidden column keys', async () => {
@@ -305,7 +368,31 @@ describe('admin GroupsView column settings', () => {
       'status',
       'actions',
     ])
-    expect(localStorage.getItem('group-hidden-columns')).toBe(JSON.stringify(['usage']))
+    expect(JSON.parse(localStorage.getItem('group-hidden-columns')!)).toEqual(
+      expect.arrayContaining(['id', 'usage']),
+    )
+  })
+
+  it('can show the id column from column settings', async () => {
+    const wrapper = await mountView()
+
+    await openColumnSettings(wrapper)
+    await clickColumnToggle(wrapper, 'ID')
+
+    expect(columnKeys(wrapper)).toEqual([
+      'name',
+      'id',
+      'platform',
+      'billing_type',
+      'rate_multiplier',
+      'is_exclusive',
+      'account_count',
+      'capacity',
+      'usage',
+      'status',
+      'actions',
+    ])
+    expect(localStorage.getItem('group-hidden-columns')).toBe(JSON.stringify([]))
   })
 
   it('skips usage and capacity fetches until consuming columns are shown', async () => {
@@ -322,10 +409,26 @@ describe('admin GroupsView column settings', () => {
     await openColumnSettings(wrapper)
     await clickColumnToggle(wrapper, 'Usage')
     expect(getUsageSummary).toHaveBeenCalledTimes(1)
+    expect(getUsageSummary).toHaveBeenCalledWith()
     expect(getCapacitySummary).not.toHaveBeenCalled()
 
     await clickColumnToggle(wrapper, 'Capacity')
     expect(getUsageSummary).toHaveBeenCalledTimes(1)
     expect(getCapacitySummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders yesterday usage between today and total', async () => {
+    getUsageSummary.mockResolvedValue([
+      { group_id: 1, today_cost: 1.25, yesterday_cost: 2.5, total_cost: 9.75 },
+    ])
+
+    const wrapper = await mountView()
+    const text = wrapper.get('[data-test="usage-cell"]').text()
+
+    expect(text).toContain('Today$1.25')
+    expect(text).toContain('Yesterday$2.50')
+    expect(text).toContain('Total$9.75')
+    expect(text.indexOf('Today')).toBeLessThan(text.indexOf('Yesterday'))
+    expect(text.indexOf('Yesterday')).toBeLessThan(text.indexOf('Total'))
   })
 })

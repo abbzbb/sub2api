@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,19 +16,61 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestNormalizeOpenAIReasoningEffortForGPT56(t *testing.T) {
+func TestAstraForwardPreservesMaxInPayloadAndUsage(t *testing.T) {
+	for _, requestedModel := range []string{"gpt-6-astra", "astra-public"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", requestedModel, stream), func(t *testing.T) {
+				response := `{"id":"resp_astra","model":"gpt-6-astra","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":2}}`
+				contentType := "application/json"
+				if stream {
+					response = "data: {\"type\":\"response.completed\",\"response\":" + response + "}\n\ndata: [DONE]\n\n"
+					contentType = "text/event-stream"
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK,
+					Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(response))}}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+				account := rawGPT56ResponsesAPIKeyAccount(requestedModel, "gpt-6-astra")
+				body, err := json.Marshal(map[string]any{"model": requestedModel, "stream": stream, "input": "hello", "reasoning": map[string]string{"effort": "max"}})
+				require.NoError(t, err)
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+				SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+				result, err := svc.Forward(context.Background(), c, account, body)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, "gpt-6-astra", gjson.GetBytes(upstream.lastBody, "model").String())
+				require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+				require.NotNil(t, result.ReasoningEffort)
+				require.Equal(t, "max", *result.ReasoningEffort)
+				usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+				billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+				usageService := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+				err = usageService.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+					Result: result, Account: account, User: &User{ID: 21}, APIKey: &APIKey{ID: 22, Group: &Group{RateMultiplier: 1}},
+				})
+				require.NoError(t, err)
+				require.NotNil(t, usageRepo.lastLog)
+				require.Equal(t, "max", *usageRepo.lastLog.ReasoningEffort)
+				require.Equal(t, "max", *usageRepo.lastLog.RequestedReasoningEffort)
+			})
+		}
+	}
+}
+
+func TestNormalizeOpenAIReasoningEffortForMaxCapableModels(t *testing.T) {
 	tests := []struct {
 		name  string
 		raw   string
 		model string
 		want  string
 	}{
+		{name: "Astra 保留 max", raw: "max", model: "gpt-6-astra", want: "max"},
 		{name: "Sol 保留 max", raw: "max", model: "gpt-5.6-sol", want: "max"},
 		{name: "Terra 保留 max", raw: "max", model: "openai/gpt-5.6-terra", want: "max"},
 		{name: "Luna 后缀保留 max", raw: "max", model: "gpt-5.6-luna-2026-07-09", want: "max"},
-		{name: "Sol 保留 ultra", raw: "ultra", model: "gpt-5.6-sol", want: "ultra"},
-		{name: "其他模型 max 沿用 xhigh", raw: "max", model: "deepseek-v4-pro", want: "xhigh"},
-		{name: "其他模型 ultra 丢弃", raw: "ultra", model: "deepseek-v4-pro", want: ""},
+		{name: "DeepSeek V4 保留 max", raw: "max", model: "deepseek-v4-pro", want: "max"},
+		{name: "DeepSeek Flash 保留 max", raw: "max", model: "deepseek-flash", want: "max"},
+		{name: "旧 GPT 模型沿用 xhigh", raw: "max", model: "gpt-5.5", want: "xhigh"},
 	}
 
 	for _, tt := range tests {
@@ -46,16 +90,6 @@ func TestNormalizeOpenAICodexCompactReasoningEffortDowngradesMax(t *testing.T) {
 	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(normalized, "model").String())
 	require.Equal(t, "xhigh", gjson.GetBytes(normalized, "reasoning.effort").String())
 	require.Equal(t, "auto", gjson.GetBytes(normalized, "reasoning.summary").String())
-}
-
-func TestNormalizeOpenAICodexCompactReasoningEffortDowngradesUltra(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6-sol","input":"compact me","reasoning":{"effort":"ultra"}}`)
-
-	normalized, changed, err := normalizeOpenAICodexCompactReasoningEffort(body, "gpt-5.6-sol")
-
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Equal(t, "xhigh", gjson.GetBytes(normalized, "reasoning.effort").String())
 }
 
 func TestNormalizeOpenAICodexCompactReasoningEffortForAccountScopesCompatibility(t *testing.T) {
@@ -109,45 +143,6 @@ func TestNormalizeOpenAICodexCompactReasoningEffortForAccountScopesCompatibility
 			require.Equal(t, tt.want, gjson.GetBytes(normalized, "reasoning.effort").String())
 		})
 	}
-}
-
-func TestOpenAIGatewayServiceForwardPreservesGPT56UltraEffort(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	upstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
-		},
-	}
-	cfg := &config.Config{}
-	cfg.Security.URLAllowlist.Enabled = false
-	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
-	account := &Account{
-		ID:          17,
-		Name:        "openai-apikey-ultra",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":  "sk-test",
-			"base_url": "https://example.com",
-		},
-		Extra: map[string]any{"use_responses_api": true},
-	}
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
-	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
-
-	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"reasoning":{"effort":"ultra"},"input":"hello"}`)
-	result, err := svc.Forward(context.Background(), c, account, body)
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, "ultra", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
-	require.NotNil(t, result.ReasoningEffort)
-	require.Equal(t, "ultra", *result.ReasoningEffort)
 }
 
 func TestOpenAIGatewayServiceForwardPreservesGPT56MaxEffort(t *testing.T) {
@@ -253,9 +248,6 @@ func TestOpenAIGatewayServiceForwardOAuthCompactDowngradesMaxEffort(t *testing.T
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
-			"compact_model_mapping": map[string]any{
-				"gpt-5.6-sol": "gpt-5.6-sol-openai-compact",
-			},
 		},
 		Status:      StatusActive,
 		Schedulable: true,
@@ -302,6 +294,9 @@ func TestOpenAIGatewayServiceForwardOAuthRemoteCompactV2PreservesResponsesWire(t
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
+			"compact_model_mapping": map[string]any{
+				"gpt-5.6-sol": "gpt-5.6-sol-openai-compact",
+			},
 		},
 		Status:      StatusActive,
 		Schedulable: true,

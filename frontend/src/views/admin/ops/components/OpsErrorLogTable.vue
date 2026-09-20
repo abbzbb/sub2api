@@ -77,19 +77,6 @@
             <span v-else class="font-medium text-gray-900 dark:text-white">{{ row.user_email || '-' }}</span>
             <span class="ml-1 text-gray-500 dark:text-gray-400">#{{ row.user_id }}</span>
           </div>
-          <!-- 认证失败行 user_id 为空:回退显示已删除 KEY 所有者(归因快照,与详情弹窗一致) -->
-          <div v-else-if="row.deleted_key_owner_user_id" class="text-sm">
-            <button
-              v-if="userClickable && row.deleted_key_owner_email"
-              class="font-medium text-primary-600 underline decoration-dashed underline-offset-2 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-              :title="t('admin.usage.clickToViewBalance')"
-              @click.stop="emit('userClick', row.deleted_key_owner_user_id, row.deleted_key_owner_email ?? undefined)"
-            >
-              {{ row.deleted_key_owner_email }}
-            </button>
-            <span v-else class="font-medium text-gray-900 dark:text-white">{{ row.deleted_key_owner_email || '-' }}</span>
-            <span class="ml-1 text-gray-500 dark:text-gray-400">#{{ row.deleted_key_owner_user_id }}</span>
-          </div>
           <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
         </template>
 
@@ -228,11 +215,18 @@ const allColumns = computed<Column[]>(() => [
 ])
 
 // 传入 visibleColumnKeys 时按其过滤(列设置);未传则全量(Ops 弹窗等使用方)
-const columns = computed<Column[]>(() =>
-  props.visibleColumnKeys
+const columns = computed<Column[]>(() => {
+  const visibleColumns = props.visibleColumnKeys
     ? allColumns.value.filter((c) => props.visibleColumnKeys!.includes(c.key))
     : allColumns.value
-)
+  if (!props.summaryFirst) return visibleColumns
+
+  return [
+    ...visibleColumns.filter((c) => c.key === 'created_at'),
+    ...visibleColumns.filter((c) => c.key === 'message'),
+    ...visibleColumns.filter((c) => c.key !== 'created_at' && c.key !== 'message'),
+  ]
+})
 
 function isUpstreamRow(log: OpsErrorLog): boolean {
   const phase = String(log.phase || '').toLowerCase()
@@ -277,6 +271,9 @@ function getTypeBadge(log: OpsErrorLog): { label: string; className: string } {
   if (phase === 'auth' && owner === 'client') {
     return { label: t('admin.ops.errorLog.typeAuth'), className: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' }
   }
+  if (phase === 'account_auth') {
+    return { label: t('admin.ops.errorLog.typeAccountAuth'), className: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200' }
+  }
   if (phase === 'routing' && owner === 'platform') {
     return { label: t('admin.ops.errorLog.typeRouting'), className: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200' }
   }
@@ -298,6 +295,8 @@ interface Props {
   userClickable?: boolean
   /** 列设置:仅显示这些 key 的列;不传则全量 */
   visibleColumnKeys?: string[]
+  /** 运维弹窗优先展示时间和响应内容 */
+  summaryFirst?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
 }

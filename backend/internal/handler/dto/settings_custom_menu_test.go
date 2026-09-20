@@ -7,17 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCustomMenuItemShowsOpenInNewTab_DefaultTrue(t *testing.T) {
+func TestCustomMenuItemHideOpenButton_DefaultFalse(t *testing.T) {
 	raw := `{"id":"m1","label":"Help","icon_svg":"","url":"https://example.com","visibility":"user","sort_order":0}`
 	var item CustomMenuItem
 	require.NoError(t, json.Unmarshal([]byte(raw), &item))
-	require.True(t, CustomMenuItemShowsOpenInNewTab(item))
+	require.False(t, item.HideOpenButton)
 
-	off := false
-	item.ShowOpenInNewTab = &off
-	require.False(t, CustomMenuItemShowsOpenInNewTab(item))
-
-	on := true
-	item.ShowOpenInNewTab = &on
-	require.True(t, CustomMenuItemShowsOpenInNewTab(item))
+	item.HideOpenButton = true
+	encoded, err := json.Marshal(item)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"hide_open_button":true`)
 }
