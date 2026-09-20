@@ -1102,7 +1102,7 @@ func writePricingDataFile(path string, data []byte) error {
 	}
 
 	tmp := path + ".tmp." + strconv.FormatInt(time.Now().UnixNano(), 10)
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0644); err != nil { //nolint:gosec // G703: 路径为配置的数据目录 + 硬编码文件名，非请求输入
 		// 同目录也不可写时，直接报错
 		return fmt.Errorf("write temp %s: %w", tmp, err)
 	}
@@ -1112,13 +1112,13 @@ func writePricingDataFile(path string, data []byte) error {
 		// Rename 失败常见原因：目标只读 / 跨设备 / 权限
 		_ = os.Remove(tmp)
 		if chmodErr := os.Chmod(path, 0644); chmodErr == nil {
-			if writeErr := os.WriteFile(path, data, 0644); writeErr == nil {
+			if writeErr := os.WriteFile(path, data, 0644); writeErr == nil { //nolint:gosec // G703: 同上
 				return nil
 			}
 		}
 		// 再试：删掉旧文件后写入（root 拥有的只读文件仍可能失败）
 		_ = os.Remove(path)
-		if writeErr := os.WriteFile(path, data, 0644); writeErr == nil {
+		if writeErr := os.WriteFile(path, data, 0644); writeErr == nil { //nolint:gosec // G703: 同上
 			return nil
 		} else {
 			return fmt.Errorf("open %s: %w", path, writeErr)
