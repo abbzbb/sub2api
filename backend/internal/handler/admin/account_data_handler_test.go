@@ -37,14 +37,15 @@ type dataProxy struct {
 }
 
 type dataAccount struct {
-	Name        string         `json:"name"`
-	Platform    string         `json:"platform"`
-	Type        string         `json:"type"`
-	Credentials map[string]any `json:"credentials"`
-	Extra       map[string]any `json:"extra"`
-	ProxyKey    *string        `json:"proxy_key"`
-	Concurrency int            `json:"concurrency"`
-	Priority    int            `json:"priority"`
+	Name           string         `json:"name"`
+	Platform       string         `json:"platform"`
+	Type           string         `json:"type"`
+	Credentials    map[string]any `json:"credentials"`
+	Extra          map[string]any `json:"extra"`
+	ProxyKey       *string        `json:"proxy_key"`
+	ProxyGroupName *string        `json:"proxy_group_name"`
+	Concurrency    int            `json:"concurrency"`
+	Priority       int            `json:"priority"`
 }
 
 func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
@@ -361,4 +362,189 @@ func TestImportDataResolvesForwardBackupReference(t *testing.T) {
 	require.Equal(t, service.FallbackModeProxy, primary.FallbackMode)
 	require.NotNil(t, primary.BackupProxyID)
 	require.Equal(t, backup.ID, *primary.BackupProxyID)
+}
+
+func TestExportDataExcludesCodexTicketMaterial(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	extra := map[string]any{
+		"codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-blob", "length": 292},
+		"codex_harvest_proxy_url":       "http://user:legacy-proxy-secret@proxy.example.com:8080",
+		"ordinary":                      "retained",
+	}
+	adminSvc.accounts = []service.Account{{ID: 21, Name: "account", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Credentials: map[string]any{"access_token": "backup-token"}, Extra: extra}}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?include_proxies=false", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp dataResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Data.Accounts, 1)
+	require.Equal(t, map[string]any{"ordinary": "retained"}, resp.Data.Accounts[0].Extra)
+	require.Equal(t, "backup-token", resp.Data.Accounts[0].Credentials["access_token"])
+	require.NotContains(t, rec.Body.String(), "private-ticket-blob")
+	require.NotContains(t, rec.Body.String(), "legacy-proxy-secret")
+	require.Contains(t, extra, "codex_turn_ticket:gpt-6-astra")
+	require.Contains(t, extra, "codex_harvest_proxy_url")
+}
+
+func TestExportDataIncludesProxyGroupName(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	groupID := int64(9)
+	adminSvc.proxyGroups = []service.ProxyGroup{{ID: groupID, Name: "grok-pool"}}
+	adminSvc.accounts = []service.Account{{
+		ID:           21,
+		Name:         "account",
+		Platform:     service.PlatformGrok,
+		Type:         service.AccountTypeOAuth,
+		Credentials:  map[string]any{"token": "secret"},
+		ProxyGroupID: &groupID,
+		Concurrency:  1,
+		Priority:     10,
+		Status:       service.StatusActive,
+	}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?include_proxies=false", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp dataResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Len(t, resp.Data.Accounts, 1)
+	require.NotNil(t, resp.Data.Accounts[0].ProxyGroupName)
+	require.Equal(t, "grok-pool", *resp.Data.Accounts[0].ProxyGroupName)
+	require.Nil(t, resp.Data.Accounts[0].ProxyKey)
+}
+
+func TestImportDataResolvesProxyGroupName(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.proxyGroups = []service.ProxyGroup{{ID: 9, Name: "grok-pool"}}
+
+	body, err := json.Marshal(map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{{
+				"name":             "acc",
+				"platform":         service.PlatformGrok,
+				"type":             service.AccountTypeOAuth,
+				"credentials":      map[string]any{"token": "x"},
+				"proxy_group_name": "grok-pool",
+				"concurrency":      1,
+				"priority":         10,
+			}},
+		},
+		"skip_default_group_bind": true,
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.NotNil(t, adminSvc.createdAccounts[0].ProxyGroupID)
+	require.Equal(t, int64(9), *adminSvc.createdAccounts[0].ProxyGroupID)
+	require.Nil(t, adminSvc.createdAccounts[0].ProxyID)
+}
+
+func TestImportDataRejectsProxyKeyAndProxyGroupName(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.proxies = []service.Proxy{{
+		ID: 1, Name: "proxy", Protocol: "socks5", Host: "1.2.3.4", Port: 1080,
+		Username: "u", Password: "p", Status: service.StatusActive,
+	}}
+	adminSvc.proxyGroups = []service.ProxyGroup{{ID: 9, Name: "grok-pool"}}
+
+	body, err := json.Marshal(map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{{
+				"proxy_key": "socks5|1.2.3.4|1080|u|p",
+				"name":      "proxy",
+				"protocol":  "socks5",
+				"host":      "1.2.3.4",
+				"port":      1080,
+				"username":  "u",
+				"password":  "p",
+				"status":    "active",
+			}},
+			"accounts": []map[string]any{{
+				"name":             "acc",
+				"platform":         service.PlatformGrok,
+				"type":             service.AccountTypeOAuth,
+				"credentials":      map[string]any{"token": "x"},
+				"proxy_key":        "socks5|1.2.3.4|1080|u|p",
+				"proxy_group_name": "grok-pool",
+			}},
+		},
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, adminSvc.createdAccounts)
+
+	var resp struct {
+		Data struct {
+			AccountFailed int `json:"account_failed"`
+			Errors        []struct {
+				Message        string `json:"message"`
+				ProxyGroupName string `json:"proxy_group_name"`
+			} `json:"errors"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 1, resp.Data.AccountFailed)
+	require.Len(t, resp.Data.Errors, 1)
+	require.Equal(t, "proxy_key and proxy_group_name cannot both be set", resp.Data.Errors[0].Message)
+	require.Equal(t, "grok-pool", resp.Data.Errors[0].ProxyGroupName)
+}
+
+func TestImportDataMissingProxyGroupName(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	body, err := json.Marshal(map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{{
+				"name":             "acc",
+				"platform":         service.PlatformGrok,
+				"type":             service.AccountTypeOAuth,
+				"credentials":      map[string]any{"token": "x"},
+				"proxy_group_name": "missing-pool",
+			}},
+		},
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, adminSvc.createdAccounts)
+
+	var resp struct {
+		Data struct {
+			AccountFailed int `json:"account_failed"`
+			Errors        []struct {
+				Message        string `json:"message"`
+				ProxyGroupName string `json:"proxy_group_name"`
+			} `json:"errors"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 1, resp.Data.AccountFailed)
+	require.Equal(t, "proxy_group_name not found", resp.Data.Errors[0].Message)
+	require.Equal(t, "missing-pool", resp.Data.Errors[0].ProxyGroupName)
 }

@@ -19,6 +19,7 @@ type stubAdminService struct {
 	schedulerScoreFilterCalls           int
 	openAISchedulerScorePoolCalls       int
 	proxies                             []service.Proxy
+	proxyGroups                         []service.ProxyGroup
 	proxyCounts                         []service.ProxyWithAccountCount
 	redeems                             []service.RedeemCode
 	boundAuthIdentity                   *service.AdminBindAuthIdentityInput
@@ -647,6 +648,38 @@ func (s *stubAdminService) GetProxiesByIDs(ctx context.Context, ids []int64) ([]
 		}
 	}
 	return out, nil
+}
+
+func (s *stubAdminService) GetProxyGroupsByIDs(ctx context.Context, ids []int64) ([]service.ProxyGroup, error) {
+	if len(ids) == 0 {
+		return []service.ProxyGroup{}, nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		seen[id] = struct{}{}
+	}
+	out := make([]service.ProxyGroup, 0, len(ids))
+	for i := range s.proxyGroups {
+		group := s.proxyGroups[i]
+		if _, ok := seen[group.ID]; ok {
+			out = append(out, group)
+		}
+	}
+	return out, nil
+}
+
+func (s *stubAdminService) FindProxyGroupByName(ctx context.Context, name string) (*service.ProxyGroup, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	for i := range s.proxyGroups {
+		if s.proxyGroups[i].Name == name {
+			group := s.proxyGroups[i]
+			return &group, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *stubAdminService) CreateProxy(ctx context.Context, input *service.CreateProxyInput) (*service.Proxy, error) {

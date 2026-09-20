@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
@@ -195,6 +195,11 @@ describe('admin AccountsView Grok runtime state refresh', () => {
     getAllGroups.mockReset().mockResolvedValue([])
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
   it('refreshes the row immediately after a Grok quota probe', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -230,5 +235,72 @@ describe('admin AccountsView Grok runtime state refresh', () => {
     expect(getAccountById).toHaveBeenCalledWith(42)
     expect(wrapper.get('[data-testid="account-state-42"]').text()).toBe('true')
     expect(wrapper.get('[data-testid="test-account-state"]').text()).toBe('true')
+  })
+
+  it('keeps Grok recovery pending when an ETag lite payload omits the field', async () => {
+    listAccounts.mockResolvedValue({
+      items: [{ ...pendingAccount }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+    const omitted: Account = { ...pendingAccount }
+    delete omitted.grok_free_recovery_pending
+    listWithEtag.mockResolvedValue({
+      notModified: false,
+      etag: 'etag-omit-grok',
+      data: { items: [omitted], total: 1, page: 1, page_size: 20, pages: 1 }
+    })
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="account-state-42"]').text()).toBe('true')
+
+    await vi.advanceTimersByTimeAsync(6000)
+    await flushPromises()
+
+    expect(listWithEtag).toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="account-state-42"]').text()).toBe('true')
+  })
+
+  it('applies an explicit Grok recovery false from ETag refresh', async () => {
+    listAccounts.mockResolvedValue({
+      items: [{ ...pendingAccount }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+    listWithEtag.mockResolvedValue({
+      notModified: false,
+      etag: 'etag-clear-grok',
+      data: {
+        items: [{
+          ...pendingAccount,
+          updated_at: '2026-07-15T00:03:00Z',
+          grok_free_recovery_pending: false
+        }],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        pages: 1
+      }
+    })
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="account-state-42"]').text()).toBe('true')
+
+    await vi.advanceTimersByTimeAsync(6000)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="account-state-42"]').text()).toBe('false')
   })
 })

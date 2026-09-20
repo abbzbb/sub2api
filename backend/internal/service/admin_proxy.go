@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,6 +71,63 @@ func (s *adminServiceImpl) GetProxy(ctx context.Context, id int64) (*Proxy, erro
 
 func (s *adminServiceImpl) GetProxiesByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
 	return s.proxyRepo.ListByIDs(ctx, ids)
+}
+
+func (s *adminServiceImpl) GetProxyGroupsByIDs(ctx context.Context, ids []int64) ([]ProxyGroup, error) {
+	if s == nil || s.proxyGroupRepo == nil || len(ids) == 0 {
+		return []ProxyGroup{}, nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]ProxyGroup, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		group, err := s.proxyGroupRepo.GetByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, ErrProxyGroupNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if group != nil {
+			out = append(out, *group)
+		}
+	}
+	return out, nil
+}
+
+func (s *adminServiceImpl) FindProxyGroupByName(ctx context.Context, name string) (*ProxyGroup, error) {
+	name = strings.TrimSpace(name)
+	if s == nil || s.proxyGroupRepo == nil || name == "" {
+		return nil, nil
+	}
+	page := 1
+	for {
+		items, result, err := s.proxyGroupRepo.List(ctx, pagination.PaginationParams{
+			Page:      page,
+			PageSize:  100,
+			SortBy:    "id",
+			SortOrder: pagination.SortOrderAsc,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for i := range items {
+			if items[i].Name == name {
+				group := items[i]
+				return &group, nil
+			}
+		}
+		if result == nil || result.Pages <= page || len(items) == 0 {
+			return nil, nil
+		}
+		page++
+	}
 }
 
 func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error) {
