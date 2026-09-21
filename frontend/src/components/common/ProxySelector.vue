@@ -427,7 +427,7 @@ const handleBatchTest = async () => {
 
   batchTesting.value = true
 
-  // Reuse handleTestProxy so an in-flight per-proxy test is not restarted.
+  // Test all proxies in parallel; reuse handleTestProxy so in-flight guards stay shared.
   const testPromises = props.proxies.map(handleTestProxy)
 
   await Promise.all(testPromises)

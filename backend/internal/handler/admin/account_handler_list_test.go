@@ -79,6 +79,41 @@ func TestAccountHandlerListLiteUsesCompactDTOAndETag(t *testing.T) {
 	require.Contains(t, fullPayload.Data.Items[0], "account_groups")
 }
 
+func TestAccountHandlerListLiteIncludesProxyGroupAndGrokRecovery(t *testing.T) {
+	router, adminSvc := setupAccountListRouter()
+	now := time.Now().UTC()
+	groupID := int64(9)
+	adminSvc.accounts = []service.Account{{
+		ID: 502, Name: "grok-account", Platform: service.PlatformGrok, Type: service.AccountTypeOAuth,
+		Credentials: map[string]any{"email": "grok@example.com"},
+		Extra: map[string]any{
+			service.GrokFreeRecoveryPendingExtraKey: true,
+		},
+		ProxyGroupID: &groupID,
+		Status:       service.StatusActive,
+		Schedulable:  true,
+		CreatedAt:    now, UpdatedAt: now,
+	}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts?page=1&page_size=20&lite=1", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var litePayload struct {
+		Data struct {
+			Items []map[string]any `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &litePayload))
+	require.Len(t, litePayload.Data.Items, 1)
+	liteItem := litePayload.Data.Items[0]
+	require.Equal(t, float64(9), liteItem["proxy_group_id"])
+	require.Equal(t, true, liteItem["grok_free_recovery_pending"])
+	require.NotContains(t, liteItem, "groups")
+	require.NotContains(t, liteItem, "account_groups")
+}
+
 func TestAccountHandlerListLiteStaysBelowResponseBudget(t *testing.T) {
 	router, adminSvc := setupAccountListRouter()
 	now := time.Now().UTC()

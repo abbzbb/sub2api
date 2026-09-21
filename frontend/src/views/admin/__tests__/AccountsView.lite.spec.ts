@@ -12,6 +12,7 @@ const {
   getBatchTodayStats,
   getUpstreamBillingProbeSettings,
   getAllProxies,
+  getAllProxyGroups,
   getAllGroups,
   refreshCredentials,
   showError,
@@ -23,6 +24,7 @@ const {
   getBatchTodayStats: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
+  getAllProxyGroups: vi.fn(),
   getAllGroups: vi.fn(),
   refreshCredentials: vi.fn(),
   showError: vi.fn(),
@@ -44,6 +46,7 @@ vi.mock('@/api/admin', () => ({
       refreshCredentials
     },
     proxies: { getAll: getAllProxies },
+    proxyGroups: { getAll: getAllProxyGroups },
     groups: { getAll: getAllGroups }
   }
 }))
@@ -67,6 +70,7 @@ const DataTableStub = defineComponent({
     <div>
       <div v-for="row in data" :key="row.id" :data-account-name="row.name">
         <slot name="cell-groups" :row="row" />
+        <slot name="cell-proxy" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div>
     </div>
@@ -144,6 +148,7 @@ const listRow = {
   concurrency: 2,
   priority: 1,
   group_ids: [7],
+  proxy_group_id: 9,
   extra: {},
   credentials: {}
 }
@@ -165,6 +170,7 @@ describe('admin AccountsView lite account list', () => {
     getBatchTodayStats.mockReset().mockResolvedValue({ stats: {} })
     getUpstreamBillingProbeSettings.mockReset().mockResolvedValue({ enabled: true })
     getAllProxies.mockReset().mockResolvedValue([])
+    getAllProxyGroups.mockReset().mockResolvedValue([{ id: 9, name: 'grok-pool' }])
     getAllGroups.mockReset().mockResolvedValue([{ id: 7, name: 'codex', platform: 'openai' }])
     refreshCredentials.mockReset()
     showError.mockReset()
@@ -194,6 +200,37 @@ describe('admin AccountsView lite account list', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-test="account-groups"]').text()).toBe('codex')
+    wrapper.unmount()
+  })
+
+  it('maps proxy_group_id through the proxy-group catalog for the table cell', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="account-proxy-group"]').text()).toContain('grok-pool')
+    wrapper.unmount()
+  })
+
+  it('keeps proxy_group_id when an ETag lite payload omits the field', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    const omitted = { ...listRow, updated_at: '2026-07-15T00:02:00Z' }
+    delete (omitted as { proxy_group_id?: number }).proxy_group_id
+    listWithEtag.mockResolvedValue({
+      notModified: false,
+      etag: 'etag-omit-group',
+      data: { items: [omitted], total: 1, page: 1, page_size: 20, pages: 1 }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="account-proxy-group"]').text()).toContain('grok-pool')
+
+    await vi.advanceTimersByTimeAsync(6000)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="account-proxy-group"]').text()).toContain('grok-pool')
     wrapper.unmount()
   })
 
