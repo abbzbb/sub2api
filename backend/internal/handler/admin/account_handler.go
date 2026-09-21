@@ -368,8 +368,17 @@ func (h *AccountHandler) accountListResponseFromService(account *service.Account
 func (h *AccountHandler) enrichCodexTicketStatus(account *service.Account, out *dto.Account) {
 	if h != nil && h.cfg != nil && out != nil {
 		cfg := h.cfg.Gateway.OpenAICodexTicket
+		harvestURL := strings.TrimSpace(cfg.HarvestProxyURL)
 		if h.codexTicketSettings != nil {
-			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(context.Background(), cfg.Enabled)
+			ctx := context.Background()
+			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(ctx, cfg.Enabled)
+			cfg.FailClosed = h.codexTicketSettings.GetOpenAICodexTicketFailClosed(ctx, cfg.FailClosed)
+			if stored := h.codexTicketSettings.GetOpenAICodexTicketHarvestProxyURL(ctx); stored != "" {
+				harvestURL = stored
+			}
+		}
+		if !service.OpenAICodexTicketHarvestConfigured(h.cfg, harvestURL) {
+			cfg.FailClosed = false
 		}
 		out.CodexTurnTickets = service.OpenAICodexTicketStatuses(account, cfg, time.Now())
 	}

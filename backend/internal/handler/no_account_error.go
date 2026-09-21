@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -30,14 +31,44 @@ import (
 type noAccountErrorClassification struct {
 	Status        int
 	ErrType       string
+	Code          string
 	Message       string
 	ModelNotFound bool // true when this is a 404 model_not_found classification
 }
 
-var selectionModelRateLimitedPattern = regexp.MustCompile(`(?:model_rate_limited|rate_limited)=(\d+)`)
+const openAICodexTicketUnavailableCode = "codex_turn_state_ticket_unavailable"
+
+var (
+	selectionModelRateLimitedPattern       = regexp.MustCompile(`(?:model_rate_limited|rate_limited)=(\d+)`)
+	selectionCodexTicketUnavailablePattern = regexp.MustCompile(`codex_ticket_unavailable=(\d+)`)
+)
+
+func isOpenAICodexTicketSelectionFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, service.ErrOpenAICodexTicketUnavailable) {
+		return true
+	}
+	match := selectionCodexTicketUnavailablePattern.FindStringSubmatch(strings.ToLower(err.Error()))
+	if len(match) != 2 {
+		return false
+	}
+	count, parseErr := strconv.Atoi(match[1])
+	return parseErr == nil && count > 0
+}
+
+func openAICodexTicketUnavailableClassification() noAccountErrorClassification {
+	return noAccountErrorClassification{
+		Status:  http.StatusServiceUnavailable,
+		ErrType: "api_error",
+		Code:    openAICodexTicketUnavailableCode,
+		Message: service.ErrOpenAICodexTicketUnavailable.Error(),
+	}
+}
 
 // classifySelectionFailureError preserves the scheduler's compact reason when
-// every model-capable account is temporarily rate limited.
+// every model-capable account is temporarily rate limited or ticket-gated.
 func classifySelectionFailureError(err error, fallback noAccountErrorClassification) noAccountErrorClassification {
 	if err == nil {
 		return fallback
@@ -58,6 +89,9 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 	// sites gate markOpsRoutingCapacityLimitedIfNoAvailable on ModelNotFound.
 	if fallback.ModelNotFound {
 		return fallback
+	}
+	if isOpenAICodexTicketSelectionFailure(err) {
+		return openAICodexTicketUnavailableClassification()
 	}
 	match := selectionModelRateLimitedPattern.FindStringSubmatch(strings.ToLower(err.Error()))
 	if len(match) != 2 {

@@ -684,7 +684,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
-				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+				h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType, cls.Code, cls.Message, streamStarted, false)
 				return
 			}
 			if lastFailoverErr != nil {
@@ -942,6 +942,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
+				if h.writeOpenAICodexTicketUnavailable(c, err, streamStarted) {
+					submitResponsesUsage(result)
+					return
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -1299,6 +1303,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			if len(failedAccountIDs) == 0 {
 				if err != nil {
 					cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
+					cls = classifySelectionFailureError(err, cls)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					}
@@ -1499,6 +1504,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), false, nil, err)
+				if errors.Is(err, service.ErrOpenAICodexTicketUnavailable) {
+					cls := openAICodexTicketUnavailableClassification()
+					h.anthropicStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+					submitMessagesUsage(result)
+					return
+				}
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
@@ -2646,6 +2657,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			)
 			if lastFailoverErr != nil {
 				closeOpenAIWSFailoverExhausted(c, wsConn, lastFailoverErr)
+			} else if isOpenAICodexTicketSelectionFailure(err) {
+				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, service.ErrOpenAICodexTicketUnavailable.Error())
 			} else {
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 			}
@@ -3496,6 +3509,15 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted, false)
+}
+
+func (h *OpenAIGatewayHandler) writeOpenAICodexTicketUnavailable(c *gin.Context, err error, streamStarted bool) bool {
+	if err == nil || !errors.Is(err, service.ErrOpenAICodexTicketUnavailable) {
+		return false
+	}
+	cls := openAICodexTicketUnavailableClassification()
+	h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType, cls.Code, cls.Message, streamStarted, false)
+	return true
 }
 
 func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(

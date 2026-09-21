@@ -117,6 +117,8 @@ func main() {
 	go func() {
 		log.Info("warp-gateway listening",
 			"addr", cfg.Listen,
+			"auto_rotate_duplicate_exit_ip", cfg.AutoRotateDuplicateExitIP,
+			"auto_rotate_cooldown", cfg.AutoRotateCooldown,
 			"runtime", cfg.Runtime,
 			"data_dir", cfg.DataDir,
 			"tls", cfg.TLSCertFile != "",

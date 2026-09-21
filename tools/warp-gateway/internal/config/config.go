@@ -33,6 +33,11 @@ type Config struct {
 	TLSKeyFile  string `json:"tls_key_file,omitempty"`
 	// ClientCAFile enables mTLS: require client certs signed by this CA.
 	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// AutoRotateDuplicateExitIP re-registers a duplicate-IP instance so Cloudflare
+	// may assign a different colo/egress. Free WARP from one host often still
+	// collides; cooldown bounds register API traffic.
+	AutoRotateDuplicateExitIP bool          `json:"auto_rotate_duplicate_exit_ip"`
+	AutoRotateCooldown        time.Duration `json:"auto_rotate_cooldown"`
 }
 
 func Default() Config {
@@ -45,11 +50,13 @@ func Default() Config {
 		PortRangeEnd:   41100,
 		HealthInterval: 30 * time.Second,
 		// Use IP URL so health probes work even when local DNS is fake-ip hijacked.
-		ProbeURL:         "https://1.1.1.1/cdn-cgi/trace",
-		Runtime:          "mock",
-		SingBoxPath:      "sing-box",
-		UnhealthyAfter:   3,
-		ReconcileOnStart: true,
+		ProbeURL:                  "https://1.1.1.1/cdn-cgi/trace",
+		Runtime:                   "mock",
+		SingBoxPath:               "sing-box",
+		UnhealthyAfter:            3,
+		ReconcileOnStart:          true,
+		AutoRotateDuplicateExitIP: true,
+		AutoRotateCooldown:        15 * time.Minute,
 	}
 }
 
@@ -89,7 +96,24 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("WARP_GATEWAY_CLIENT_CA"); v != "" {
 		cfg.ClientCAFile = v
 	}
+	if v := os.Getenv("WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP"); v != "" {
+		cfg.AutoRotateDuplicateExitIP = parseBoolEnv(v)
+	}
+	if v := os.Getenv("WARP_GATEWAY_AUTO_ROTATE_COOLDOWN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.AutoRotateCooldown = d
+		}
+	}
 	return cfg
+}
+
+func parseBoolEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ProfileSecret returns the explicit at-rest profile encryption key.

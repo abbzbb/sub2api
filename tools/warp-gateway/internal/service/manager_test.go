@@ -86,6 +86,60 @@ func freeListenPortRange(t *testing.T, n int) (int, int) {
 	return 0, 0
 }
 
+func TestPickDuplicateRotateVictim(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	cooldown := 15 * time.Minute
+	dups := map[string][]service.DuplicateRotateMember{
+		"104.28.222.43": {
+			service.DupRotateMember("warp-01", 41001),
+			service.DupRotateMember("warp-02", 41002),
+			service.DupRotateMember("warp-03", 41003),
+		},
+	}
+	id, ip := service.PickDuplicateRotateVictim(dups, nil, now, cooldown)
+	if id != "warp-02" || ip != "104.28.222.43" {
+		t.Fatalf("keep :41001, rotate next port; got id=%s ip=%s", id, ip)
+	}
+	cooled := map[string]time.Time{"warp-02": now.Add(-time.Minute)}
+	id, _ = service.PickDuplicateRotateVictim(dups, cooled, now, cooldown)
+	if id != "warp-03" {
+		t.Fatalf("warp-02 in cooldown, want warp-03 got %s", id)
+	}
+	allCool := map[string]time.Time{
+		"warp-02": now,
+		"warp-03": now,
+	}
+	id, ip = service.PickDuplicateRotateVictim(dups, allCool, now, cooldown)
+	if id != "" || ip != "" {
+		t.Fatalf("all cooling, got id=%s ip=%s", id, ip)
+	}
+	if id, _ = service.PickDuplicateRotateVictim(map[string][]service.DuplicateRotateMember{
+		"1.1.1.1": {service.DupRotateMember("only", 41001)},
+	}, nil, now, cooldown); id != "" {
+		t.Fatalf("single member is not a duplicate victim: %s", id)
+	}
+
+	mixed := map[string][]service.DuplicateRotateMember{
+		"104.28.222.43": {
+			service.DupRotateMemberStatus("warp-01", 41001, false),
+			service.DupRotateMemberStatus("warp-02", 41002, true),
+		},
+	}
+	id, ip = service.PickDuplicateRotateVictim(mixed, nil, now, cooldown)
+	if id != "warp-01" || ip != "104.28.222.43" {
+		t.Fatalf("keep only healthy :41002, rotate unhealthy :41001; got id=%s ip=%s", id, ip)
+	}
+	id, _ = service.PickDuplicateRotateVictim(map[string][]service.DuplicateRotateMember{
+		"104.28.222.43": {
+			service.DupRotateMemberStatus("warp-01", 41001, false),
+			service.DupRotateMemberStatus("warp-02", 41002, true),
+		},
+	}, map[string]time.Time{"warp-01": now}, now, cooldown)
+	if id != "" {
+		t.Fatalf("must not rotate the only healthy member; got %s", id)
+	}
+}
+
 func TestCreateStartHealthPoolRotate(t *testing.T) {
 	mgr := testManager(t)
 	ctx := context.Background()

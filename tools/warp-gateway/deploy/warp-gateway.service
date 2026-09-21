@@ -19,6 +19,10 @@ PrivateTmp=true
 ReadWritePaths=/var/lib/warp-gateway
 Environment=WARP_GATEWAY_TOKEN=
 Environment=WARP_GATEWAY_RUNTIME=sing-box
+# Re-register one duplicate-exit-IP instance per health tick (cooldown 15m).
+# Set false to keep alerting without rotating.
+Environment=WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP=true
+Environment=WARP_GATEWAY_AUTO_ROTATE_COOLDOWN=15m
 
 [Install]
 WantedBy=multi-user.target

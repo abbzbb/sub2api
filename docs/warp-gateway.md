@@ -90,7 +90,16 @@ sing-box 1.12+ 使用 **endpoint** 型 WireGuard（非旧版 outbound）。gatew
 
 > **不要**把 `sing-box` 子进程塞进 sub2api 主进程的 systemd 加固单元；gateway 应独立服务。
 
-免费 WARP 多账号常共享同一 `exit_ip`（duplicate 告警属正常）；需要不同出口 IP 时用 WARP+ 或分散注册区域。
+免费 WARP 多账号常共享同一 `exit_ip`。默认在健康检查中对重复出口 **自动 rotate**（重注册 CF 设备，每实例冷却 15 分钟、每个 tick 最多一台）。可用环境变量关闭：
+
+```bash
+WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP=false
+WARP_GATEWAY_AUTO_ROTATE_COOLDOWN=15m
+```
+
+同一台机器上免费 WARP 仍可能转到同一个 IP；需要稳定不同出口时用 WARP+ 或分散注册区域。
+
+292 打票在 `warp.enabled=true` 时从 `/v1/pools/snapshot` 的健康 SOCKS 里 round-robin，优先选 **唯一 exit_ip**；全部撞 IP 时仍轮询端口，rotate 成功后下一周期能用上新出口。
 
 ## sub2api 配置示例
 

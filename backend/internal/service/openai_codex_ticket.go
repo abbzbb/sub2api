@@ -176,6 +176,59 @@ func (s *OpenAIGatewayService) openAICodexTicketHarvestProxyURLContext(ctx conte
 	return strings.TrimSpace(s.openAICodexTicketConfig().HarvestProxyURL)
 }
 
+func (s *OpenAIGatewayService) openAICodexTicketFailClosed() bool {
+	return s.openAICodexTicketFailClosedContext(context.Background())
+}
+
+func (s *OpenAIGatewayService) openAICodexTicketFailClosedContext(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	if !s.openAICodexTicketHarvestConfigured() {
+		return false
+	}
+	fallback := s.cfg != nil && s.cfg.Gateway.OpenAICodexTicket.FailClosed
+	if s.settingService != nil {
+		return s.settingService.GetOpenAICodexTicketFailClosed(ctx, fallback)
+	}
+	return fallback
+}
+
+func accountHasBoundProductionProxy(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	if account.ProxyID != nil && *account.ProxyID > 0 {
+		return true
+	}
+	if account.ProxyGroupID != nil && *account.ProxyGroupID > 0 {
+		return true
+	}
+	return false
+}
+
+const openAICodexTicketNoProxyWarnInterval = 5 * time.Minute
+
+func (s *OpenAIGatewayService) warnOpenAICodexTicketNoAccountProxy(account *Account, model, where string) {
+	if s == nil || account == nil || accountHasBoundProductionProxy(account) {
+		return
+	}
+	key := strconv.FormatInt(account.ID, 10)
+	now := time.Now()
+	if raw, ok := s.openaiCodexTicketNoProxyWarnAt.Load(key); ok {
+		if last, ok := raw.(time.Time); ok && now.Sub(last) < openAICodexTicketNoProxyWarnInterval {
+			return
+		}
+	}
+	s.openaiCodexTicketNoProxyWarnAt.Store(key, now)
+	logger.L().Warn("openai_codex_ticket no account proxy",
+		zap.Int64("account_id", account.ID),
+		zap.String("model", model),
+		zap.String("reason", "no_account_proxy"),
+		zap.String("where", where),
+	)
+}
+
 func (t *openAICodexTicket) valid(now time.Time, targetLen int) bool {
 	if t == nil {
 		return false
@@ -300,10 +353,11 @@ func (s *OpenAIGatewayService) applyOpenAICodexTicket(ctx context.Context, accou
 	cfg := s.openAICodexTicketConfig()
 	ticket := s.lookupOpenAICodexTicket(account, model)
 	if ticket.valid(time.Now(), cfg.TargetLength) {
+		s.warnOpenAICodexTicketNoAccountProxy(account, model, "inject")
 		h.Set(openAICodexTurnStateHeader, ticket.State)
 		return nil
 	}
-	if !cfg.FailClosed {
+	if !s.openAICodexTicketFailClosedContext(ctx) {
 		return nil
 	}
 	return ErrOpenAICodexTicketUnavailable
@@ -345,8 +399,7 @@ func (s *OpenAIGatewayService) openAICodexTicketBlocksAccount(account *Account, 
 	if s == nil || !isOpenAICodexTicketAccount(account) || !s.openAICodexTicketEnabled() {
 		return false
 	}
-	cfg := s.openAICodexTicketConfig()
-	if !cfg.FailClosed {
+	if !s.openAICodexTicketFailClosed() {
 		return false
 	}
 	model := normalizeOpenAICodexTicketModel(outboundModel)
@@ -354,7 +407,16 @@ func (s *OpenAIGatewayService) openAICodexTicketBlocksAccount(account *Account, 
 		return false
 	}
 	ticket := s.lookupOpenAICodexTicket(account, model)
-	return !ticket.valid(time.Now(), cfg.TargetLength)
+	return !ticket.valid(time.Now(), s.openAICodexTicketConfig().TargetLength)
+}
+
+// openAIRequestBlockedByCodexTicket 按真正出站模型判定门票门控。
+// compact 请求可能被改写成非门控模型，不能用客户端原始模型。
+func (s *OpenAIGatewayService) openAIRequestBlockedByCodexTicket(account *Account, requestedModel string, requireCompact bool) bool {
+	if s == nil {
+		return false
+	}
+	return s.openAICodexTicketBlocksAccount(account, s.openAICodexTicketOutboundModel(account, requestedModel, requireCompact))
 }
 
 func (s *OpenAIGatewayService) fireOpenAICodexTicketProbe(ctx context.Context, account *Account, token, model, proxyURL string, attemptTimeout time.Duration) (state string, status int, err error) {
@@ -443,6 +505,9 @@ func (s *OpenAIGatewayService) StartOpenAICodexTicketHarvester() {
 		zap.Int("ttl_seconds", s.openAICodexTicketConfig().TTLSeconds),
 		zap.Int("target_length", s.openAICodexTicketConfig().TargetLength),
 		zap.Strings("models", s.openAICodexTicketConfig().Models),
+		zap.Bool("fail_closed", s.openAICodexTicketFailClosed()),
+		zap.Bool("harvest_proxy_configured", s.openAICodexTicketHarvestProxyURL() != ""),
+		zap.Bool("warp_harvest_pool", s.warpGatewayForHarvest() != nil && s.warpGatewayForHarvest().Enabled()),
 	)
 }
 
@@ -481,6 +546,11 @@ func (s *OpenAIGatewayService) openAICodexTicketHarvestLoop(ctx context.Context)
 // before starting the next cycle.
 func (s *OpenAIGatewayService) refreshOpenAICodexTickets(ctx context.Context) {
 	if s == nil || s.accountRepo == nil || ctx.Err() != nil || !s.openAICodexTicketEnabledContext(ctx) {
+		return
+	}
+	if !s.openAICodexTicketHarvestAvailable(ctx) {
+		logger.L().Warn("openai_codex_ticket harvest skipped",
+			zap.String("reason", "empty_harvest_proxy"))
 		return
 	}
 	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
@@ -533,7 +603,8 @@ func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, a
 		return
 	}
 	cfg := s.openAICodexTicketConfig()
-	proxyURL := s.openAICodexTicketHarvestProxyURLContext(ctx)
+	picked := s.pickOpenAICodexTicketHarvestProxy(ctx)
+	proxyURL := strings.TrimSpace(picked.URL)
 	if proxyURL == "" || s.httpUpstream == nil || ctx.Err() != nil {
 		return
 	}
@@ -541,20 +612,22 @@ func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, a
 	_, _, _ = s.openaiCodexTicketFlight.Do(key, func() (any, error) {
 		token, _, err := s.GetAccessToken(ctx, account)
 		if err != nil || strings.TrimSpace(token) == "" {
-			logger.L().Info("openai_codex_ticket probe miss",
+			s.recordOpenAICodexTicketProbeMiss(account, model,
 				zap.Int64("account_id", account.ID), zap.String("model", model),
 				zap.String("reason", "token"), zap.Error(err))
 			return nil, nil
 		}
+		s.warnOpenAICodexTicketNoAccountProxy(account, model, "harvest")
+		logger.L().Debug("openai_codex_ticket harvest proxy", harvestProxyLogFields(picked)...)
 		state, status, perr := s.fireOpenAICodexTicketProbe(ctx, account, token, model, proxyURL, time.Duration(cfg.HarvestAttemptTimeoutSeconds)*time.Second)
 		if perr != nil {
-			logger.L().Info("openai_codex_ticket probe miss",
+			s.recordOpenAICodexTicketProbeMiss(account, model,
 				zap.Int64("account_id", account.ID), zap.String("model", model),
 				zap.String("reason", "error"), zap.Error(perr))
 			return nil, nil
 		}
 		if status != http.StatusOK || state == "" || len(state) != cfg.TargetLength || !strings.HasPrefix(state, openAICodexTicketStatePrefix) {
-			logger.L().Info("openai_codex_ticket probe miss",
+			s.recordOpenAICodexTicketProbeMiss(account, model,
 				zap.Int64("account_id", account.ID), zap.String("model", model),
 				zap.Int("http", status), zap.Int("len", len(state)))
 			return nil, nil
@@ -570,11 +643,57 @@ func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, a
 			Attempts:   1,
 		}
 		s.storeOpenAICodexTicket(ctx, account, ticket)
+		s.openaiCodexTicketMissStreak.Delete(key)
 		logger.L().Info("openai_codex_ticket harvested",
 			zap.Int64("account_id", account.ID), zap.String("model", model),
 			zap.Int("length", ticket.Length), zap.String("mode", "continuous"))
 		return nil, nil
 	})
+}
+
+type openAICodexTicketMissRecord struct {
+	count    int
+	lastWarn time.Time
+}
+
+const (
+	openAICodexTicketMissWarnAfter    = 3
+	openAICodexTicketMissWarnInterval = 5 * time.Minute
+)
+
+func (s *OpenAIGatewayService) recordOpenAICodexTicketProbeMiss(account *Account, model string, fields ...zap.Field) {
+	logger.L().Info("openai_codex_ticket probe miss", fields...)
+	if s == nil || account == nil {
+		return
+	}
+	key := openAICodexTicketKey(account.ID, model)
+	rec := &openAICodexTicketMissRecord{}
+	if raw, ok := s.openaiCodexTicketMissStreak.Load(key); ok {
+		if prev, ok := raw.(*openAICodexTicketMissRecord); ok && prev != nil {
+			rec.count = prev.count
+			rec.lastWarn = prev.lastWarn
+		}
+	}
+	rec.count++
+	now := time.Now()
+	shouldWarn := rec.count >= openAICodexTicketMissWarnAfter &&
+		(rec.lastWarn.IsZero() || now.Sub(rec.lastWarn) >= openAICodexTicketMissWarnInterval)
+	if shouldWarn {
+		rec.lastWarn = now
+	}
+	s.openaiCodexTicketMissStreak.Store(key, rec)
+	if !shouldWarn {
+		return
+	}
+	warnFields := []zap.Field{
+		zap.Int64("account_id", account.ID),
+		zap.String("model", model),
+		zap.Int("miss_streak", rec.count),
+	}
+	if ticket := s.lookupOpenAICodexTicket(account, model); ticket != nil && !ticket.ExpiresAt.IsZero() {
+		warnFields = append(warnFields, zap.Time("expired_at", ticket.ExpiresAt))
+	}
+	logger.L().Warn("openai_codex_ticket probe miss repeated", warnFields...)
 }
 
 // IsOpenAICodexTicketExtraKey identifies server-managed ticket material.

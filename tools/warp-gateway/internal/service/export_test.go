@@ -34,6 +34,20 @@ func (m *Manager) SeedInstanceMapsForTest(id string) {
 	m.probeMu.Unlock()
 }
 
+type DuplicateRotateMember = duplicateRotateMember
+
+func PickDuplicateRotateVictim(dups map[string][]duplicateRotateMember, lastRotate map[string]time.Time, now time.Time, cooldown time.Duration) (string, string) {
+	return pickDuplicateRotateVictim(dups, lastRotate, now, cooldown)
+}
+
+func DupRotateMember(id string, port int) duplicateRotateMember {
+	return duplicateRotateMember{ID: id, Port: port, Running: true}
+}
+
+func DupRotateMemberStatus(id string, port int, running bool) duplicateRotateMember {
+	return duplicateRotateMember{ID: id, Port: port, Running: running}
+}
+
 func (m *Manager) FailRuntimeForTest(id string, err error) {
 	if m == nil {
 		return

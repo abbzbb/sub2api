@@ -110,6 +110,29 @@ func TestCodexTicketProxyMaskAndValidation(t *testing.T) {
 	}
 }
 
+func TestCodexTicketFailClosedRuntimeSettingOverridesYaml(t *testing.T) {
+	repo := &codexTicketSettingRepo{codexPolicyMigrationRepoStub: &codexPolicyMigrationRepoStub{values: map[string]string{}}}
+	settings := NewSettingService(repo, &config.Config{})
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
+		Enabled:         true,
+		FailClosed:      true,
+		HarvestProxyURL: "socks5h://harvest.example.com:1080",
+	}, nil)
+	svc.settingService = settings
+	account := ticketTestAccount(41)
+	require.True(t, svc.openAICodexTicketFailClosed())
+	require.True(t, svc.openAICodexTicketBlocksAccount(account, "gpt-6-astra"))
+
+	repo.values[SettingKeyOpenAICodexTicketFailClosed] = "false"
+	settings.InvalidateOpenAICodexTicketFailClosedCache()
+	require.False(t, svc.openAICodexTicketFailClosed())
+	require.False(t, svc.openAICodexTicketBlocksAccount(account, "gpt-6-astra"))
+	h := http.Header{}
+	h.Set(openAICodexTurnStateHeader, "client-state")
+	require.NoError(t, svc.applyOpenAICodexTicket(context.Background(), account, "gpt-6-astra", h))
+	require.Equal(t, "client-state", h.Get(openAICodexTurnStateHeader))
+}
+
 func TestCodexTicketSettingsRefreshDoesNotMutateSharedConfig(t *testing.T) {
 	cfg := &config.Config{}
 	svc := NewSettingService(&codexTicketSettingRepo{codexPolicyMigrationRepoStub: &codexPolicyMigrationRepoStub{values: map[string]string{SettingKeyOpenAICodexTicketEnabled: "true"}}}, cfg)

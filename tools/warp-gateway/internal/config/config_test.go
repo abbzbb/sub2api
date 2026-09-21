@@ -4,7 +4,29 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestLoadFromEnvAutoRotateDuplicateExitIP(t *testing.T) {
+	t.Setenv("WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP", "")
+	t.Setenv("WARP_GATEWAY_AUTO_ROTATE_COOLDOWN", "")
+	cfg := Default()
+	if !cfg.AutoRotateDuplicateExitIP {
+		t.Fatal("default auto-rotate should be on")
+	}
+	if cfg.AutoRotateCooldown != 15*time.Minute {
+		t.Fatalf("cooldown=%s", cfg.AutoRotateCooldown)
+	}
+	t.Setenv("WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP", "false")
+	t.Setenv("WARP_GATEWAY_AUTO_ROTATE_COOLDOWN", "30m")
+	cfg = LoadFromEnv()
+	if cfg.AutoRotateDuplicateExitIP {
+		t.Fatal("env false should disable auto-rotate")
+	}
+	if cfg.AutoRotateCooldown != 30*time.Minute {
+		t.Fatalf("cooldown=%s", cfg.AutoRotateCooldown)
+	}
+}
 
 func TestProfileSecretDoesNotFallBackToToken(t *testing.T) {
 	cfg := Config{Token: "api-token", ProfileKey: ""}

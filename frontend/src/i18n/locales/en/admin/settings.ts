@@ -546,9 +546,12 @@ export default {
         codexTicketEnabled: "292 ticket harvest",
         codexTicketEnabledDesc:
           "When off, the gateway neither harvests nor injects x-codex-turn-state and forwards traffic as usual. When on, it harvests tickets in the background and overwrites that header on production requests.",
+        codexTicketFailClosed: "Fail closed without a ticket",
+        codexTicketFailClosedDesc:
+          "When on, gated models (gpt-6-astra / gpt-5.6-sol) are not scheduled without a valid 292 ticket. When off, harvesting still runs, but requests without a ticket are forwarded as usual.",
         codexTicketHarvestProxy: "292 harvest proxy",
         codexTicketHarvestProxyDesc:
-          "Used only for minting 292 tickets when the ticket feature is enabled. Changes apply to subsequent probes without a restart. Production traffic still uses each account's residential proxy. Paste a full HTTP or SOCKS5h proxy URL including username and password. The proxy provider must handle IP rotation. Leave blank when saving to keep the stored value.",
+          "Used only for minting 292 tickets when the ticket feature is enabled. Required while harvest is on unless warp.enabled points at warp-gateway, which then round-robins healthy SOCKS (unique exit IP first). Changes apply to subsequent probes without a restart. Production traffic uses each account's bound residential proxy; accounts with no proxy_id or proxy_group_id go out from this machine. Paste a full HTTP or SOCKS5h proxy URL including username and password. Leave blank when saving to keep the stored value.",
         codexTicketHarvestProxyPlaceholder: "http://user:pass{'@'}proxy.example.com:1080",
         codexTicketHarvestProxyConfigured: "Configured (password hidden). Paste a full new proxy URL to replace it.",
         codexClientRestrictionTitle: "Codex client restriction",

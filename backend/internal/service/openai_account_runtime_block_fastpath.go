@@ -552,16 +552,14 @@ func (s *OpenAIGatewayService) clearOpenAIAccountRuntimeBlockIfUnchanged(account
 // block is dropped with generation+deadline CAS. Model-scoped transient blocks
 // are left alone. This is fail-open if a DB write failed or the snapshot has
 // not caught up yet: empty cooldown fields drop the local account-level block.
-// requireCompact 必须与 Forward 的 /responses/compact 判定同源（两侧都来自
-// IsOpenAIResponsesCompactPath）：门票门控按真正出站的模型名判定，否则 compact
-// 请求会被按客户端原始模型误拦（见 openAICodexTicketOutboundModel）。
+//
+// Codex 292 门票门控不在这里：缺票是功能闸，不是限流/过载。调度过滤必须用
+// openAIRequestBlockedByCodexTicket，才能把排除原因记成 codex_ticket_unavailable
+// 而不是 runtime_blocked。requireCompact 仍传给门票判定，因为 compact 出站模型
+// 可能不是客户端原始模型（见 openAICodexTicketOutboundModel）。
 func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Account, requestedModel string, requireCompact bool) bool {
 	if s == nil {
 		return false
-	}
-	outboundModel := s.openAICodexTicketOutboundModel(account, requestedModel, requireCompact)
-	if s.openAICodexTicketBlocksAccount(account, outboundModel) {
-		return true
 	}
 	snapshot := s.peekOpenAIAccountRuntimeBlock(account)
 	if snapshot.blocked {
@@ -571,6 +569,14 @@ func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Acc
 		s.clearOpenAIAccountRuntimeBlockIfUnchanged(account.ID, snapshot)
 	}
 	return s.isOpenAIAccountModelRuntimeBlocked(account, requestedModel)
+}
+
+// isOpenAIAccountUnschedulableForRequest is the combined sticky/recheck skip:
+// ticket gate or runtime cooldown. Filter-stats paths must call the two
+// predicates separately so missing tickets are not counted as runtime_blocked.
+func (s *OpenAIGatewayService) isOpenAIAccountUnschedulableForRequest(account *Account, requestedModel string, requireCompact bool) bool {
+	return s.openAIRequestBlockedByCodexTicket(account, requestedModel, requireCompact) ||
+		s.isOpenAIAccountRequestRuntimeBlocked(account, requestedModel, requireCompact)
 }
 
 func (s *OpenAIGatewayService) recordOpenAIOAuth429() {

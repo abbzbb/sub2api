@@ -735,6 +735,21 @@ describe("admin SettingsView payment visible method controls", () => {
     wrapper.unmount();
   });
 
+  it("submits the Codex ticket fail-closed toggle", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      openai_codex_ticket_fail_closed: true,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    const toggle = wrapper.get("#codex-ticket-fail-closed");
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0].openai_codex_ticket_fail_closed).toBe(false);
+    wrapper.unmount();
+  });
+
   it("loads the masked Codex harvest proxy and submits a replacement URL", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,

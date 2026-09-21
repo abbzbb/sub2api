@@ -153,10 +153,11 @@ func TestApplyOpenAICodexTicket_ExpiredNotInjected(t *testing.T) {
 
 func TestApplyOpenAICodexTicket_WrongLengthNotInjected(t *testing.T) {
 	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
-		Enabled:      true,
-		TargetLength: 292,
-		TTLSeconds:   3600,
-		FailClosed:   true,
+		Enabled:         true,
+		TargetLength:    292,
+		TTLSeconds:      3600,
+		FailClosed:      true,
+		HarvestProxyURL: "socks5h://harvest",
 	}, nil)
 	account := ticketTestAccount(41)
 	svc.storeOpenAICodexTicket(context.Background(), account, &openAICodexTicket{
@@ -426,11 +427,12 @@ func TestOpenAICodexTicketGate_CompactRequestUsesForwardOutboundModel(t *testing
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		OpenAICompactModel: "gpt-5.5",
 		OpenAICodexTicket: config.OpenAICodexTicketConfig{
-			Enabled:      true,
-			TargetLength: 292,
-			TTLSeconds:   3600,
-			FailClosed:   true,
-			Models:       []string{"gpt-6-astra"},
+			Enabled:         true,
+			TargetLength:    292,
+			TTLSeconds:      3600,
+			FailClosed:      true,
+			HarvestProxyURL: "socks5h://harvest",
+			Models:          []string{"gpt-6-astra"},
 		},
 	}}}
 	account := ticketTestAccount(41) // 无票
@@ -440,11 +442,40 @@ func TestOpenAICodexTicketGate_CompactRequestUsesForwardOutboundModel(t *testing
 	require.Equal(t, "gpt-5.5", svc.openAICodexTicketOutboundModel(account, "gpt-6-astra", true))
 
 	// 普通请求：出站仍是门控模型且无票 → fail_closed 必须拦号。
-	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", false))
+	require.True(t, svc.openAIRequestBlockedByCodexTicket(account, "gpt-6-astra", false))
+	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", false))
 
 	// compact 请求：出站已被改写成非门控的 gpt-5.5 → 不得拦号。
+	require.False(t, svc.openAIRequestBlockedByCodexTicket(account, "gpt-6-astra", true))
 	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", true))
 
 	// 回归锚点：按客户端原始模型判定（旧实现的口径）在 compact 下必然误拦。
 	require.True(t, svc.openAICodexTicketBlocksAccount(account, canonicalOpenAIAccountSchedulingModel(account, "gpt-6-astra")))
+}
+
+func TestOpenAICodexTicketGate_EmptyHarvestProxyFailOpen(t *testing.T) {
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
+		Enabled:    true,
+		FailClosed: true,
+	}, nil)
+	account := ticketTestAccount(41)
+	require.False(t, svc.openAICodexTicketFailClosed())
+	require.False(t, svc.openAICodexTicketBlocksAccount(account, "gpt-6-astra"))
+	h := http.Header{}
+	h.Set(openAICodexTurnStateHeader, "client-state")
+	require.NoError(t, svc.applyOpenAICodexTicket(context.Background(), account, "gpt-6-astra", h))
+	require.Equal(t, "client-state", h.Get(openAICodexTurnStateHeader))
+}
+
+func TestRefreshOpenAICodexTickets_EmptyHarvestProxySkips(t *testing.T) {
+	upstream := &httpUpstreamRecorder{}
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
+		Enabled:    true,
+		FailClosed: true,
+	}, upstream)
+	account := ticketTestAccount(41)
+	account.Status = StatusActive
+	svc.accountRepo = &codexTicketRefreshRepo{accounts: []Account{*account}}
+	svc.refreshOpenAICodexTickets(context.Background())
+	require.Empty(t, upstream.requests)
 }

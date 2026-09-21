@@ -287,6 +287,23 @@ func TestClassifySelectionFailureError_CallSiteChainKeepsModelNotFoundAttributio
 
 // 池子里确实存在能服务该模型、只是全部在冷却的账号时，429 改判仍需保留：
 // 这种情况 fallback 是 503（HasModelSupport=true），重试是有意义的。
+func TestClassifySelectionFailureError_CodexTicketUnavailable(t *testing.T) {
+	fallback := noAccountErrorClassification{Status: http.StatusServiceUnavailable, ErrType: "api_error", Message: "Service temporarily unavailable"}
+
+	got := classifySelectionFailureError(
+		fmt.Errorf("no available OpenAI accounts supporting model: gpt-5.6-sol (pool=2, filtered: codex_ticket_unavailable=2)"),
+		fallback,
+	)
+	require.Equal(t, http.StatusServiceUnavailable, got.Status)
+	require.Equal(t, "api_error", got.ErrType)
+	require.Equal(t, openAICodexTicketUnavailableCode, got.Code)
+	require.Equal(t, service.ErrOpenAICodexTicketUnavailable.Error(), got.Message)
+
+	got = classifySelectionFailureError(service.ErrOpenAICodexTicketUnavailable, fallback)
+	require.Equal(t, openAICodexTicketUnavailableCode, got.Code)
+	require.Equal(t, fallback, classifySelectionFailureError(fmt.Errorf("codex_ticket_unavailable=0"), fallback))
+}
+
 func TestClassifySelectionFailureError_StillUpgradesNonModelNotFoundFallback(t *testing.T) {
 	fallback := noAccountErrorClassification{
 		Status:  http.StatusServiceUnavailable,

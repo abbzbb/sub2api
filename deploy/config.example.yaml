@@ -332,6 +332,7 @@ gateway:
     harvest_proxy_url: ""
     harvest_probe_interval_seconds: 6
     harvest_attempt_timeout_seconds: 25
+    # 无有效 292 票时是否暂停调度。管理端「Codex 设置 → 缺票拦截」可覆盖，无需重启。
     fail_closed: true
     models:
       - gpt-6-astra
@@ -818,6 +819,8 @@ warp:
   auto_detach_unhealthy: true
   # Phase 3: alert when multiple instances share the same exit IP
   alert_duplicate_exit_ip: true
+  # When enabled, 292 ticket harvest round-robins healthy warp-gateway SOCKS
+  # endpoints (unique exit_ip first) instead of pinning harvest_proxy_url.
   default_group_name: "warp-pool"
   # Optional key material for profile secret handling (gateway prefers WARP_GATEWAY_PROFILE_KEY)
   # 可选 profile 密钥材料（gateway 优先使用 WARP_GATEWAY_PROFILE_KEY 做落盘加密）

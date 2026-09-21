@@ -490,6 +490,16 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		return nil, infraerrors.BadRequest("INVALID_CODEX_HARVEST_PROXY", err.Error())
 	}
 	updates[SettingKeyOpenAICodexTicketHarvestProxyURL] = strings.TrimSpace(settings.OpenAICodexTicketHarvestProxyURL)
+	if settings.OpenAICodexTicketEnabled {
+		harvestProxy := strings.TrimSpace(settings.OpenAICodexTicketHarvestProxyURL)
+		if harvestProxy == "" && s.cfg != nil {
+			harvestProxy = strings.TrimSpace(s.cfg.Gateway.OpenAICodexTicket.HarvestProxyURL)
+		}
+		if !OpenAICodexTicketHarvestConfigured(s.cfg, harvestProxy) {
+			return nil, infraerrors.BadRequest("INVALID_CODEX_HARVEST_PROXY", "harvest proxy is required when 292 ticket harvest is enabled")
+		}
+	}
+	updates[SettingKeyOpenAICodexTicketFailClosed] = strconv.FormatBool(settings.OpenAICodexTicketFailClosed)
 	// SettingKeyOpenAICodexClientVersionSynced 由自动同步任务独占写入，此处不得覆盖，
 	// 否则面板保存会把同步结果清空。
 	// codex_cli_only 加固
@@ -746,6 +756,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	s.InvalidateOpenAICodexClientVersionCache()
 	s.InvalidateOpenAICodexTicketEnabledCache()
 	s.InvalidateOpenAICodexTicketHarvestProxyCache()
+	s.InvalidateOpenAICodexTicketFailClosedCache()
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		lowUpstreamRatePriorityEnabled: settings.OpenAILowUpstreamRatePriorityEnabled,

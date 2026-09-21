@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -32,6 +33,10 @@ type Manager struct {
 	startBackoff map[string]reconcileStartBackoff
 	lastProbe    map[string]time.Time
 	probeMu      sync.Mutex
+
+	rotateMu       sync.Mutex
+	lastRotate     map[string]time.Time
+	rotateInFlight bool
 }
 
 type reconcileStartBackoff struct {
@@ -53,6 +58,7 @@ func NewManager(cfg config.Config, st *store.Store, rt runtime.Manager, log *slo
 		instanceMu:   make(map[string]*sync.Mutex),
 		startBackoff: make(map[string]reconcileStartBackoff),
 		lastProbe:    make(map[string]time.Time),
+		lastRotate:   make(map[string]time.Time),
 	}
 }
 
@@ -845,6 +851,154 @@ func (m *Manager) ExitIPDuplicates() map[string][]string {
 	return dups
 }
 
+type duplicateRotateMember struct {
+	ID      string
+	Port    int
+	Running bool
+}
+
+func memberOffCooldown(id string, lastRotate map[string]time.Time, now time.Time, cooldown time.Duration) bool {
+	if last, ok := lastRotate[id]; ok && now.Sub(last) < cooldown {
+		return false
+	}
+	return true
+}
+
+// pickDuplicateRotateVictim keeps the lowest-port *running* member per shared
+// exit IP and returns at most one other member. Unhealthy duplicates are
+// preferred; the sole healthy member of a group is never rotated.
+func pickDuplicateRotateVictim(dups map[string][]duplicateRotateMember, lastRotate map[string]time.Time, now time.Time, cooldown time.Duration) (id, exitIP string) {
+	if cooldown <= 0 {
+		cooldown = 15 * time.Minute
+	}
+	type candidate struct {
+		id        string
+		exitIP    string
+		port      int
+		unhealthy bool
+	}
+	var ready []candidate
+	ips := make([]string, 0, len(dups))
+	for ip := range dups {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	for _, ip := range ips {
+		members := append([]duplicateRotateMember(nil), dups[ip]...)
+		sort.Slice(members, func(i, j int) bool {
+			if members[i].Port != members[j].Port {
+				return members[i].Port < members[j].Port
+			}
+			return members[i].ID < members[j].ID
+		})
+		if len(members) < 2 {
+			continue
+		}
+		var running []duplicateRotateMember
+		for _, member := range members {
+			if member.Running {
+				running = append(running, member)
+			}
+		}
+		keepID := ""
+		if len(running) > 0 {
+			keepID = running[0].ID
+		}
+		consider := func(member duplicateRotateMember) {
+			if member.ID == keepID || !memberOffCooldown(member.ID, lastRotate, now, cooldown) {
+				return
+			}
+			ready = append(ready, candidate{id: member.ID, exitIP: ip, port: member.Port, unhealthy: !member.Running})
+		}
+		for _, member := range members {
+			if !member.Running {
+				consider(member)
+			}
+		}
+		if len(running) >= 2 {
+			for _, member := range running {
+				consider(member)
+			}
+		}
+	}
+	if len(ready) == 0 {
+		return "", ""
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].unhealthy != ready[j].unhealthy {
+			return ready[i].unhealthy
+		}
+		if ready[i].exitIP != ready[j].exitIP {
+			return ready[i].exitIP < ready[j].exitIP
+		}
+		if ready[i].port != ready[j].port {
+			return ready[i].port < ready[j].port
+		}
+		return ready[i].id < ready[j].id
+	})
+	return ready[0].id, ready[0].exitIP
+}
+
+func (m *Manager) duplicateRotateMembers(dups map[string][]string) map[string][]duplicateRotateMember {
+	out := make(map[string][]duplicateRotateMember, len(dups))
+	for ip, ids := range dups {
+		for _, id := range ids {
+			member := duplicateRotateMember{ID: id}
+			if inst, err := m.store.Get(id); err == nil && inst != nil {
+				member.Port = inst.ListenPort
+				member.Running = inst.Status == store.StatusRunning
+			}
+			out[ip] = append(out[ip], member)
+		}
+	}
+	return out
+}
+
+// maybeAutoRotateDuplicateExitIPs re-registers one duplicate-IP instance per
+// health tick. sing-box only: mock runtime cannot change egress by re-registering.
+func (m *Manager) maybeAutoRotateDuplicateExitIPs(dups map[string][]string) {
+	if m == nil || !m.cfg.AutoRotateDuplicateExitIP || m.runtime == nil || m.runtime.Name() != "sing-box" {
+		return
+	}
+	m.rotateMu.Lock()
+	if m.rotateInFlight {
+		m.rotateMu.Unlock()
+		return
+	}
+	if m.lastRotate == nil {
+		m.lastRotate = map[string]time.Time{}
+	}
+	id, exitIP := pickDuplicateRotateVictim(m.duplicateRotateMembers(dups), m.lastRotate, time.Now(), m.cfg.AutoRotateCooldown)
+	if id == "" {
+		m.rotateMu.Unlock()
+		return
+	}
+	m.lastRotate[id] = time.Now()
+	m.rotateInFlight = true
+	m.rotateMu.Unlock()
+
+	m.log.Info("auto-rotating duplicate exit IP", "id", id, "exit_ip", exitIP)
+	go func(id, exitIP string) {
+		defer func() {
+			m.rotateMu.Lock()
+			m.rotateInFlight = false
+			m.rotateMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		rotated, err := m.Rotate(ctx, id, nil)
+		if err != nil {
+			m.log.Warn("auto-rotate duplicate exit IP failed", "id", id, "exit_ip", exitIP, "err", err)
+			return
+		}
+		newIP := ""
+		if rotated != nil {
+			newIP = rotated.ExitIP
+		}
+		m.log.Info("auto-rotate duplicate exit IP finished", "id", id, "old_exit_ip", exitIP, "new_exit_ip", newIP)
+	}(id, exitIP)
+}
+
 // Reconcile brings runtime in line with desired_state.
 func (m *Manager) Reconcile(ctx context.Context) {
 	for _, inst := range m.store.List() {
@@ -908,6 +1062,7 @@ func (m *Manager) RunBackground(ctx context.Context) {
 			}
 			if dups := m.ExitIPDuplicates(); len(dups) > 0 {
 				m.log.Warn("duplicate exit IPs detected", "dups", dups)
+				m.maybeAutoRotateDuplicateExitIPs(dups)
 			}
 		case <-rt.C:
 			m.Reconcile(ctx)

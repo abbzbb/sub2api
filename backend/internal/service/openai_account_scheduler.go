@@ -1457,6 +1457,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			filterStats.exclude("platform_mismatch")
 			continue
 		}
+		if s.service.openAIRequestBlockedByCodexTicket(account, req.RequestedModel, req.RequireCompact) {
+			filterStats.exclude("codex_ticket_unavailable")
+			continue
+		}
 		if s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel, req.RequireCompact) {
 			filterStats.exclude("runtime_blocked")
 			continue
@@ -1778,6 +1782,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}
 	if req.RequirePrivacySet && !account.IsPrivacySet() {
 		return false, "privacy_not_set"
+	}
+	if s != nil && s.service != nil && s.service.openAIRequestBlockedByCodexTicket(account, req.RequestedModel, req.RequireCompact) {
+		return false, "codex_ticket_unavailable"
 	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel, req.RequireCompact) {
 		return false, "runtime_blocked"

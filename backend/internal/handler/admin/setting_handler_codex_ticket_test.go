@@ -38,6 +38,30 @@ func TestSettingsCodexTicketProxyWriteReadAndHotReload(t *testing.T) {
 	require.Contains(t, get.Body.String(), "new.example.com")
 }
 
+func TestSettingsCodexTicketRejectEnableWithoutHarvestProxy(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+	rec := doUpdateSettings(t, h, map[string]any{"openai_codex_ticket_enabled": true}, nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "harvest proxy is required")
+	require.NotEqual(t, "true", repo.values[service.SettingKeyOpenAICodexTicketEnabled])
+}
+
+func TestSettingsCodexTicketFailClosedWriteAndRead(t *testing.T) {
+	key := service.SettingKeyOpenAICodexTicketFailClosed
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyOpenAICodexTicketHarvestProxyURL: "socks5h://user:secret@harvest.example.com:1080",
+		key: "true",
+	})
+	rec := doUpdateSettings(t, h, map[string]any{key: false}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "false", repo.values[key])
+	require.False(t, h.settingService.GetOpenAICodexTicketFailClosed(context.Background(), true))
+	require.Contains(t, rec.Body.String(), `"openai_codex_ticket_fail_closed":false`)
+	rec = doUpdateSettings(t, h, map[string]any{"site_name": "updated"}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "false", repo.values[key])
+}
+
 func TestSettingsCodexTicketRejectInvalidProxyWithoutLeakingPassword(t *testing.T) {
 	key := service.SettingKeyOpenAICodexTicketHarvestProxyURL
 	h, repo := newStepUpSwitchTestHandler(t, map[string]string{key: "http://previous.example.com:8080"})

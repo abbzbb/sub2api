@@ -539,9 +539,12 @@ export default {
         codexTicketEnabled: '292 打票',
         codexTicketEnabledDesc:
           '关闭后不打票、不注入 x-codex-turn-state，按原链路转发。开启后后台打票，并在业务请求中覆盖该头。',
+        codexTicketFailClosed: '缺票拦截',
+        codexTicketFailClosedDesc:
+          '开启后，门控模型（gpt-6-astra / gpt-5.6-sol）没有有效 292 票就不调度。关闭后后台仍打票，无票请求按原链路转发。',
         codexTicketHarvestProxy: '292 打票代理',
         codexTicketHarvestProxyDesc:
-          '仅在门票功能开启时用于打票，保存后后续探测会使用新代理，无需重启。日常业务仍走账号自己的住宅代理。填写完整代理 URL（http 或 socks5h，含用户名和密码）。代理服务商需自行负责出口 IP 轮换。留空并保存表示不改已保存的值。',
+          '仅在门票功能开启时用于打票。开启打票时通常要填；若已启用 warp.enabled 并对接 warp-gateway，打票会在健康 SOCKS 之间 round-robin（优先唯一 exit_ip）。保存后后续探测使用新代理，无需重启。日常业务走账号绑定的住宅代理；未绑 proxy_id / proxy_group_id 的号从本机直连。填写完整代理 URL（http 或 socks5h，含用户名和密码）。留空并保存表示不改已保存的值。',
         codexTicketHarvestProxyPlaceholder: "http://user:pass{'@'}proxy.example.com:1080",
         codexTicketHarvestProxyConfigured: '已配置（密码已隐藏）。要更换请整段粘贴新的代理 URL。',
         codexClientRestrictionTitle: 'Codex 客户端限制',
