@@ -25,7 +25,7 @@ func main() {
 		listen   = flag.String("listen", "", "control API listen addr (default env/config)")
 		dataDir  = flag.String("data-dir", "", "state directory")
 		runtimeN = flag.String("runtime", "", "mock|sing-box")
-		token    = flag.String("token", "", "bearer token (empty = no auth)")
+		token    = flag.String("token", "", "bearer token (required unless mTLS, or WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH=1 on loopback)")
 	)
 	flag.Parse()
 

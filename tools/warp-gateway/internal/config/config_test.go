@@ -69,12 +69,33 @@ func TestValidateRejectsBarePortListenWithoutToken(t *testing.T) {
 	}
 }
 
-func TestValidateAllowsLoopbackWithoutToken(t *testing.T) {
+func TestValidateRejectsLoopbackWithoutTokenByDefault(t *testing.T) {
 	cfg := Default()
+	cfg.Listen = "127.0.0.1:19798"
+	cfg.Token = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for loopback without token")
+	}
+	cfg.AllowInsecureNoAuth = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadFromEnvAllowInsecureNoAuth(t *testing.T) {
+	t.Setenv("WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH", "1")
+	cfg := LoadFromEnv()
+	if !cfg.AllowInsecureNoAuth {
+		t.Fatal("expected dev switch from env")
+	}
 	cfg.Listen = "127.0.0.1:19798"
 	cfg.Token = ""
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	cfg.Listen = "0.0.0.0:19798"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("dev switch must not allow empty token on a public listen")
 	}
 }
 

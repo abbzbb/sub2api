@@ -143,6 +143,13 @@ func (s *WarpSyncService) Enabled() bool {
 	return s != nil && s.client != nil && s.client.Enabled()
 }
 
+func (s *WarpSyncService) ControlPlaneBaseURL() string {
+	if s == nil || s.client == nil {
+		return ""
+	}
+	return s.client.ControlPlaneBaseURL()
+}
+
 // Snapshot proxies gateway pool view.
 func (s *WarpSyncService) Snapshot(ctx context.Context) (*WarpPoolSnapshot, error) {
 	if !s.Enabled() {
@@ -517,7 +524,7 @@ func (s *WarpSyncService) syncFromGatewayLocked(ctx context.Context, groupName s
 	if err != nil {
 		return nil, err
 	}
-	plan := BuildAttachPlan(snap, groupName)
+	plan := BuildAttachPlan(snap, groupName, s.client.ControlPlaneBaseURL())
 	result := &WarpSyncResult{Snapshot: snap, Plan: plan}
 
 	if s.cfg.AlertDuplicateExitIP && len(plan.DuplicateExitIPs) > 0 {
@@ -633,7 +640,7 @@ func (s *WarpSyncService) syncFromGatewayLocked(ctx context.Context, groupName s
 				s.log.Warn(msg)
 				// Keep streak so next tick retries confirm.
 			} else {
-				plan2 := BuildAttachPlan(snap2, groupName)
+				plan2 := BuildAttachPlan(snap2, groupName, s.client.ControlPlaneBaseURL())
 				specN2 := len(plan2.ProxySpecs)
 				confirmOK := snap2 != nil &&
 					isDrasticWarpDrop(localWarpN, specN2) &&

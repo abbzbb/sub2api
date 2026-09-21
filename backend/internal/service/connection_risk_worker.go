@@ -248,6 +248,84 @@ func (w *ConnectionRiskWorker) evaluateOnce() {
 		}
 		w.scoreKey(ctx, keyID, now, s)
 	}
+	users, err := w.signals.ListActiveUsers(ctx, 2000)
+	if err != nil {
+		slog.Warn("connection risk list active users failed", "error", err)
+		return
+	}
+	for _, userID := range users {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		w.scoreUser(ctx, userID, now, s)
+	}
+}
+
+type userWindowMetricsReader interface {
+	ReadUserWindowMetrics(ctx context.Context, userID, nowUnix int64) (*ConnectionRiskSubjectMetrics, error)
+}
+
+// scoreUser applies panel/JWT session-binding mismatches to the user subject only.
+// API key auto-disable stays on key-scoped events.
+func (w *ConnectionRiskWorker) scoreUser(ctx context.Context, userID, nowUnix int64, s ConnectionRiskSettings) {
+	reader, ok := w.signals.(userWindowMetricsReader)
+	if !ok || w == nil || userID <= 0 || w.events == nil {
+		return
+	}
+	if containsInt64(s.ExemptUserIDs, userID) {
+		return
+	}
+	if w.signals != nil {
+		if exempt, _ := w.signals.IsExempt(ctx, "u", userID); exempt {
+			return
+		}
+	}
+	metrics, err := reader.ReadUserWindowMetrics(ctx, userID, nowUnix)
+	if err != nil || metrics == nil || metrics.SBMismatch15m <= 0 {
+		return
+	}
+	metrics.UserID = userID
+	metrics.APIKeyID = 0
+	result := ScoreConnectionRisk(metrics, s)
+	if !result.ShouldOpen {
+		return
+	}
+	uid := userID
+	ev := &ConnectionRiskEvent{
+		SubjectType: ConnectionRiskSubjectUser,
+		UserID:      &uid,
+		RulesFired:  result.RulesFired,
+		Severity:    result.Severity,
+		Score:       result.Score,
+		Status:      ConnectionRiskStatusOpen,
+		Title:       result.Title,
+		Summary:     result.Summary,
+		Evidence:    BuildConnectionRiskEvidence(metrics),
+		Metrics:     BuildConnectionRiskEvidence(metrics),
+		DedupeKey:   fmt.Sprintf("u:%d:%s", userID, primaryRule(result)),
+		ActionTaken: ConnectionRiskActionNone,
+		FirstSeenAt: time.Now().UTC(),
+		LastSeenAt:  time.Now().UTC(),
+	}
+	saved, created, err := w.events.UpsertOpen(ctx, ev)
+	if err != nil {
+		slog.Warn("connection risk user upsert failed", "error", err, "user_id", userID)
+		return
+	}
+	if w.metrics != nil {
+		w.metrics.EventsCreated.Add(1)
+	}
+	if w.policy != nil && saved != nil && created {
+		before := saved.ActionTaken
+		w.policy.HandleNewEvent(ctx, saved, s)
+		if saved.ActionTaken != before && saved.ActionTaken != "" && saved.ActionTaken != ConnectionRiskActionNone {
+			if err := w.events.UpdateActionTaken(ctx, saved.ID, saved.ActionTaken); err != nil {
+				slog.Warn("connection risk user action persist failed", "error", err, "event_id", saved.ID)
+			}
+		}
+	}
 }
 
 func (w *ConnectionRiskWorker) scoreKey(ctx context.Context, keyID, nowUnix int64, s ConnectionRiskSettings) {

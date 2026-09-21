@@ -88,7 +88,15 @@ func (s *OpenAIGatewayService) openAICodexTicketHarvestAvailable(ctx context.Con
 func (s *OpenAIGatewayService) pickOpenAICodexTicketHarvestProxy(ctx context.Context) openAICodexHarvestProxy {
 	pool := pickOpenAICodexHarvestProxies(s.listOpenAICodexTicketHarvestProxies(ctx))
 	if len(pool) == 0 {
-		return openAICodexHarvestProxy{URL: s.openAICodexTicketHarvestProxyURLContext(ctx)}
+		raw := s.openAICodexTicketHarvestProxyURLContext(ctx)
+		base := ""
+		if client := s.warpGatewayForHarvest(); client != nil {
+			base = client.ControlPlaneBaseURL()
+		}
+		if !socksURLDialable(base, raw) {
+			return openAICodexHarvestProxy{}
+		}
+		return openAICodexHarvestProxy{URL: raw}
 	}
 	n := atomic.AddUint64(&s.openaiCodexHarvestRR, 1)
 	return pool[int((n-1)%uint64(len(pool)))]
@@ -118,11 +126,11 @@ func (s *OpenAIGatewayService) listOpenAICodexTicketHarvestProxies(ctx context.C
 	var candidates []openAICodexHarvestProxy
 	if err != nil {
 		logger.L().Debug("openai_codex_ticket warp snapshot failed", zap.Error(err))
-		if configured != "" {
+		if configured != "" && socksURLDialable(client.ControlPlaneBaseURL(), configured) {
 			candidates = []openAICodexHarvestProxy{{URL: configured, Name: "configured"}}
 		}
 	} else {
-		candidates = harvestProxiesFromSnapshot(snap, configured)
+		candidates = harvestProxiesFromSnapshot(snap, configured, client.ControlPlaneBaseURL())
 	}
 	s.openaiCodexWarpHarvestMu.Lock()
 	s.openaiCodexWarpHarvest = cachedOpenAICodexWarpHarvest{candidates: candidates, fetchedAt: time.Now()}
@@ -130,7 +138,7 @@ func (s *OpenAIGatewayService) listOpenAICodexTicketHarvestProxies(ctx context.C
 	return candidates
 }
 
-func harvestProxiesFromSnapshot(snap *WarpPoolSnapshot, configured string) []openAICodexHarvestProxy {
+func harvestProxiesFromSnapshot(snap *WarpPoolSnapshot, configured, controlBaseURL string) []openAICodexHarvestProxy {
 	seen := map[string]struct{}{}
 	var out []openAICodexHarvestProxy
 	add := func(p openAICodexHarvestProxy) {
@@ -151,19 +159,26 @@ func harvestProxiesFromSnapshot(snap *WarpPoolSnapshot, configured string) []ope
 			if status != "" && status != "running" {
 				continue
 			}
+			dialURL, ok := inst.DialSocksURL(controlBaseURL)
+			if !ok {
+				continue
+			}
 			add(openAICodexHarvestProxy{
-				URL:    inst.SocksURL(),
+				URL:    dialURL,
 				ExitIP: strings.TrimSpace(inst.ExitIP),
 				Name:   inst.Name,
 			})
 		}
 		if len(snap.Instances) == 0 {
 			for _, raw := range snap.SocksURLs {
+				if !socksURLDialable(controlBaseURL, raw) {
+					continue
+				}
 				add(openAICodexHarvestProxy{URL: raw})
 			}
 		}
 	}
-	if configured != "" {
+	if configured != "" && socksURLDialable(controlBaseURL, configured) {
 		add(openAICodexHarvestProxy{URL: configured, Name: "configured"})
 	}
 	return out

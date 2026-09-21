@@ -44,11 +44,11 @@ type Profile struct {
 	DNS        []string     `json:"dns,omitempty"`
 	MTU        int          `json:"mtu,omitempty"`
 	Peers      []PeerConfig `json:"peers,omitempty"`
-	// LicenseKey is optional metadata for registration flows.
+	// LicenseKey is optional metadata for registration flows. Encrypted at rest.
 	LicenseKey string `json:"license_key,omitempty"`
 	// Cloudflare free-device registration (for DELETE /reg/{id}).
 	DeviceID    string `json:"device_id,omitempty"`
-	AccessToken string `json:"access_token,omitempty"` // encrypted at rest with PrivateKey
+	AccessToken string `json:"access_token,omitempty"` // encrypted at rest
 	AccountID   string `json:"account_id,omitempty"`
 	// MockExitIP forces mock runtime probe result (local tests).
 	MockExitIP string `json:"mock_exit_ip,omitempty"`
@@ -79,7 +79,7 @@ type Instance struct {
 	CreatedAt     time.Time    `json:"created_at"`
 	UpdatedAt     time.Time    `json:"updated_at"`
 	SocksAuthUser string       `json:"socks_auth_user,omitempty"`
-	SocksAuthPass string       `json:"socks_auth_pass,omitempty"`
+	SocksAuthPass string       `json:"socks_auth_pass,omitempty"` // encrypted at rest
 }
 
 func (i Instance) SocksURL() string {
@@ -141,23 +141,12 @@ func (s *Store) load() error {
 	}
 	for i := range list {
 		inst := list[i]
-		if s.cipher == nil && (isEncryptedAtRest(inst.Profile.PrivateKey) || isEncryptedAtRest(inst.Profile.AccessToken)) {
+		if s.cipher == nil && encryptedAtRestPresent(inst) {
 			return fmt.Errorf("encrypted profile data present for %s but profile cipher is not configured", inst.ID)
 		}
 		if s.cipher != nil {
-			if inst.Profile.PrivateKey != "" {
-				plain, err := s.cipher.DecryptString(inst.Profile.PrivateKey)
-				if err != nil {
-					return fmt.Errorf("decrypt profile for %s: %w", inst.ID, err)
-				}
-				inst.Profile.PrivateKey = plain
-			}
-			if inst.Profile.AccessToken != "" {
-				plain, err := s.cipher.DecryptString(inst.Profile.AccessToken)
-				if err != nil {
-					return fmt.Errorf("decrypt access_token for %s: %w", inst.ID, err)
-				}
-				inst.Profile.AccessToken = plain
+			if err := s.decryptSecrets(&inst); err != nil {
+				return err
 			}
 		}
 		cp := inst
@@ -171,24 +160,72 @@ func isEncryptedAtRest(value string) bool {
 	return len(value) >= 7 && value[:7] == "enc:v1:"
 }
 
+func encryptedAtRestPresent(inst Instance) bool {
+	return isEncryptedAtRest(inst.Profile.PrivateKey) ||
+		isEncryptedAtRest(inst.Profile.AccessToken) ||
+		isEncryptedAtRest(inst.Profile.LicenseKey) ||
+		isEncryptedAtRest(inst.SocksAuthPass)
+}
+
+func (s *Store) decryptSecrets(inst *Instance) error {
+	var err error
+	if inst.Profile.PrivateKey, err = s.decryptField(inst.ID, "private_key", inst.Profile.PrivateKey); err != nil {
+		return err
+	}
+	if inst.Profile.AccessToken, err = s.decryptField(inst.ID, "access_token", inst.Profile.AccessToken); err != nil {
+		return err
+	}
+	if inst.Profile.LicenseKey, err = s.decryptField(inst.ID, "license_key", inst.Profile.LicenseKey); err != nil {
+		return err
+	}
+	if inst.SocksAuthPass, err = s.decryptField(inst.ID, "socks_auth_pass", inst.SocksAuthPass); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) decryptField(id, name, value string) (string, error) {
+	if value == "" || s == nil || s.cipher == nil {
+		return value, nil
+	}
+	plain, err := s.cipher.DecryptString(value)
+	if err != nil {
+		return "", fmt.Errorf("decrypt %s for %s: %w", name, id, err)
+	}
+	return plain, nil
+}
+
+func (s *Store) encryptField(id, name, value string) (string, error) {
+	if value == "" || s == nil || s.cipher == nil {
+		return value, nil
+	}
+	enc, err := s.cipher.EncryptString(value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt %s for %s: %w", name, id, err)
+	}
+	if value != "" && !isEncryptedAtRest(enc) {
+		return "", fmt.Errorf("encrypt %s for %s: ciphertext missing enc:v1 prefix", name, id)
+	}
+	return enc, nil
+}
+
 func (s *Store) persistLocked() error {
 	list := make([]Instance, 0, len(s.byID))
 	for _, inst := range s.byID {
 		cp := *inst
 		if s.cipher != nil {
-			if cp.Profile.PrivateKey != "" {
-				enc, err := s.cipher.EncryptString(cp.Profile.PrivateKey)
-				if err != nil {
-					return fmt.Errorf("encrypt profile key for %s: %w", cp.ID, err)
-				}
-				cp.Profile.PrivateKey = enc
+			var err error
+			if cp.Profile.PrivateKey, err = s.encryptField(cp.ID, "private_key", cp.Profile.PrivateKey); err != nil {
+				return err
 			}
-			if cp.Profile.AccessToken != "" {
-				enc, err := s.cipher.EncryptString(cp.Profile.AccessToken)
-				if err != nil {
-					return fmt.Errorf("encrypt access_token for %s: %w", cp.ID, err)
-				}
-				cp.Profile.AccessToken = enc
+			if cp.Profile.AccessToken, err = s.encryptField(cp.ID, "access_token", cp.Profile.AccessToken); err != nil {
+				return err
+			}
+			if cp.Profile.LicenseKey, err = s.encryptField(cp.ID, "license_key", cp.Profile.LicenseKey); err != nil {
+				return err
+			}
+			if cp.SocksAuthPass, err = s.encryptField(cp.ID, "socks_auth_pass", cp.SocksAuthPass); err != nil {
+				return err
 			}
 		}
 		list = append(list, cp)

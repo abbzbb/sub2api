@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*store.Instanc
 	if host == "" {
 		host = m.cfg.DefaultHost
 	}
+	if err := requireSocksAuthForPublicListen(host, req.SocksAuthUser, req.SocksAuthPass); err != nil {
+		return nil, err
+	}
 	port, err := m.store.AllocatePort(req.ListenPort)
 	if err != nil {
 		return nil, err
@@ -136,6 +140,19 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*store.Instanc
 	}
 	out := RedactInstance(*got)
 	return &out, nil
+}
+
+// requireSocksAuthForPublicListen rejects an unauthenticated SOCKS listener
+// that is not bound to loopback. Loopback listeners stay open so a same-host
+// sidecar can dial 127.0.0.1 without embedding a password in the unit file.
+func requireSocksAuthForPublicListen(host, user, pass string) error {
+	if config.HostIsLoopback(host) {
+		return nil
+	}
+	if strings.TrimSpace(user) == "" || strings.TrimSpace(pass) == "" {
+		return fmt.Errorf("socks username and password are required when listen_host %q is not loopback", host)
+	}
+	return nil
 }
 
 // CreatePool creates N instances and returns them (Phase 3).
@@ -299,17 +316,53 @@ func (m *Manager) allocatePoolNames(prefix string, count int) ([]string, error) 
 	return names, nil
 }
 
-// RegisterProfiles registers free WARP profiles and returns them for pool creation (internal secrets kept until Create).
+var (
+	registerManyFn     = register.RegisterMany
+	unregisterDeviceFn = register.Unregister
+)
+
+// RegisterProfiles checks that free WARP registration works, then deletes every
+// device this call created. Profiles are not stored and secrets are not returned.
+// CreatePool keeps its own register-and-retain path.
 func (m *Manager) RegisterProfiles(ctx context.Context, count int) ([]store.Profile, error) {
-	regs, err := register.RegisterMany(ctx, count)
+	regs, err := registerManyFn(ctx, count)
+	cleanupErr := m.releaseRegisteredDevices(regs)
 	if err != nil {
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w (device cleanup: %v)", err, cleanupErr)
+		}
 		return nil, err
 	}
-	full := make([]store.Profile, 0, len(regs))
-	for _, r := range regs {
-		full = append(full, r.Profile)
+	if cleanupErr != nil {
+		return nil, fmt.Errorf("registered warp devices were not released: %w", cleanupErr)
 	}
-	return full, nil
+	out := make([]store.Profile, 0, len(regs))
+	for _, r := range regs {
+		out = append(out, store.Profile{
+			Address: r.Profile.Address,
+			DNS:     r.Profile.DNS,
+			MTU:     r.Profile.MTU,
+			Peers:   r.Profile.Peers,
+		})
+	}
+	return out, nil
+}
+
+func (m *Manager) releaseRegisteredDevices(regs []register.Result) error {
+	var first error
+	for _, r := range regs {
+		p := r.Profile
+		if p.DeviceID == "" || p.AccessToken == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := unregisterDeviceFn(ctx, p.DeviceID, p.AccessToken)
+		cancel()
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // RedactInstance strips secrets for API responses.

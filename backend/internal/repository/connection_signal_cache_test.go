@@ -68,6 +68,40 @@ func TestConnectionSignalCache_UASlidingWindow1h(t *testing.T) {
 	require.Equal(t, 1, m.UACount1h, "only UA seen within last 1h should count (not cumulative lifetime)")
 }
 
+func TestUserSessionMismatchDoesNotAttachToAPIKey(t *testing.T) {
+	cache, _ := newConnectionSignalTestCache(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	_, err := cache.EmitAlwaysOn(ctx, service.ConnectionSignal{
+		UserID: 7, APIKeyID: 99, IP: "203.0.113.9", UAHash: "ua", NowUnix: now,
+	}, 50000, 9999, 1)
+	require.NoError(t, err)
+	_, err = cache.EmitAlwaysOn(ctx, service.ConnectionSignal{
+		UserID: 7, APIKeyID: 99, IP: "203.0.113.10", UAHash: "ua", NowUnix: now,
+	}, 50000, 9999, 2)
+	require.NoError(t, err)
+	_, err = cache.EmitAlwaysOn(ctx, service.ConnectionSignal{
+		UserID: 7, APIKeyID: 99, IP: "203.0.113.11", UAHash: "ua", NowUnix: now,
+	}, 50000, 9999, 3)
+	require.NoError(t, err)
+	require.NoError(t, cache.IncrSessionMismatch(ctx, 7))
+	require.NoError(t, cache.IncrSessionMismatch(ctx, 7))
+	require.NoError(t, cache.IncrAPIKeySessionMismatch(ctx, 99))
+
+	keyMetrics, err := cache.ReadKeyWindowMetrics(ctx, 99, 7, now)
+	require.NoError(t, err)
+	require.Equal(t, 1, keyMetrics.SBMismatch15m)
+	userMetrics, err := cache.ReadUserWindowMetrics(ctx, 7, now)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), userMetrics.APIKeyID)
+	require.Equal(t, 2, userMetrics.SBMismatch15m)
+	require.GreaterOrEqual(t, userMetrics.DistinctIP5m, 3)
+
+	other, err := cache.ReadKeyWindowMetrics(ctx, 100, 7, now)
+	require.NoError(t, err)
+	require.Equal(t, 0, other.SBMismatch15m)
+}
+
 func TestConnectionSignalCache_SessionMismatchAndExempt(t *testing.T) {
 	cache, _ := newConnectionSignalTestCache(t)
 	ctx := context.Background()

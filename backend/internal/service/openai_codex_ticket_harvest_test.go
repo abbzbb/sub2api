@@ -39,14 +39,27 @@ func TestHarvestProxiesFromSnapshot_AllUnhealthyDoesNotUseSocksURLs(t *testing.T
 		},
 		SocksURLs: []string{"socks5h://127.0.0.1:41001"},
 	}
-	require.Empty(t, harvestProxiesFromSnapshot(snap, ""))
+	require.Empty(t, harvestProxiesFromSnapshot(snap, "", ""))
 }
 
 func TestHarvestProxiesFromSnapshot_LegacySocksURLsWhenNoInstances(t *testing.T) {
 	snap := &WarpPoolSnapshot{SocksURLs: []string{"socks5h://127.0.0.1:41001"}}
-	got := harvestProxiesFromSnapshot(snap, "")
+	got := harvestProxiesFromSnapshot(snap, "", "")
 	require.Len(t, got, 1)
 	require.Equal(t, "socks5h://127.0.0.1:41001", got[0].URL)
+}
+
+func TestHarvestProxiesFromSnapshot_RemoteControlPlaneDropsLoopback(t *testing.T) {
+	snap := &WarpPoolSnapshot{
+		Instances: []WarpInstance{
+			{Name: "loop", ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running", ExitIP: "1.1.1.1"},
+			{Name: "pub", ListenHost: "203.0.113.8", ListenPort: 41002, Status: "running", ExitIP: "203.0.113.8"},
+		},
+		SocksURLs: []string{"socks5h://127.0.0.1:9"},
+	}
+	got := harvestProxiesFromSnapshot(snap, "socks5h://127.0.0.1:41009", "https://warp.example.com")
+	require.Len(t, got, 1)
+	require.Equal(t, "socks5h://203.0.113.8:41002", got[0].URL)
 }
 
 func TestHarvestProxiesFromSnapshot_SkipsUnhealthyAndDedupsConfigured(t *testing.T) {
@@ -56,7 +69,7 @@ func TestHarvestProxiesFromSnapshot_SkipsUnhealthyAndDedupsConfigured(t *testing
 			{Name: "warp-02", ListenHost: "127.0.0.1", ListenPort: 41002, Status: "unhealthy", ExitIP: "2.2.2.2"},
 		},
 	}
-	got := harvestProxiesFromSnapshot(snap, "socks5h://127.0.0.1:41001")
+	got := harvestProxiesFromSnapshot(snap, "socks5h://127.0.0.1:41001", "")
 	require.Len(t, got, 1)
 	require.Equal(t, "warp-01", got[0].Name)
 	require.Equal(t, "1.1.1.1", got[0].ExitIP)

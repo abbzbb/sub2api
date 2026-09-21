@@ -109,6 +109,41 @@ func (s *scoreKeySignals) ReadKeyWindowMetrics(context.Context, int64, int64, in
 	return &ConnectionRiskSubjectMetrics{APIKeyID: 7, DistinctIP5m: 8, ReqCount5m: 20}, nil
 }
 
+type userMismatchSignals struct {
+	clearThrottleStub
+}
+
+func (userMismatchSignals) ReadUserWindowMetrics(context.Context, int64, int64) (*ConnectionRiskSubjectMetrics, error) {
+	return &ConnectionRiskSubjectMetrics{UserID: 5, SBMismatch15m: 2, DistinctIP5m: 4}, nil
+}
+
+func TestScoreUserSessionMismatchDoesNotTargetAPIKey(t *testing.T) {
+	settings := DefaultConnectionRiskSettings()
+	require.False(t, settings.Actions.AutoDisableEnabled)
+	require.Equal(t, connectionRiskPhaseObserve, settings.Phase)
+	settings.Enabled = true
+	signals := &userMismatchSignals{}
+	events := &recordingCREvents{}
+	w := NewConnectionRiskWorker(
+		&config.Config{},
+		nil,
+		signals,
+		events,
+		nil,
+		nil,
+		nil,
+		nil,
+		&ConnectionRiskMetrics{},
+		nil,
+	)
+	w.scoreUser(context.Background(), 5, time.Now().Unix(), *settings)
+	require.Len(t, events.events, 1)
+	require.Equal(t, ConnectionRiskSubjectUser, events.events[0].SubjectType)
+	require.Nil(t, events.events[0].APIKeyID)
+	require.NotNil(t, events.events[0].UserID)
+	require.Equal(t, int64(5), *events.events[0].UserID)
+}
+
 func TestConnectionRiskWorkerScoreKeyDedupeAndCreatedOnlyPolicy(t *testing.T) {
 	settings := *DefaultConnectionRiskSettings()
 	settings.Enabled = true

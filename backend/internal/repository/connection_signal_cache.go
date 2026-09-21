@@ -68,6 +68,12 @@ func crUserIPs1h(userID int64) string {
 func crUserMismatch(userID, win int64) string {
 	return fmt.Sprintf("cr:u:%d:sb_mismatch:%d", userID, win)
 }
+func crKeyMismatch(keyID, win int64) string {
+	return fmt.Sprintf("cr:k:%d:sb_mismatch:%d", keyID, win)
+}
+func crUserIPsWin(userID, win int64) string {
+	return fmt.Sprintf("cr:u:%d:ips:%d", userID, win)
+}
 func crExemptKey(scope string, id int64) string {
 	return fmt.Sprintf("cr:exempt:%s:%d", scope, id)
 }
@@ -146,7 +152,9 @@ func (c *connectionSignalCache) EmitAlwaysOn(ctx context.Context, sig service.Co
 	pipe.Expire(ctx, crUserKeys1h(sig.UserID), crOneHourTTL)
 	pipe.PFAdd(ctx, crUserIPs1h(sig.UserID), sig.IP)
 	pipe.Expire(ctx, crUserIPs1h(sig.UserID), crOneHourTTL)
-	cmds += 4
+	pipe.SAdd(ctx, crUserIPsWin(sig.UserID, win), sig.IP)
+	pipe.Expire(ctx, crUserIPsWin(sig.UserID, win), crMinuteTTL)
+	cmds += 6
 
 	// occasional active prune
 	if pruneEveryN > 0 && emitSeq%uint64(pruneEveryN) == 0 {
@@ -213,6 +221,27 @@ func (c *connectionSignalCache) IncrSessionMismatch(ctx context.Context, userID 
 	pipe.Expire(ctx, key, crMismatchTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session mismatch incr: %w", err)
+	}
+	return nil
+}
+
+// IncrAPIKeySessionMismatch records a binding failure that belongs to one API key.
+// Panel/JWT mismatches stay on IncrSessionMismatch and must not land here.
+func (c *connectionSignalCache) IncrAPIKeySessionMismatch(ctx context.Context, keyID int64) error {
+	if c == nil || c.rdb == nil || keyID <= 0 {
+		return nil
+	}
+	t, err := c.redisNow(ctx)
+	if err != nil {
+		return err
+	}
+	win := t.Unix() / 60
+	key := crKeyMismatch(keyID, win)
+	pipe := c.rdb.TxPipeline()
+	pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, crMismatchTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("api key session mismatch incr: %w", err)
 	}
 	return nil
 }
@@ -310,10 +339,10 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 	hll24h := pipe.PFCount(ctx, crKeyIPs24h(keyID))
 	userKeys := pipe.SCard(ctx, crUserKeys1h(userID))
 	userHLL := pipe.PFCount(ctx, crUserIPs1h(userID))
-	// R7: last 15 minute mismatch counters
+	// R7 on this key only. User/panel mismatches are scored on the user subject.
 	mismatchCmds := make([]*redis.StringCmd, 15)
 	for i := int64(0); i < 15; i++ {
-		mismatchCmds[i] = pipe.Get(ctx, crUserMismatch(userID, win-i))
+		mismatchCmds[i] = pipe.Get(ctx, crKeyMismatch(keyID, win-i))
 	}
 	// evidence samples (optional)
 	sampleIPs := pipe.ZRangeArgs(ctx, redis.ZRangeArgs{Key: crKeyIPSet(keyID), Start: 0, Stop: 19, Rev: true})
@@ -379,6 +408,49 @@ func (c *connectionSignalCache) ReadKeyWindowMetrics(ctx context.Context, keyID,
 		m.SampleUAHashes = uas
 	}
 
+	return m, nil
+}
+
+// ReadUserWindowMetrics loads panel/JWT session-binding mismatch for the user
+// subject. It does not attach the count to any API key.
+func (c *connectionSignalCache) ReadUserWindowMetrics(ctx context.Context, userID, nowUnix int64) (*service.ConnectionRiskSubjectMetrics, error) {
+	if c == nil || c.rdb == nil {
+		return &service.ConnectionRiskSubjectMetrics{UserID: userID}, nil
+	}
+	if nowUnix <= 0 {
+		t, err := c.redisNow(ctx)
+		if err != nil {
+			return nil, err
+		}
+		nowUnix = t.Unix()
+	}
+	win := nowUnix / 60
+	m := &service.ConnectionRiskSubjectMetrics{UserID: userID, NowUnix: nowUnix}
+	ipKeys := make([]string, 0, 5)
+	for i := int64(0); i < 5; i++ {
+		ipKeys = append(ipKeys, crUserIPsWin(userID, win-i))
+	}
+	pipe := c.rdb.Pipeline()
+	sunion := pipe.SUnion(ctx, ipKeys...)
+	mismatchCmds := make([]*redis.StringCmd, 15)
+	for i := int64(0); i < 15; i++ {
+		mismatchCmds[i] = pipe.Get(ctx, crUserMismatch(userID, win-i))
+	}
+	_, _ = pipe.Exec(ctx)
+	if ips, err := sunion.Result(); err == nil {
+		m.DistinctIP5m = len(ips)
+		if len(ips) > 20 {
+			ips = ips[:20]
+		}
+		m.SampleIPs = ips
+	}
+	mismatch := 0
+	for _, cmd := range mismatchCmds {
+		if v, err := cmd.Int(); err == nil {
+			mismatch += v
+		}
+	}
+	m.SBMismatch15m = mismatch
 	return m, nil
 }
 

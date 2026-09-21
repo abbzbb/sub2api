@@ -17,7 +17,10 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/warp-gateway
-Environment=WARP_GATEWAY_TOKEN=
+# Control-plane bearer is required even on loopback. Set WARP_GATEWAY_TOKEN
+# in a drop-in or the environment. Do not commit a secret.
+# Dev-only bypass: WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH=1
+# Environment=WARP_GATEWAY_TOKEN=
 Environment=WARP_GATEWAY_RUNTIME=sing-box
 # Re-register one duplicate-exit-IP instance per health tick (cooldown 15m).
 # Set false to keep alerting without rotating.

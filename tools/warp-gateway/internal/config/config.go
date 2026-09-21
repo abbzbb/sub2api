@@ -33,6 +33,9 @@ type Config struct {
 	TLSKeyFile  string `json:"tls_key_file,omitempty"`
 	// ClientCAFile enables mTLS: require client certs signed by this CA.
 	ClientCAFile string `json:"client_ca_file,omitempty"`
+	// AllowInsecureNoAuth permits an empty control-plane token on loopback only.
+	// Set WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH=1 for local development. Never in production.
+	AllowInsecureNoAuth bool `json:"allow_insecure_no_auth,omitempty"`
 	// AutoRotateDuplicateExitIP re-registers a duplicate-IP instance so Cloudflare
 	// may assign a different colo/egress. Free WARP from one host often still
 	// collides; cooldown bounds register API traffic.
@@ -96,6 +99,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("WARP_GATEWAY_CLIENT_CA"); v != "" {
 		cfg.ClientCAFile = v
 	}
+	if v := os.Getenv("WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH"); v != "" {
+		cfg.AllowInsecureNoAuth = parseBoolEnv(v)
+	}
 	if v := os.Getenv("WARP_GATEWAY_AUTO_ROTATE_DUPLICATE_EXIT_IP"); v != "" {
 		cfg.AutoRotateDuplicateExitIP = parseBoolEnv(v)
 	}
@@ -157,8 +163,11 @@ func (c Config) validateListenAuth() error {
 	if tokenOK || mtlsOK {
 		return nil
 	}
-	if listenHostIsLoopback(c.Listen) {
+	if c.AllowInsecureNoAuth && listenHostIsLoopback(c.Listen) {
 		return nil
+	}
+	if listenHostIsLoopback(c.Listen) {
+		return fmt.Errorf("token or mTLS is required on loopback %q (set WARP_GATEWAY_ALLOW_INSECURE_NO_AUTH=1 only for local development)", c.Listen)
 	}
 	return fmt.Errorf("token is required when listening on non-loopback %q without mTLS", c.Listen)
 }
@@ -171,18 +180,22 @@ func listenHostIsLoopback(listen string) bool {
 	if err != nil {
 		host = listen
 	}
+	return HostIsLoopback(host)
+}
+
+// HostIsLoopback reports whether host binds only the loopback interface.
+// Unspecified addresses (0.0.0.0, ::, empty) are not loopback.
+func HostIsLoopback(host string) bool {
 	host = strings.TrimSpace(host)
+	host = strings.Trim(host, "[]")
 	if host == "" {
 		return false
 	}
-	if host == "localhost" || host == "::1" {
+	if strings.EqualFold(host, "localhost") || host == "::1" {
 		return true
 	}
 	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	if ip.IsUnspecified() {
+	if ip == nil || ip.IsUnspecified() {
 		return false
 	}
 	return ip.IsLoopback()

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -43,11 +45,85 @@ type WarpInstance struct {
 }
 
 func (i WarpInstance) SocksURL() string {
-	host := i.ListenHost
-	if host == "" {
-		host = "127.0.0.1"
+	url, _ := i.DialSocksURL("")
+	return url
+}
+
+// DialSocksURL is the address sub2api should dial.
+// A loopback control plane is a same-host sidecar: empty or unspecified listen
+// hosts stay 127.0.0.1. A remote control plane must not be dialed via loopback
+// or unspecified addresses, which would send traffic to this API process.
+func (i WarpInstance) DialSocksURL(controlBaseURL string) (string, bool) {
+	host := strings.TrimSpace(i.ListenHost)
+	if warpControlPlaneIsLoopback(controlBaseURL) {
+		if host == "" || warpHostUnspecified(host) || warpHostLoopback(host) {
+			host = "127.0.0.1"
+		}
+	} else if host == "" || warpHostLoopback(host) || warpHostUnspecified(host) {
+		return "", false
 	}
-	return fmt.Sprintf("socks5h://%s:%d", host, i.ListenPort)
+	if i.ListenPort <= 0 {
+		return "", false
+	}
+	return fmt.Sprintf("socks5h://%s:%d", host, i.ListenPort), true
+}
+
+func warpControlPlaneIsLoopback(baseURL string) bool {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return true
+	}
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		return warpHostLoopback(u.Hostname())
+	}
+	host := baseURL
+	if h, _, err := net.SplitHostPort(baseURL); err == nil {
+		host = h
+	}
+	return warpHostLoopback(host)
+}
+
+func warpHostLoopback(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func warpHostUnspecified(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+// socksURLDialable reports whether raw is safe to dial from this process given
+// the warp control-plane base URL. Remote control planes reject loopback and
+// unspecified SOCKS hosts.
+func socksURLDialable(controlBaseURL, raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if warpControlPlaneIsLoopback(controlBaseURL) {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" || warpHostLoopback(host) || warpHostUnspecified(host) {
+		return false
+	}
+	return true
 }
 
 // WarpPoolSnapshot mirrors gateway /v1/pools/snapshot.
@@ -111,6 +187,13 @@ func NewWarpGatewayClient(cfg WarpGatewayConfig) (*WarpGatewayClient, error) {
 
 func (c *WarpGatewayClient) Enabled() bool {
 	return c != nil && c.cfg.Enabled && strings.TrimSpace(c.cfg.BaseURL) != ""
+}
+
+func (c *WarpGatewayClient) ControlPlaneBaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.BaseURL
 }
 
 func (c *WarpGatewayClient) do(ctx context.Context, method, path string, in any, out any) error {
@@ -300,7 +383,7 @@ type WarpProxySpec struct {
 }
 
 // BuildAttachPlan converts a gateway snapshot into proxy upsert/detach actions (Phase 3).
-func BuildAttachPlan(snap *WarpPoolSnapshot, groupName string) WarpPoolAttachPlan {
+func BuildAttachPlan(snap *WarpPoolSnapshot, groupName, controlBaseURL string) WarpPoolAttachPlan {
 	if groupName == "" {
 		groupName = "warp-pool"
 	}
@@ -318,6 +401,9 @@ func BuildAttachPlan(snap *WarpPoolSnapshot, groupName string) WarpPoolAttachPla
 	}
 	usedNames := map[string]struct{}{}
 	for _, inst := range snap.Instances {
+		if _, ok := inst.DialSocksURL(controlBaseURL); !ok {
+			continue
+		}
 		status := StatusActive
 		name := "warp-" + inst.Name
 		// Within one snapshot, gateway used to emit duplicate instance names on
@@ -347,14 +433,15 @@ func BuildAttachPlan(snap *WarpPoolSnapshot, groupName string) WarpPoolAttachPla
 			status = StatusError
 			plan.DetachProxyNames = append(plan.DetachProxyNames, name)
 		}
-		host := inst.ListenHost
-		if host == "" {
-			host = "127.0.0.1"
+		dialURL, _ := inst.DialSocksURL(controlBaseURL)
+		dialHost := inst.ListenHost
+		if u, err := url.Parse(dialURL); err == nil && u.Hostname() != "" {
+			dialHost = u.Hostname()
 		}
 		plan.ProxySpecs = append(plan.ProxySpecs, WarpProxySpec{
 			Name:       name,
 			Protocol:   "socks5h",
-			Host:       host,
+			Host:       dialHost,
 			Port:       inst.ListenPort,
 			WarpID:     inst.ID,
 			ExitIP:     inst.ExitIP,

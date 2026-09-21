@@ -259,6 +259,6 @@ func (h *WarpHandler) PreviewPlan(c *gin.Context) {
 		return
 	}
 	group := strings.TrimSpace(c.Query("group_name"))
-	plan := service.BuildAttachPlan(snap, group)
+	plan := service.BuildAttachPlan(snap, group, h.svc.ControlPlaneBaseURL())
 	response.Success(c, gin.H{"snapshot": snap, "plan": plan})
 }

@@ -33,7 +33,7 @@ func TestBuildAttachPlan_Phase3(t *testing.T) {
 		HealthyCount: 1,
 		TotalCount:   2,
 	}
-	plan := BuildAttachPlan(snap, "warp-pool")
+	plan := BuildAttachPlan(snap, "warp-pool", "")
 	if plan.SuggestedGroupName != "warp-pool" {
 		t.Fatal(plan.SuggestedGroupName)
 	}
@@ -62,7 +62,7 @@ func TestBuildAttachPlan_NonRunningStatusesDetach(t *testing.T) {
 		TotalCount:   4,
 		HealthyCount: 1,
 	}
-	plan := BuildAttachPlan(snap, "warp-pool")
+	plan := BuildAttachPlan(snap, "warp-pool", "")
 	if plan.ProxySpecs[0].Status != StatusActive {
 		t.Fatalf("running spec status=%s", plan.ProxySpecs[0].Status)
 	}
@@ -84,7 +84,7 @@ func TestBuildAttachPlan_DetachProxyNamesDeduped(t *testing.T) {
 		UnhealthyIDs: []string{"bad"},
 		TotalCount:   1,
 	}
-	plan := BuildAttachPlan(snap, "warp-pool")
+	plan := BuildAttachPlan(snap, "warp-pool", "")
 	if len(plan.DetachProxyNames) != 1 {
 		t.Fatalf("detach=%v want 1", plan.DetachProxyNames)
 	}
@@ -99,7 +99,7 @@ func TestBuildAttachPlan_DisambiguatesDuplicateInstanceNames(t *testing.T) {
 		TotalCount:   2,
 		HealthyCount: 2,
 	}
-	plan := BuildAttachPlan(snap, "warp-pool")
+	plan := BuildAttachPlan(snap, "warp-pool", "")
 	if len(plan.ProxySpecs) != 2 {
 		t.Fatalf("specs=%d", len(plan.ProxySpecs))
 	}
@@ -108,6 +108,47 @@ func TestBuildAttachPlan_DisambiguatesDuplicateInstanceNames(t *testing.T) {
 	}
 	if plan.ProxySpecs[1].Name != "warp-warp-01-20002" {
 		t.Fatalf("second name=%q", plan.ProxySpecs[1].Name)
+	}
+}
+
+func TestDialSocksURLRejectsLoopbackWhenControlPlaneIsRemote(t *testing.T) {
+	remote := "https://warp.example.com:19798"
+	for _, host := range []string{"127.0.0.1", "localhost", "::1", "0.0.0.0", "::", ""} {
+		inst := WarpInstance{ListenHost: host, ListenPort: 41001, Status: "running"}
+		if _, ok := inst.DialSocksURL(remote); ok {
+			t.Fatalf("host %q dialed from remote control plane", host)
+		}
+	}
+	inst := WarpInstance{ListenHost: "203.0.113.10", ListenPort: 41001}
+	got, ok := inst.DialSocksURL(remote)
+	if !ok || got != "socks5h://203.0.113.10:41001" {
+		t.Fatalf("ok=%v url=%q", ok, got)
+	}
+	local := WarpInstance{ListenPort: 41001}
+	got, ok = local.DialSocksURL("http://127.0.0.1:19798")
+	if !ok || got != "socks5h://127.0.0.1:41001" {
+		t.Fatalf("sidecar ok=%v url=%q", ok, got)
+	}
+}
+
+func TestBuildAttachPlanSkipsUndialableSocksWhenRemote(t *testing.T) {
+	snap := &WarpPoolSnapshot{
+		Instances: []WarpInstance{
+			{ID: "a", Name: "loop", ListenHost: "127.0.0.1", ListenPort: 1, Status: "running"},
+			{ID: "b", Name: "any", ListenHost: "0.0.0.0", ListenPort: 2, Status: "running"},
+			{ID: "c", Name: "pub", ListenHost: "203.0.113.10", ListenPort: 3, Status: "running"},
+		},
+	}
+	plan := BuildAttachPlan(snap, "warp-pool", "https://warp.example.com")
+	if len(plan.ProxySpecs) != 1 || plan.ProxySpecs[0].Host != "203.0.113.10" {
+		t.Fatalf("specs=%+v", plan.ProxySpecs)
+	}
+	local := BuildAttachPlan(snap, "warp-pool", "http://127.0.0.1:19798")
+	if len(local.ProxySpecs) != 3 {
+		t.Fatalf("sidecar specs=%d", len(local.ProxySpecs))
+	}
+	if local.ProxySpecs[0].Host != "127.0.0.1" || local.ProxySpecs[1].Host != "127.0.0.1" {
+		t.Fatalf("sidecar hosts=%s %s", local.ProxySpecs[0].Host, local.ProxySpecs[1].Host)
 	}
 }
 

@@ -585,3 +585,72 @@ func TestReconcileStartBackoffSkipsImmediateRetry(t *testing.T) {
 	}
 	_ = inst
 }
+
+func TestCreateRejectsPublicListenWithoutSocksAuth(t *testing.T) {
+	mgr := testManager(t)
+	ctx := context.Background()
+	auto := false
+	_, err := mgr.Create(ctx, service.CreateRequest{
+		Name:       "public-open",
+		ListenHost: "0.0.0.0",
+		Profile:    store.Profile{MockExitIP: "203.0.113.50"},
+		AutoStart:  &auto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "socks username and password") {
+		t.Fatalf("public listen without auth: %v", err)
+	}
+	_, err = mgr.Create(ctx, service.CreateRequest{
+		Name:          "public-user-only",
+		ListenHost:    "::",
+		SocksAuthUser: "only-user",
+		Profile:       store.Profile{MockExitIP: "203.0.113.51"},
+		AutoStart:     &auto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "socks username and password") {
+		t.Fatalf("public listen with user only: %v", err)
+	}
+	inst, err := mgr.Create(ctx, service.CreateRequest{
+		Name:          "public-auth",
+		ListenHost:    "0.0.0.0",
+		SocksAuthUser: "socks-user",
+		SocksAuthPass: "socks-pass",
+		Profile:       store.Profile{MockExitIP: "203.0.113.52"},
+		AutoStart:     &auto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.ListenHost != "0.0.0.0" {
+		t.Fatalf("listen_host=%q", inst.ListenHost)
+	}
+	if inst.SocksAuthPass != "***" {
+		t.Fatalf("password should stay redacted, got %q", inst.SocksAuthPass)
+	}
+
+	poolMgr := newTestManagerWithHost(t, "0.0.0.0")
+	_, err = poolMgr.CreatePool(ctx, service.CreatePoolRequest{NamePrefix: "pub", Count: 1, AutoStart: &auto})
+	if err == nil || !strings.Contains(err.Error(), "socks username and password") {
+		t.Fatalf("pool on public default host: %v", err)
+	}
+}
+
+func newTestManagerWithHost(t *testing.T, host string) *service.Manager {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.Runtime = "mock"
+	cfg.ProbeURL = "mock://local"
+	cfg.DefaultHost = host
+	start, end := freeListenPortRange(t, 16)
+	cfg.PortRangeStart = start
+	cfg.PortRangeEnd = end
+	cfg.HealthInterval = time.Hour
+	st, err := store.New(filepath.Join(dir, "state"), cfg.PortRangeStart, cfg.PortRangeEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := service.NewManager(cfg, st, runtime.NewMockManager(), nil)
+	t.Cleanup(func() { out.Shutdown(context.Background()) })
+	return out
+}
