@@ -752,7 +752,7 @@ func normalizeGrokReasoningEffortValue(raw, upstreamModel string) (string, bool)
 }
 
 // GrokSupportsXHighReasoningEffort reports whether the model advertises and
-// forwards the xhigh reasoning effort (Grok 4.6 / grok-4.20-multi-agent).
+// forwards the xhigh reasoning effort (Grok 4.6/4.7 and grok-4.20-multi-agent).
 func GrokSupportsXHighReasoningEffort(model string) bool {
 	return xai.SupportsXHighReasoningEffort(model)
 }
@@ -761,6 +761,7 @@ func grokSupportsReasoningEffort(model string) bool {
 	model = strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model)))
 	switch model {
 	case "grok-4.5", "grok-4.5-latest", "grok-4.6", "grok-4.6-latest",
+		"grok-4.7", "grok-4.7-latest",
 		"grok-4.3", "grok-4.3-latest",
 		"grok-3-mini", "grok-3-mini-fast", "grok-4.20-0309-reasoning",
 		"grok-4.20-reasoning", "grok-4.20-multi-agent-0309",

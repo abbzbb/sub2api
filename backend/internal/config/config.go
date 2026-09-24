@@ -97,6 +97,7 @@ type Config struct {
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	GrokFreeRecovery        GrokFreeRecoveryConfig        `mapstructure:"grok_free_recovery"`
+	SimpleMode              SimpleModeConfig              `mapstructure:"simple_mode" yaml:"simple_mode"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
 	Timezone                string                        `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
@@ -114,6 +115,8 @@ type Config struct {
 	ProxyHealth ProxyHealthConfig `mapstructure:"proxy_health"`
 	// Warp integrates with tools/warp-gateway for Cloudflare WARP SOCKS exits.
 	Warp WarpConfig `mapstructure:"warp"`
+	// Enforce only API-key spending windows in simple mode.
+	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
 }
 
 // ProxyHealthConfig controls periodic proxy connectivity probes and auto-isolation.
@@ -174,6 +177,11 @@ type WarpGatewayConfig struct {
 	TLSCertFile           string `mapstructure:"tls_cert_file"`
 	TLSKeyFile            string `mapstructure:"tls_key_file"`
 	TLSInsecureSkipVerify bool   `mapstructure:"tls_insecure_skip_verify"`
+}
+
+// SimpleModeConfig controls startup behavior in simple mode.
+type SimpleModeConfig struct {
+	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
 }
 
 // PluginConfig 控制管理员手动上传的本地进程插件。
@@ -2112,6 +2120,8 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 
 func setDefaults() {
 	viper.SetDefault("run_mode", RunModeStandard)
+	viper.SetDefault("simple_mode.auto_create_default_groups", true)
+	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)
 
 	// Server
 	viper.SetDefault("server.host", "0.0.0.0")
