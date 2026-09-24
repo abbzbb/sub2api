@@ -1288,7 +1288,8 @@ export interface Account {
       last_result_at?: string
       error_code?: string
     }
-  } & Record<string, unknown>)  proxy_id: number | null
+  } & Record<string, unknown>)
+  proxy_id: number | null
   proxy_group_id?: number | null
   proxy_fallback_origin_id?: number | null
   proxy_fallback_origin_name?: string | null
