@@ -40,9 +40,10 @@ func TestPluginResourceDirectoryCatalogAndResolution(t *testing.T) {
 		{ID: 3, Name: "Front", Protocol: "http", Host: "front.example", Port: 8080, Username: "private-user", Password: "private-password", Status: StatusActive},
 		{ID: 4, Status: StatusActive, ExpiresAt: &past}, {ID: 5, Status: "inactive"},
 	}}
-	base := &fakeAccountDirectory{ids: []int64{7}}
+	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
 	d := NewPluginResourceDirectory(base, &resourceAccounts{}, proxies)
-	s := newPluginHostServiceServer("test.plugin", nil, d)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
 	out, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
 	require.NoError(t, err)
 	require.Len(t, out.Accounts, 1)
@@ -72,7 +73,7 @@ func TestPluginResourceDirectoryCapabilityGateAndLegacy(t *testing.T) {
 		d    PluginAccountDirectory
 		code codes.Code
 	}{{nil, codes.PermissionDenied}, {&fakeAccountDirectory{}, codes.Unimplemented}} {
-		s := newPluginHostServiceServer("test.plugin", nil, tc.d)
+		s := newPluginHostServiceServer("test.plugin", nil, tc.d, PluginAccountScope{})
 		_, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
 		require.Equal(t, tc.code, status.Code(err))
 		_, err = s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 3})

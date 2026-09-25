@@ -51,6 +51,39 @@ DROP INDEX CONCURRENTLY IF EXISTS idx_b;
 	})
 }
 
+func TestApplyMigrationsFS_SameNumericPrefixUsesFullFilename(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	prepareMigrationsBootstrapExpectations(mock)
+	// 238 and 238b share a numeric prefix. The runner keys schema_migrations by
+	// the full filename, so the second file must still be applied.
+	for _, name := range []string{"238_proxy_group.sql", "238b_connection_risk.sql"} {
+		mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
+			WithArgs(name).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT 1").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("INSERT INTO schema_migrations \\(filename, checksum\\) VALUES \\(\\$1, \\$2\\)").
+			WithArgs(name, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+	mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
+		WithArgs(migrationsAdvisoryLockID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	fsys := fstest.MapFS{
+		"238b_connection_risk.sql": &fstest.MapFile{Data: []byte("SELECT 1;")},
+		"238_proxy_group.sql":      &fstest.MapFile{Data: []byte("SELECT 1;")},
+	}
+	err = applyMigrationsFS(context.Background(), db, fsys)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestApplyMigrationsFS_NonTransactionalMigration(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

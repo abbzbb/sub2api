@@ -598,11 +598,14 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 		return nil, "", "", infraerrors.New(http.StatusServiceUnavailable, "GROK_QUOTA_PROXY_NOT_FOUND", "proxy group has no healthy member")
 	}
 
+	// Quota diagnostics stay available while scheduling is paused. Recovery
+	// probes use the dedicated token path; otherwise use the manual-test
+	// credential flow so a paused account can still be queried.
 	var token string
 	if account.IsGrokFreeRecoveryPending() {
 		token, err = s.tokenProvider.GetAccessTokenForRecoveryProbe(ctx, account)
 	} else {
-		token, err = s.tokenProvider.GetAccessToken(ctx, account)
+		token, err = s.tokenProvider.GetAccessTokenForManualTest(ctx, account)
 	}
 	if err != nil {
 		return nil, "", "", infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "failed to acquire access token: %v", err)

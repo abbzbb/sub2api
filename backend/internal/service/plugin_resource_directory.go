@@ -11,7 +11,7 @@ import (
 // Resource access follows the same capability gate as the OAuth account directory.
 // The catalog never carries tokens, usernames, passwords or authenticated URLs.
 type PluginResourceDirectory interface {
-	ListPluginResources(context.Context) (*pluginv1.ListResourcesResponse, error)
+	ListPluginResources(context.Context, PluginAccountScope) (*pluginv1.ListResourcesResponse, error)
 	ResolvePluginProxy(context.Context, int64) (string, error)
 }
 type pluginResourceDirectory struct {
@@ -23,14 +23,14 @@ type pluginResourceDirectory struct {
 func NewPluginResourceDirectory(base PluginAccountDirectory, accounts AccountRepository, proxies ProxyRepository) PluginAccountDirectory {
 	return &pluginResourceDirectory{base, accounts, proxies}
 }
-func (d *pluginResourceDirectory) ListPluginResources(ctx context.Context) (*pluginv1.ListResourcesResponse, error) {
-	ids, err := d.ListPluginAccounts(ctx, PlatformOpenAI, AccountTypeOAuth)
+func (d *pluginResourceDirectory) ListPluginResources(ctx context.Context, scope PluginAccountScope) (*pluginv1.ListResourcesResponse, error) {
+	infos, err := d.ListPluginAccounts(ctx, scope, PlatformOpenAI, AccountTypeOAuth)
 	if err != nil {
 		return nil, err
 	}
-	allowed := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		allowed[id] = true
+	allowed := make(map[int64]bool, len(infos))
+	for _, info := range infos {
+		allowed[info.ID] = true
 	}
 	accounts, err := d.accounts.ListByPlatform(ctx, PlatformOpenAI)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *pluginHostServiceServer) ListResources(ctx context.Context, req *plugin
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "empty request")
 	}
-	out, err := d.ListPluginResources(ctx)
+	out, err := d.ListPluginResources(ctx, s.scope)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "resource directory unavailable")
 	}

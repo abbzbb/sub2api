@@ -391,6 +391,42 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_CapabilityMismat
 	require.Equal(t, account.ID, boundAccountID)
 }
 
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ProxyGroupWithoutMemberMiss(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(23)
+	proxyGroupID := int64(9)
+	account := Account{
+		ID:           44,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeAPIKey,
+		Status:       StatusActive,
+		Schedulable:  true,
+		Concurrency:  1,
+		ProxyGroupID: &proxyGroupID,
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}
+	cache := &stubGatewayCache{}
+	store := NewOpenAIWSStateStore(cache)
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              cache,
+		cfg:                newOpenAIWSV2TestConfig(),
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		openaiWSStateStore: store,
+	}
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_proxy_group", account.ID, time.Hour))
+
+	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_proxy_group", "gpt-5.1", nil, false)
+	require.NoError(t, err)
+	require.Nil(t, selection)
+	require.Empty(t, account.ProxyURL())
+	boundAccountID, getErr := store.GetResponseAccount(ctx, groupID, "resp_prev_proxy_group")
+	require.NoError(t, getErr)
+	require.Equal(t, account.ID, boundAccountID)
+}
+
 func newOpenAIWSV2TestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.Enabled = true
