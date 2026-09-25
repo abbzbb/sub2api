@@ -633,6 +633,12 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}
+	// A bound proxy group without a resolved member must not stick. Skipping
+	// keeps the binding (the pool may recover) but must not fall through to a
+	// direct connect via Account.ProxyURL().
+	if err := rejectUnschedulableHydratedProxyAccount(account); err != nil {
+		return 0, nil, "", nil
+	}
 	return accountID, account, responseID, store
 }
 

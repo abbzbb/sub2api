@@ -229,6 +229,43 @@ func (s *OpenAIGatewayService) warnOpenAICodexTicketNoAccountProxy(account *Acco
 	)
 }
 
+// openAICodexTicketProxyEgressMismatch reports that ticket harvest and the
+// account's production proxy would leave through different endpoints.
+// An account with no production proxy is not a mismatch; that case is warned
+// separately as no_account_proxy.
+func openAICodexTicketProxyEgressMismatch(account *Account, harvestProxyURL string) bool {
+	if !accountHasBoundProductionProxy(account) {
+		return false
+	}
+	production := strings.TrimSpace(account.ProxyURL())
+	harvest := strings.TrimSpace(harvestProxyURL)
+	if production == "" || harvest == "" {
+		return production == "" && harvest != ""
+	}
+	return harvestProxyHostPort(production) != harvestProxyHostPort(harvest)
+}
+
+func (s *OpenAIGatewayService) warnOpenAICodexTicketProxyEgressMismatch(account *Account, model, harvestProxyURL string) {
+	if s == nil || !openAICodexTicketProxyEgressMismatch(account, harvestProxyURL) {
+		return
+	}
+	key := strconv.FormatInt(account.ID, 10) + ":egress"
+	now := time.Now()
+	if raw, ok := s.openaiCodexTicketNoProxyWarnAt.Load(key); ok {
+		if last, ok := raw.(time.Time); ok && now.Sub(last) < openAICodexTicketNoProxyWarnInterval {
+			return
+		}
+	}
+	s.openaiCodexTicketNoProxyWarnAt.Store(key, now)
+	logger.L().Warn("openai_codex_ticket harvest proxy differs from account proxy",
+		zap.Int64("account_id", account.ID),
+		zap.String("model", model),
+		zap.String("reason", "harvest_proxy_egress_mismatch"),
+		zap.String("harvest_proxy", harvestProxyHostPort(harvestProxyURL)),
+		zap.String("account_proxy", harvestProxyHostPort(account.ProxyURL())),
+	)
+}
+
 func (t *openAICodexTicket) valid(now time.Time, targetLen int) bool {
 	if t == nil {
 		return false
@@ -618,6 +655,7 @@ func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, a
 			return nil, nil
 		}
 		s.warnOpenAICodexTicketNoAccountProxy(account, model, "harvest")
+		s.warnOpenAICodexTicketProxyEgressMismatch(account, model, proxyURL)
 		logger.L().Debug("openai_codex_ticket harvest proxy", harvestProxyLogFields(picked)...)
 		state, status, perr := s.fireOpenAICodexTicketProbe(ctx, account, token, model, proxyURL, time.Duration(cfg.HarvestAttemptTimeoutSeconds)*time.Second)
 		if perr != nil {

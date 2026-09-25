@@ -1620,6 +1620,11 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 		if s.isOpenAIProxyStreamQuarantined(ctx, account) {
 			return nil
 		}
+		// Proxy group with no resolved member must not be admitted: callers
+		// forward with Account.ProxyURL(), and an empty URL is a direct connect.
+		if err := rejectUnschedulableHydratedProxyAccount(account); err != nil {
+			return nil
+		}
 		return account
 	}
 
@@ -1646,6 +1651,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 		return nil
 	}
 	if s.isOpenAIProxyStreamQuarantined(ctx, latest) {
+		return nil
+	}
+	if err := rejectUnschedulableHydratedProxyAccount(latest); err != nil {
 		return nil
 	}
 	return latest

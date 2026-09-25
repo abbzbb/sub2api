@@ -467,6 +467,23 @@ func TestOpenAICodexTicketGate_EmptyHarvestProxyFailOpen(t *testing.T) {
 	require.Equal(t, "client-state", h.Get(openAICodexTurnStateHeader))
 }
 
+func TestOpenAICodexTicketProxyEgressMismatch(t *testing.T) {
+	gid := int64(3)
+	unbound := &Account{ID: 1, Platform: PlatformOpenAI}
+	require.False(t, openAICodexTicketProxyEgressMismatch(unbound, "socks5h://harvest.example:31"))
+
+	boundEmpty := &Account{ID: 2, Platform: PlatformOpenAI, ProxyGroupID: &gid}
+	require.True(t, openAICodexTicketProxyEgressMismatch(boundEmpty, "socks5h://harvest.example:31"))
+	require.False(t, openAICodexTicketProxyEgressMismatch(boundEmpty, ""))
+
+	same := &Account{ID: 3, Platform: PlatformOpenAI, Proxy: &Proxy{Protocol: "socks5h", Host: "harvest.example", Port: 31, Username: "u", Password: "p"}}
+	require.False(t, openAICodexTicketProxyEgressMismatch(same, "socks5h://other:secret@harvest.example:31"))
+
+	proxyID := int64(9)
+	different := &Account{ID: 4, Platform: PlatformOpenAI, ProxyID: &proxyID, Proxy: &Proxy{Protocol: "http", Host: "residential.example", Port: 8080}}
+	require.True(t, openAICodexTicketProxyEgressMismatch(different, "socks5h://harvest.example:31"))
+}
+
 func TestRefreshOpenAICodexTickets_EmptyHarvestProxySkips(t *testing.T) {
 	upstream := &httpUpstreamRecorder{}
 	svc := ticketTestService(t, config.OpenAICodexTicketConfig{

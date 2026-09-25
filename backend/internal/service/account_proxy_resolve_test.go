@@ -92,6 +92,23 @@ func TestRejectUnschedulableHydratedProxyAccount(t *testing.T) {
 	}))
 }
 
+func TestRecheckDropsProxyGroupWithoutResolvedMember(t *testing.T) {
+	t.Parallel()
+	gid := int64(8)
+	account := &Account{
+		ID:           7,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeAPIKey,
+		Status:       StatusActive,
+		Schedulable:  true,
+		ProxyGroupID: &gid,
+	}
+	svc := &OpenAIGatewayService{}
+	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), account, nil, PlatformOpenAI, "gpt-5.1", false, "")
+	require.Nil(t, got)
+	require.Empty(t, account.ProxyURL())
+}
+
 func TestAccountProxyBindingConflict(t *testing.T) {
 	t.Parallel()
 	p, g := int64(1), int64(2)
