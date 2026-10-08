@@ -24,7 +24,7 @@ func TestPaymentOrdersRefundEligibleProvidersRoute(t *testing.T) {
 	noop := func(c *gin.Context) { c.Next() }
 	RegisterPaymentRoutes(router.Group("/api/v1"), &handler.PaymentHandler{},
 		&handler.PaymentWebhookHandler{}, &admin.PaymentHandler{}, auth,
-		middleware.AdminAuthMiddleware(noop), middleware.AuditLogMiddleware(noop), nil, nil)
+		middleware.AdminAuthMiddleware(noop), middleware.AuditLogMiddleware(noop), nil, nil, nil)
 
 	for _, tc := range []struct {
 		path, route, handler, id string
