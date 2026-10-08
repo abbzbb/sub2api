@@ -475,7 +475,8 @@ export default {
         intervalMinutes: 'Max wait while requests continue (minutes)',
         intervalHint: 'Range: 15–1440 minutes. When continuous requests keep sliding the debounce, force a refresh after this wait.',
         debounceMinutes: 'Quiet period after last request (minutes)',
-        debounceHint: 'Range: 1–60 minutes. Refresh after the latest model request has been quiet for this long.',
+        debounceHint: 'Range: 1–60 minutes, and must be less than the max wait. Refresh after the latest model request has been quiet for this long.',
+        debounceMustBeLessThanInterval: 'Quiet period must be shorter than the max wait while requests continue.',
         saved: 'Ollama Cloud usage refresh settings saved',
         saveFailed: 'Failed to save Ollama Cloud usage refresh settings'
       },
@@ -488,6 +489,7 @@ export default {
         intervalHint: 'Range: 5–1440 minutes. When continuous requests keep sliding the debounce, force a refresh after this wait.',
         debounceMinutes: 'Quiet period after last request (minutes)',
         debounceHint: 'Range: 1–60 minutes, and must be less than the refresh interval. Refresh after the latest model request has been quiet for this long.',
+        debounceMustBeLessThanInterval: 'Quiet period must be shorter than the max wait while requests continue.',
         saved: 'OpenCode Go usage refresh settings saved',
         saveFailed: 'Failed to save OpenCode Go usage refresh settings'
       },

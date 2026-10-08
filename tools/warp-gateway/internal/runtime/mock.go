@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,7 +70,7 @@ func (h *mockHandle) Stop(ctx context.Context) error {
 }
 
 func (m *MockManager) Start(ctx context.Context, inst *store.Instance) (Handle, error) {
-	addr := fmt.Sprintf("%s:%d", inst.ListenHost, inst.ListenPort)
+	addr := listenAddr(inst.ListenHost, inst.ListenPort)
 	lc := net.ListenConfig{Control: reusePortControl}
 	ln, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -123,4 +125,10 @@ func (m *MockManager) Start(ctx context.Context, inst *store.Instance) (Handle, 
 	}()
 
 	return h, nil
+}
+
+// listenAddr formats a host and port for net.Listen and net.Dial.
+// IPv6 hosts are bracketed; IPv4 hosts are not.
+func listenAddr(host string, port int) string {
+	return net.JoinHostPort(strings.Trim(strings.TrimSpace(host), "[]"), strconv.Itoa(port))
 }

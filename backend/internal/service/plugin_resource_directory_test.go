@@ -13,10 +13,21 @@ import (
 	"time"
 )
 
-type resourceAccounts struct{ AccountRepository }
+type resourceAccounts struct {
+	AccountRepository
+	rows []Account
+}
 
-func (*resourceAccounts) ListByPlatform(context.Context, string) ([]Account, error) {
-	return []Account{{ID: 7, Name: "Mail Pro"}, {ID: 8, Name: "Hidden"}}, nil
+func (r *resourceAccounts) ListByPlatform(context.Context, string) ([]Account, error) {
+	if r != nil && r.rows != nil {
+		return r.rows, nil
+	}
+	bound := int64(3)
+	other := int64(9)
+	return []Account{
+		{ID: 7, Name: "Mail Pro", ProxyID: &bound},
+		{ID: 8, Name: "Hidden", ProxyID: &other},
+	}, nil
 }
 
 type resourceProxies struct {
@@ -34,11 +45,24 @@ func (r *resourceProxies) GetByID(_ context.Context, id int64) (*Proxy, error) {
 	}
 	return nil, r.err
 }
+func (r *resourceProxies) ListByGroupID(_ context.Context, groupID int64) ([]Proxy, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	out := make([]Proxy, 0)
+	for i := range r.entries {
+		if r.entries[i].GroupID != nil && *r.entries[i].GroupID == groupID {
+			out = append(out, r.entries[i])
+		}
+	}
+	return out, nil
+}
 func TestPluginResourceDirectoryCatalogAndResolution(t *testing.T) {
 	past := time.Now().Add(-time.Minute)
 	proxies := &resourceProxies{entries: []Proxy{
 		{ID: 3, Name: "Front", Protocol: "http", Host: "front.example", Port: 8080, Username: "private-user", Password: "private-password", Status: StatusActive},
 		{ID: 4, Status: StatusActive, ExpiresAt: &past}, {ID: 5, Status: "inactive"},
+		{ID: 9, Name: "Other", Protocol: "http", Host: "other.example", Port: 9, Username: "other-user", Password: "other-secret", Status: StatusActive},
 	}}
 	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
 	d := NewPluginResourceDirectory(base, &resourceAccounts{}, proxies)
@@ -51,7 +75,7 @@ func TestPluginResourceDirectoryCatalogAndResolution(t *testing.T) {
 	require.Len(t, out.Proxies, 1)
 	b, _ := json.Marshal(out)
 	require.False(t, strings.Contains(string(b), "private-"))
-	for _, id := range []int64{3, 4, 5, 999} {
+	for _, id := range []int64{3, 4, 5, 9, 999} {
 		res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: id})
 		require.NoError(t, err)
 		require.Equal(t, id == 3, res.Found)
@@ -59,6 +83,7 @@ func TestPluginResourceDirectoryCatalogAndResolution(t *testing.T) {
 			require.Empty(t, res.ProxyUrl)
 		}
 	}
+	require.NotContains(t, string(b), "other-secret")
 	proxies.entries[0].Password = "updated"
 	res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 3})
 	require.NoError(t, err)
@@ -68,6 +93,63 @@ func TestPluginResourceDirectoryCatalogAndResolution(t *testing.T) {
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "private-password")
 }
+func TestPluginResourceDirectoryScopeBindsProxyAndGroup(t *testing.T) {
+	past := time.Now().Add(-time.Minute)
+	groupID := int64(20)
+	otherGroup := int64(21)
+	bound := int64(3)
+	hydratedID := int64(40)
+	hiddenProxy := int64(30)
+	proxies := &resourceProxies{entries: []Proxy{
+		{ID: 3, Name: "Bound", Protocol: "http", Host: "bound.example", Port: 8080, Username: "bound-user", Password: "bound-secret", Status: StatusActive},
+		{ID: 21, Name: "Member", Protocol: "socks5", Host: "member.example", Port: 1080, Username: "member-user", Password: "member-secret", Status: StatusActive, GroupID: &groupID},
+		{ID: 22, Name: "ExpiredMember", Status: StatusActive, ExpiresAt: &past, GroupID: &groupID, Password: "expired-secret"},
+		{ID: 23, Name: "OtherGroup", Protocol: "http", Host: "foreign.example", Port: 1, Password: "foreign-secret", Status: StatusActive, GroupID: &otherGroup},
+		{ID: 30, Name: "HiddenProxy", Protocol: "http", Host: "hidden.example", Port: 9, Username: "hidden-user", Password: "hidden-secret", Status: StatusActive},
+		{ID: 31, Name: "Loose", Protocol: "http", Host: "loose.example", Port: 9, Password: "loose-secret", Status: StatusActive},
+		{ID: 40, Name: "Hydrated", Protocol: "http", Host: "hydrated.example", Port: 8081, Username: "hydrated-user", Password: "hydrated-secret", Status: StatusActive},
+	}}
+	accounts := &resourceAccounts{rows: []Account{
+		{ID: 7, Name: "Mail Pro", ProxyID: &bound, ProxyGroupID: &groupID, Proxy: &Proxy{ID: hydratedID, Host: "hydrated.example", Username: "hydrated-user", Password: "hydrated-secret"}},
+		{ID: 8, Name: "Hidden", ProxyID: &hiddenProxy, ProxyGroupID: &otherGroup},
+	}}
+	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
+	d := NewPluginResourceDirectory(base, accounts, proxies)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
+
+	out, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
+	require.NoError(t, err)
+	require.Len(t, out.Accounts, 1)
+	require.Equal(t, int64(7), out.Accounts[0].Id)
+	gotIDs := make([]int64, 0, len(out.Proxies))
+	for _, p := range out.Proxies {
+		gotIDs = append(gotIDs, p.Id)
+	}
+	require.Equal(t, []int64{3, 21, 40}, gotIDs)
+	catalog, err := json.Marshal(out)
+	require.NoError(t, err)
+	for _, secret := range []string{"bound-secret", "member-secret", "hydrated-secret", "hidden-secret", "loose-secret", "foreign-secret", "expired-secret"} {
+		require.NotContains(t, string(catalog), secret)
+	}
+
+	for _, id := range []int64{3, 21, 40} {
+		res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: id})
+		require.NoError(t, err)
+		require.True(t, res.Found)
+		require.NotEmpty(t, res.ProxyUrl)
+	}
+	member, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 21})
+	require.NoError(t, err)
+	require.Contains(t, member.ProxyUrl, "member-secret")
+	for _, id := range []int64{22, 23, 30, 31, 999} {
+		res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: id})
+		require.NoError(t, err)
+		require.False(t, res.Found, "proxy %d", id)
+		require.Empty(t, res.ProxyUrl)
+	}
+}
+
 func TestPluginResourceDirectoryCapabilityGateAndLegacy(t *testing.T) {
 	for _, tc := range []struct {
 		d    PluginAccountDirectory

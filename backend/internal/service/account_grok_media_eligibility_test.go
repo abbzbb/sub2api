@@ -47,6 +47,17 @@ func TestGrokMediaGenerationEligibility(t *testing.T) {
 		{name: "non grok account", account: &Account{Platform: PlatformOpenAI}, want: false, wantReason: "not_grok"},
 		{name: "non oauth grok account stays eligible", account: &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, want: true, wantReason: "non_oauth"},
 		{name: "unobserved oauth fails closed", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}, want: false, wantReason: "billing_unobserved"},
+		{
+			name: "unobserved oauth with bot_flag_source=1 is rejected before probe",
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token": testGrokJWTWithClaims(`{"bot_flag_source":1,"sub":"user-flagged"}`),
+				},
+			},
+			want: false, wantReason: "token_bot_flagged",
+		},
 		{name: "inconclusive successful billing remains eligible", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}}}, want: true, wantReason: "billing_inconclusive"},
 		{name: "weekly paid usage is eligible without inferring from period type", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: weeklyAllowance}}, want: true, wantReason: "eligible"},
 		{name: "billing forbidden is rejected", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: forbiddenBilling}}, want: false, wantReason: "billing_forbidden"},
@@ -108,6 +119,60 @@ func TestGrokMediaGenerationEligibility(t *testing.T) {
 			},
 			want: true, wantReason: "override_enabled",
 		},
+		{
+			name: "bot_flag_source=1 rejects inconclusive billing without authoritative quota",
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token": testGrokJWTWithClaims(`{"bot_flag_source":1,"sub":"user-flagged"}`),
+				},
+				Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}},
+			},
+			want: false, wantReason: "token_bot_flagged",
+		},
+		{
+			name: "bfs credential rejects inconclusive billing without authoritative quota",
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token": "opaque-token",
+					"bfs":          true,
+				},
+				Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}},
+			},
+			want: false, wantReason: "token_bot_flagged",
+		},
+		{
+			name: "bot_flag_source credential rejects inconclusive billing without authoritative quota",
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token":    "opaque-token",
+					"bot_flag_source": float64(1),
+				},
+				Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}},
+			},
+			want: false, wantReason: "token_bot_flagged",
+		},
+		{
+			name: "explicit enable still wins over flagged inconclusive billing",
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token":    "opaque-token",
+					"bot_flag_source": float64(1),
+				},
+				Extra: map[string]any{
+					GrokMediaEligibleExtraKey: true,
+					grokBillingExtraKey:       &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true},
+				},
+			},
+			want: true, wantReason: "override_enabled",
+		},
 	}
 
 	for _, tt := range tests {
@@ -138,6 +203,20 @@ func TestGrokMediaCapabilityKeepsUnobservedAndInconclusiveOAuthAsCandidates(t *t
 	require.True(t, eligible)
 	require.Equal(t, "billing_inconclusive", reason)
 	require.True(t, inconclusive.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
+}
+
+func TestGrokMediaCapabilityRejectsUnobservedFlaggedOAuth(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": testGrokJWTWithClaims(`{"bot_flag_source":1,"sub":"user-flagged"}`),
+		},
+	}
+	eligible, reason := account.GrokMediaGenerationEligibility()
+	require.False(t, eligible)
+	require.Equal(t, "token_bot_flagged", reason)
+	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
 }
 
 func TestGrokMediaCapabilityFiltersOnlyGeneration(t *testing.T) {

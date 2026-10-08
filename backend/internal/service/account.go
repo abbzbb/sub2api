@@ -2173,6 +2173,13 @@ func (a *Account) GrokMediaGenerationEligibility() (bool, string) {
 	if a.Type != AccountTypeOAuth {
 		return true, "non_oauth"
 	}
+	// Risk-control marks are independent of billing observations. Check them
+	// before the unobserved and inconclusive allows, so a flagged OAuth token
+	// is not probed or given media traffic just because quota was never stored.
+	// An explicit grok_media_eligible override above still wins.
+	if isGrokOAuthBotFlagged(a) {
+		return false, "token_bot_flagged"
+	}
 
 	billing, err := grokBillingSnapshotFromExtra(a.Extra)
 	if err != nil || billing == nil {
@@ -2191,9 +2198,6 @@ func (a *Account) GrokMediaGenerationEligibility() (bool, string) {
 		// routable and expose the reason for diagnostics. Operators can still
 		// quarantine a known-bad account with grok_media_eligible=false.
 		return true, "billing_inconclusive"
-	}
-	if isGrokOAuthBotFlagged(a) {
-		return false, "token_bot_flagged"
 	}
 	return true, "eligible"
 }

@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -83,7 +86,8 @@ type Instance struct {
 }
 
 func (i Instance) SocksURL() string {
-	return fmt.Sprintf("socks5h://%s:%d", i.ListenHost, i.ListenPort)
+	host := strings.Trim(strings.TrimSpace(i.ListenHost), "[]")
+	return "socks5h://" + net.JoinHostPort(host, strconv.Itoa(i.ListenPort))
 }
 
 // ProfileKeyCipher encrypts/decrypts profile private keys for at-rest storage.

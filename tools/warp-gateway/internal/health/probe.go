@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,7 @@ type Result struct {
 // ProbeViaSOCKS dials probeURL through a SOCKS5 proxy and parses cdn-cgi/trace style body.
 func ProbeViaSOCKS(ctx context.Context, socksHost string, socksPort int, user, pass, probeURL string, timeout time.Duration) Result {
 	start := time.Now()
-	addr := fmt.Sprintf("%s:%d", socksHost, socksPort)
+	addr := socksProxyAddr(socksHost, socksPort)
 
 	var auth *proxy.Auth
 	if user != "" {
@@ -89,4 +90,8 @@ func ProbeMock(exitIP string) Result {
 		exitIP = "203.0.113.10"
 	}
 	return Result{OK: true, LatencyMs: 1, ExitIP: exitIP, Colo: "MOCK", Raw: "ip=" + exitIP + "\ncolo=MOCK\n"}
+}
+
+func socksProxyAddr(host string, port int) string {
+	return net.JoinHostPort(strings.Trim(strings.TrimSpace(host), "[]"), strconv.Itoa(port))
 }

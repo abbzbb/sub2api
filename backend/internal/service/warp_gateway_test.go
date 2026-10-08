@@ -111,6 +111,33 @@ func TestBuildAttachPlan_DisambiguatesDuplicateInstanceNames(t *testing.T) {
 	}
 }
 
+func TestDialSocksURLJoinsIPv6WithoutChangingLoopbackPolicy(t *testing.T) {
+	local := WarpInstance{ListenHost: "::1", ListenPort: 41001, Status: "running"}
+	got, ok := local.DialSocksURL("http://127.0.0.1:19798")
+	if !ok || got != "socks5h://127.0.0.1:41001" {
+		t.Fatalf("loopback rewrite ok=%v url=%q", ok, got)
+	}
+	remote := "https://warp.example.com:19798"
+	v4 := WarpInstance{ListenHost: "203.0.113.10", ListenPort: 41001}
+	got, ok = v4.DialSocksURL(remote)
+	if !ok || got != "socks5h://203.0.113.10:41001" {
+		t.Fatalf("ipv4 ok=%v url=%q", ok, got)
+	}
+	v6 := WarpInstance{ListenHost: "2001:db8::1", ListenPort: 41001}
+	got, ok = v6.DialSocksURL(remote)
+	if !ok || got != "socks5h://[2001:db8::1]:41001" {
+		t.Fatalf("ipv6 ok=%v url=%q", ok, got)
+	}
+	bracketed := WarpInstance{ListenHost: "[2001:db8::1]", ListenPort: 41001}
+	got, ok = bracketed.DialSocksURL(remote)
+	if !ok || got != "socks5h://[2001:db8::1]:41001" {
+		t.Fatalf("bracketed ipv6 ok=%v url=%q", ok, got)
+	}
+	if _, ok := local.DialSocksURL(remote); ok {
+		t.Fatal("remote control plane dialed loopback ::1")
+	}
+}
+
 func TestDialSocksURLRejectsLoopbackWhenControlPlaneIsRemote(t *testing.T) {
 	remote := "https://warp.example.com:19798"
 	for _, host := range []string{"127.0.0.1", "localhost", "::1", "0.0.0.0", "::", ""} {

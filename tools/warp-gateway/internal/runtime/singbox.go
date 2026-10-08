@@ -103,7 +103,7 @@ func (m *SingBoxManager) Start(ctx context.Context, inst *store.Instance) (Handl
 		_ = logFile.Close()
 		return nil, fmt.Errorf("start sing-box: %w", err)
 	}
-	h := &singBoxHandle{cmd: cmd, addr: fmt.Sprintf("%s:%d", inst.ListenHost, inst.ListenPort), dir: instDir, logFile: logFile, done: make(chan error)}
+	h := &singBoxHandle{cmd: cmd, addr: listenAddr(inst.ListenHost, inst.ListenPort), dir: instDir, logFile: logFile, done: make(chan error)}
 	go func() {
 		h.waitErr = cmd.Wait()
 		close(h.done)

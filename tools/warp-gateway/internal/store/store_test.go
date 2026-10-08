@@ -9,6 +9,25 @@ import (
 	"github.com/Wei-Shaw/sub2api/tools/warp-gateway/internal/crypto"
 )
 
+func TestInstanceSocksURLJoinsIPv4AndIPv6(t *testing.T) {
+	v4 := Instance{ListenHost: "127.0.0.1", ListenPort: 41001}
+	if got := v4.SocksURL(); got != "socks5h://127.0.0.1:41001" {
+		t.Fatalf("ipv4 url=%q", got)
+	}
+	v6 := Instance{ListenHost: "::1", ListenPort: 41001}
+	if got := v6.SocksURL(); got != "socks5h://[::1]:41001" {
+		t.Fatalf("ipv6 url=%q", got)
+	}
+	pub := Instance{ListenHost: "2001:db8::1", ListenPort: 41001}
+	if got := pub.SocksURL(); got != "socks5h://[2001:db8::1]:41001" {
+		t.Fatalf("ipv6 url=%q", got)
+	}
+	bracketed := Instance{ListenHost: "[::1]", ListenPort: 41001}
+	if got := bracketed.SocksURL(); got != "socks5h://[::1]:41001" {
+		t.Fatalf("bracketed ipv6 url=%q", got)
+	}
+}
+
 func TestAllocatePortReservesUntilCreate(t *testing.T) {
 	dir := t.TempDir()
 	s, err := New(dir, 43001, 43010)

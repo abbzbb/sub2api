@@ -26,6 +26,8 @@ const {
   updateUpstreamBillingProbeSettings,
   getOllamaCloudUsageSettings,
   updateOllamaCloudUsageSettings,
+  getOpenCodeGoUsageSettings,
+  updateOpenCodeGoUsageSettings,
   getGroups,
   listProxies,
   getProviders,
@@ -67,6 +69,12 @@ const {
     debounce_minutes: 1,
   }),
   updateOllamaCloudUsageSettings: vi.fn().mockImplementation(async (payload) => payload),
+  getOpenCodeGoUsageSettings: vi.fn().mockResolvedValue({
+    enabled: false,
+    interval_minutes: 15,
+    debounce_minutes: 1,
+  }),
+  updateOpenCodeGoUsageSettings: vi.fn().mockImplementation(async (payload) => payload),
   getGroups: vi.fn(),
   listProxies: vi.fn(),
   getProviders: vi.fn(),
@@ -103,6 +111,8 @@ vi.mock("@/api", () => ({
       updateUpstreamBillingProbeSettings,
       getOllamaCloudUsageSettings,
       updateOllamaCloudUsageSettings,
+      getOpenCodeGoUsageSettings,
+      updateOpenCodeGoUsageSettings,
     },
     groups: {
       getAll: getGroups,
@@ -230,6 +240,10 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.upstreamBillingProbe.intervalHint": "范围 5–1440 分钟。",
     "admin.settings.upstreamBillingProbe.saved": "上游倍率自动探测设置已保存",
     "admin.settings.upstreamBillingProbe.saveFailed": "保存上游倍率自动探测设置失败",
+    "admin.settings.ollamaCloudUsage.debounceMustBeLessThanInterval":
+      "请求安静等待必须小于请求持续时的最长等待。",
+    "admin.settings.opencodeGoUsage.debounceMustBeLessThanInterval":
+      "请求安静等待必须小于请求持续时的最长等待。",
     "admin.settings.openaiFastPolicy.summaryTargetModels": "目标模型",
     "admin.settings.openaiFastPolicy.summaryAllModels": "全部模型",
     "admin.settings.openaiFastPolicy.summaryOtherModels": "其他模型",
@@ -647,6 +661,8 @@ describe("admin SettingsView payment visible method controls", () => {
     updateUpstreamBillingProbeSettings.mockReset();
     getOllamaCloudUsageSettings.mockReset();
     updateOllamaCloudUsageSettings.mockReset();
+    getOpenCodeGoUsageSettings.mockReset();
+    updateOpenCodeGoUsageSettings.mockReset();
     getGroups.mockReset();
     listProxies.mockReset();
     getProviders.mockReset();
@@ -713,6 +729,12 @@ describe("admin SettingsView payment visible method controls", () => {
       debounce_minutes: 1,
     });
     updateOllamaCloudUsageSettings.mockImplementation(async (payload) => payload);
+    getOpenCodeGoUsageSettings.mockResolvedValue({
+      enabled: false,
+      interval_minutes: 15,
+      debounce_minutes: 1,
+    });
+    updateOpenCodeGoUsageSettings.mockImplementation(async (payload) => payload);
     getGroups.mockResolvedValue([]);
     listProxies.mockResolvedValue({
       items: [],
@@ -1583,6 +1605,106 @@ describe("admin SettingsView payment visible method controls", () => {
       debounce_minutes: 3,
     });
   });
+
+  it.each([
+    {
+      prefix: "ollama-cloud-usage",
+      error: "请求安静等待必须小于请求持续时的最长等待。",
+      debounce: 60,
+      interval: 60,
+      update: () => updateOllamaCloudUsageSettings,
+    },
+    {
+      prefix: "ollama-cloud-usage",
+      error: "请求安静等待必须小于请求持续时的最长等待。",
+      debounce: 45,
+      interval: 30,
+      update: () => updateOllamaCloudUsageSettings,
+    },
+    {
+      prefix: "opencode-go-usage",
+      error: "请求安静等待必须小于请求持续时的最长等待。",
+      debounce: 30,
+      interval: 30,
+      update: () => updateOpenCodeGoUsageSettings,
+    },
+    {
+      prefix: "opencode-go-usage",
+      error: "请求安静等待必须小于请求持续时的最长等待。",
+      debounce: 40,
+      interval: 20,
+      update: () => updateOpenCodeGoUsageSettings,
+    },
+  ])(
+    "rejects $prefix debounce $debounce against interval $interval",
+    async ({ prefix, error, debounce, interval, update }) => {
+      const wrapper = mountView();
+      await flushPromises();
+      await openGatewayTab(wrapper);
+
+      const card = wrapper.get(`[data-testid="${prefix}-global-settings"]`);
+      await card.get(`[data-testid="${prefix}-global-enabled"]`).setValue(true);
+      await card.get(`[data-testid="${prefix}-global-interval"]`).setValue(interval);
+      await card.get(`[data-testid="${prefix}-global-debounce"]`).setValue(debounce);
+
+      const message = card.get(`[data-testid="${prefix}-debounce-error"]`);
+      expect(message.text()).toBe(error);
+      showError.mockClear();
+      await card.get(`[data-testid="${prefix}-global-save"]`).trigger("click");
+      await flushPromises();
+
+      expect(update()).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenCalledWith(error);
+    },
+  );
+
+  it.each([
+    {
+      prefix: "ollama-cloud-usage",
+      load: () =>
+        getOllamaCloudUsageSettings.mockResolvedValue({
+          enabled: false,
+          interval_minutes: 60,
+          debounce_minutes: 60,
+        }),
+      update: () => updateOllamaCloudUsageSettings,
+    },
+    {
+      prefix: "opencode-go-usage",
+      load: () =>
+        getOpenCodeGoUsageSettings.mockResolvedValue({
+          enabled: false,
+          interval_minutes: 20,
+          debounce_minutes: 40,
+        }),
+      update: () => updateOpenCodeGoUsageSettings,
+    },
+  ])(
+    "shows $prefix debounce error while automatic refresh is off",
+    async ({ prefix, load, update }) => {
+      load();
+      const wrapper = mountView();
+      await flushPromises();
+      await openGatewayTab(wrapper);
+
+      const card = wrapper.get(`[data-testid="${prefix}-global-settings"]`);
+      expect(
+        (card.get(`[data-testid="${prefix}-global-enabled"]`).element as HTMLInputElement)
+          .checked,
+      ).toBe(false);
+      expect(card.get(`[data-testid="${prefix}-debounce-error"]`).text()).toBe(
+        "请求安静等待必须小于请求持续时的最长等待。",
+      );
+      showError.mockClear();
+      await card.get(`[data-testid="${prefix}-global-save"]`).trigger("click");
+      await flushPromises();
+
+      expect(update()).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenCalledWith(
+        "请求安静等待必须小于请求持续时的最长等待。",
+      );
+    },
+  );
 
   it.each([false, true])("clears the OAuth rate without losing zero (weighted=%s)", async (weighted) => {
     getSettings.mockResolvedValueOnce({

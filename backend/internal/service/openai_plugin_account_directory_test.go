@@ -93,8 +93,8 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	stripped := map[string]struct{}{
 		"Credentials": {}, "Groups": {}, "AccountGroups": {},
 	}
-	// Fields intentionally exposed as readable metadata (incl. Extra and Proxy —
-	// the proxy password is already handed out via ResolveOutboundIdentity's URL).
+	// Fields intentionally exposed as readable metadata. Proxy endpoint fields stay;
+	// username and password are cleared before marshal.
 	safeToExpose := map[string]struct{}{
 		"ID": {}, "Name": {}, "Notes": {}, "Platform": {}, "Type": {}, "Extra": {},
 		"Proxy": {}, "ProxyID": {}, "ProxyGroupID": {}, "ProxyGroupExhausted": {},
@@ -122,20 +122,35 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 		}
 	}
 
-	// The raw Credentials blob must never serialize; Extra and the proxy ARE released.
+	// The raw Credentials blob and proxy authentication must never serialize.
+	// Extra and non-secret proxy endpoint fields stay readable.
 	acct := &Account{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
 		Credentials: map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
-		Extra:       map[string]any{"opaque": "extra-released"},
-		Proxy:       &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
+		Extra: map[string]any{
+			"opaque":                  "extra-released",
+			"codex_harvest_proxy_url": "http://user:password@host",
+		},
+		Proxy: &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
 	}
 	snap := accountReadableSnapshotJSON(acct)
 	require.NotNil(t, snap)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(snap, &m))
 	assert.NotContains(t, string(snap), "LEAK-REFRESH", "raw Credentials must never appear in metadata")
-	assert.Contains(t, string(snap), "extra-released", "Extra is intentionally released")
-	assert.Contains(t, string(snap), "pw-released", "proxy is intentionally released (already exposed via 打票)")
+	assert.Contains(t, string(snap), "extra-released", "ordinary Extra fields stay readable")
+	assert.NotContains(t, string(snap), "codex_harvest_proxy_url", "private harvest proxy URL must not appear in metadata")
+	assert.NotContains(t, string(snap), "user:password@host", "authenticated harvest proxy URL must not appear in metadata")
+	assert.Equal(t, "http://user:password@host", acct.Extra["codex_harvest_proxy_url"], "snapshot must not mutate the source Extra")
+	assert.NotContains(t, string(snap), "pw-released", "proxy password must not appear in metadata")
+	assert.NotContains(t, string(snap), `"Username":"user"`, "proxy username must not appear in metadata")
+	assert.Contains(t, string(snap), "host", "non-secret proxy endpoint stays readable")
+	proxySnap, _ := m["Proxy"].(map[string]any)
+	require.NotNil(t, proxySnap)
+	assert.Empty(t, proxySnap["Username"])
+	assert.Empty(t, proxySnap["Password"])
+	assert.Equal(t, "user", acct.Proxy.Username, "snapshot must not mutate the source proxy")
+	assert.Equal(t, "pw-released", acct.Proxy.Password, "snapshot must not mutate the source proxy")
 
 	// Cycle safety: a populated Groups/AccountGroups back-reference cycle must NOT
 	// crash json.Marshal (encoding/json does not detect cycles). Stripping them

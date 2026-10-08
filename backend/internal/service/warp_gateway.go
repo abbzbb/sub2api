@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -65,7 +66,11 @@ func (i WarpInstance) DialSocksURL(controlBaseURL string) (string, bool) {
 	if i.ListenPort <= 0 {
 		return "", false
 	}
-	return fmt.Sprintf("socks5h://%s:%d", host, i.ListenPort), true
+	// JoinHostPort brackets hosts that contain a colon. Strip an existing pair
+	// first so a stored "[2001:db8::1]" is not wrapped twice. Loopback and
+	// unspecified hosts were already rewritten or rejected above.
+	host = strings.Trim(host, "[]")
+	return "socks5h://" + net.JoinHostPort(host, strconv.Itoa(i.ListenPort)), true
 }
 
 func warpControlPlaneIsLoopback(baseURL string) bool {
