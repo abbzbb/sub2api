@@ -137,19 +137,9 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 	// 根据配置决定是否启用 H2C
 	if cfg.Server.H2C.Enabled {
 		h2cConfig := cfg.Server.H2C
-		if err := http2.ConfigureServer(server, &http2.Server{
-			MaxConcurrentStreams:         h2cConfig.MaxConcurrentStreams,
-			IdleTimeout:                  time.Duration(h2cConfig.IdleTimeout) * time.Second,
-			MaxReadFrameSize:             uint32(h2cConfig.MaxReadFrameSize),
-			MaxUploadBufferPerConnection: int32(h2cConfig.MaxUploadBufferPerConnection),
-			MaxUploadBufferPerStream:     int32(h2cConfig.MaxUploadBufferPerStream),
-		}); err != nil {
+		if err := configureH2CServer(server, h2cConfig); err != nil {
 			log.Printf("Failed to configure HTTP/2 Cleartext (h2c): %v", err)
 		} else {
-			protocols := new(http.Protocols)
-			protocols.SetHTTP1(true)
-			protocols.SetUnencryptedHTTP2(true)
-			server.Protocols = protocols
 			log.Printf("HTTP/2 Cleartext (h2c) enabled: max_concurrent_streams=%d, idle_timeout=%ds, max_read_frame_size=%d, max_upload_buffer_per_connection=%d, max_upload_buffer_per_stream=%d",
 				h2cConfig.MaxConcurrentStreams,
 				h2cConfig.IdleTimeout,
@@ -162,6 +152,28 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 
 	server.Handler = httpHandler
 	return server
+}
+
+// configureH2CServer applies the cleartext HTTP/2 limits.
+// http.HTTP2Config has no idle-timeout field, and Server.IdleTimeout is the
+// HTTP/1 timeout (default 120s). The H2C idle timeout (default 75s) still has
+// to be set on golang.org/x/net/http2.Server, which v0.60 marks deprecated.
+func configureH2CServer(server *http.Server, h2cConfig config.H2CConfig) error {
+	//nolint:staticcheck // SA1019: HTTP2Config cannot express a distinct HTTP/2 idle timeout.
+	if err := http2.ConfigureServer(server, &http2.Server{
+		MaxConcurrentStreams:         h2cConfig.MaxConcurrentStreams,                     //nolint:staticcheck // SA1019
+		IdleTimeout:                  time.Duration(h2cConfig.IdleTimeout) * time.Second, //nolint:staticcheck // SA1019
+		MaxReadFrameSize:             uint32(h2cConfig.MaxReadFrameSize),                 //nolint:staticcheck // SA1019
+		MaxUploadBufferPerConnection: int32(h2cConfig.MaxUploadBufferPerConnection),      //nolint:staticcheck // SA1019
+		MaxUploadBufferPerStream:     int32(h2cConfig.MaxUploadBufferPerStream),          //nolint:staticcheck // SA1019
+	}); err != nil {
+		return err
+	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Protocols = protocols
+	return nil
 }
 
 func derefInt64(p *int64) int64 {
