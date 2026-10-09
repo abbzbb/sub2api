@@ -51,13 +51,15 @@ func (i WarpInstance) SocksURL() string {
 }
 
 // DialSocksURL is the address sub2api should dial.
-// A loopback control plane is a same-host sidecar: empty or unspecified listen
-// hosts stay 127.0.0.1. A remote control plane must not be dialed via loopback
-// or unspecified addresses, which would send traffic to this API process.
+// A loopback control plane is a same-host sidecar: only an empty or unspecified
+// listen host is rewritten to 127.0.0.1. An explicit loopback address keeps its
+// family, so a gateway listening on [::1] is not dialed via 127.0.0.1.
+// A remote control plane must not be dialed via loopback or unspecified
+// addresses, which would send traffic to this API process.
 func (i WarpInstance) DialSocksURL(controlBaseURL string) (string, bool) {
 	host := strings.TrimSpace(i.ListenHost)
 	if warpControlPlaneIsLoopback(controlBaseURL) {
-		if host == "" || warpHostUnspecified(host) || warpHostLoopback(host) {
+		if host == "" || warpHostUnspecified(host) {
 			host = "127.0.0.1"
 		}
 	} else if host == "" || warpHostLoopback(host) || warpHostUnspecified(host) {

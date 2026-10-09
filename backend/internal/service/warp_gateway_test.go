@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -114,8 +116,18 @@ func TestBuildAttachPlan_DisambiguatesDuplicateInstanceNames(t *testing.T) {
 func TestDialSocksURLJoinsIPv6WithoutChangingLoopbackPolicy(t *testing.T) {
 	local := WarpInstance{ListenHost: "::1", ListenPort: 41001, Status: "running"}
 	got, ok := local.DialSocksURL("http://127.0.0.1:19798")
+	if !ok || got != "socks5h://[::1]:41001" {
+		t.Fatalf("explicit ipv6 loopback ok=%v url=%q", ok, got)
+	}
+	v4Loop := WarpInstance{ListenHost: "127.0.0.1", ListenPort: 41001, Status: "running"}
+	got, ok = v4Loop.DialSocksURL("http://127.0.0.1:19798")
 	if !ok || got != "socks5h://127.0.0.1:41001" {
-		t.Fatalf("loopback rewrite ok=%v url=%q", ok, got)
+		t.Fatalf("explicit ipv4 loopback ok=%v url=%q", ok, got)
+	}
+	unspecified := WarpInstance{ListenHost: "::", ListenPort: 41001, Status: "running"}
+	got, ok = unspecified.DialSocksURL("http://127.0.0.1:19798")
+	if !ok || got != "socks5h://127.0.0.1:41001" {
+		t.Fatalf("unspecified rewrite ok=%v url=%q", ok, got)
 	}
 	remote := "https://warp.example.com:19798"
 	v4 := WarpInstance{ListenHost: "203.0.113.10", ListenPort: 41001}
@@ -135,6 +147,37 @@ func TestDialSocksURLJoinsIPv6WithoutChangingLoopbackPolicy(t *testing.T) {
 	}
 	if _, ok := local.DialSocksURL(remote); ok {
 		t.Fatal("remote control plane dialed loopback ::1")
+	}
+}
+
+func TestDialSocksURLReachesIPv6LoopbackListener(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+	})
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || addr == nil {
+		t.Fatalf("listener address %v is not *net.TCPAddr", listener.Addr())
+	}
+	raw, dialOK := (WarpInstance{ListenHost: "::1", ListenPort: addr.Port}).DialSocksURL("http://127.0.0.1:19798")
+	if !dialOK {
+		t.Fatal("local IPv6 listener was rejected")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, time.Second)
+	if err != nil {
+		t.Fatalf("listener %s not reached via %s: %v", listener.Addr(), raw, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("close connection: %v", err)
 	}
 }
 

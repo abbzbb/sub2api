@@ -25,8 +25,8 @@ func (r *resourceAccounts) ListByPlatform(context.Context, string) ([]Account, e
 	bound := int64(3)
 	other := int64(9)
 	return []Account{
-		{ID: 7, Name: "Mail Pro", ProxyID: &bound},
-		{ID: 8, Name: "Hidden", ProxyID: &other},
+		{ID: 7, Name: "Mail Pro", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, ProxyID: &bound},
+		{ID: 8, Name: "Hidden", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, ProxyID: &other},
 	}, nil
 }
 
@@ -110,8 +110,8 @@ func TestPluginResourceDirectoryScopeBindsProxyAndGroup(t *testing.T) {
 		{ID: 40, Name: "Hydrated", Protocol: "http", Host: "hydrated.example", Port: 8081, Username: "hydrated-user", Password: "hydrated-secret", Status: StatusActive},
 	}}
 	accounts := &resourceAccounts{rows: []Account{
-		{ID: 7, Name: "Mail Pro", ProxyID: &bound, ProxyGroupID: &groupID, Proxy: &Proxy{ID: hydratedID, Host: "hydrated.example", Username: "hydrated-user", Password: "hydrated-secret"}},
-		{ID: 8, Name: "Hidden", ProxyID: &hiddenProxy, ProxyGroupID: &otherGroup},
+		{ID: 7, Name: "Mail Pro", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, ProxyID: &bound, ProxyGroupID: &groupID, Proxy: &Proxy{ID: hydratedID, Host: "hydrated.example", Username: "hydrated-user", Password: "hydrated-secret"}},
+		{ID: 8, Name: "Hidden", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, ProxyID: &hiddenProxy, ProxyGroupID: &otherGroup},
 	}}
 	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
 	d := NewPluginResourceDirectory(base, accounts, proxies)
@@ -148,6 +148,122 @@ func TestPluginResourceDirectoryScopeBindsProxyAndGroup(t *testing.T) {
 		require.False(t, res.Found, "proxy %d", id)
 		require.Empty(t, res.ProxyUrl)
 	}
+}
+
+type switchingAccountRepo struct {
+	AccountRepository
+	calls int
+}
+
+func (r *switchingAccountRepo) ListByPlatform(context.Context, string) ([]Account, error) {
+	r.calls++
+	proxyID := int64(3)
+	kind := AccountTypeOAuth
+	if r.calls > 1 {
+		kind = AccountTypeAPIKey
+		proxyID = 9
+	}
+	return []Account{{
+		ID: 7, Platform: PlatformOpenAI, Type: kind, Status: StatusActive, ProxyID: &proxyID,
+	}}, nil
+}
+
+func TestPluginResourceDirectoryRejectsAccountTypeSwitch(t *testing.T) {
+	accounts := &switchingAccountRepo{}
+	proxies := &resourceProxies{entries: []Proxy{
+		{ID: 3, Protocol: "http", Host: "oauth.example", Port: 8080, Username: "oauth-user", Password: "oauth-secret", Status: StatusActive},
+		{ID: 9, Protocol: "http", Host: "apikey.example", Port: 8080, Username: "other-user", Password: "other-secret", Status: StatusActive},
+	}}
+	d := NewPluginResourceDirectory(&OpenAIGatewayService{accountRepo: accounts}, accounts, proxies)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
+
+	res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 9})
+	require.NoError(t, err)
+	require.False(t, res.Found)
+	require.Empty(t, res.ProxyUrl)
+	require.NotContains(t, res.ProxyUrl, "other-secret")
+}
+
+func TestPluginResourceDirectoryKeepsPausedActiveAccount(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	proxyID := int64(3)
+	accounts := &resourceAccounts{rows: []Account{{
+		ID: 7, Name: "Paused", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+		TempUnschedulableUntil: &future, ProxyID: &proxyID,
+	}}}
+	proxies := &resourceProxies{entries: []Proxy{{ID: 3, Protocol: "http", Host: "paused.example", Port: 8080, Status: StatusActive}}}
+	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
+	d := NewPluginResourceDirectory(base, accounts, proxies)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
+	out, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
+	require.NoError(t, err)
+	require.Len(t, out.Accounts, 1)
+	require.Equal(t, "Paused", out.Accounts[0].Name)
+	require.Len(t, out.Proxies, 1)
+}
+
+func TestPluginResourceDirectorySkipsMissingProxyBinding(t *testing.T) {
+	valid, missing := int64(3), int64(999)
+	accounts := &resourceAccounts{rows: []Account{
+		{ID: 7, Name: "Valid", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, ProxyID: &valid},
+		{ID: 8, Name: "Missing", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, ProxyID: &missing},
+	}}
+	proxies := &notFoundProxyRepo{resourceProxies: resourceProxies{entries: []Proxy{
+		{ID: 3, Name: "Valid", Protocol: "http", Host: "valid.example", Port: 8080, Status: StatusActive},
+	}}}
+	base := &fakeAccountDirectory{infos: []PluginAccountInfo{
+		{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth},
+		{ID: 8, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth},
+	}}
+	d := NewPluginResourceDirectory(base, accounts, proxies)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
+
+	out, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
+	require.NoError(t, err)
+	require.Len(t, out.Proxies, 1)
+	require.Equal(t, int64(3), out.Proxies[0].Id)
+	res, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 3})
+	require.NoError(t, err)
+	require.True(t, res.Found)
+	require.Contains(t, res.ProxyUrl, "valid.example")
+	missingRes, err := s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: missing})
+	require.NoError(t, err)
+	require.False(t, missingRes.Found)
+}
+
+func TestPluginResourceDirectoryPropagatesProxyRepositoryError(t *testing.T) {
+	proxyID := int64(3)
+	accounts := &resourceAccounts{rows: []Account{{
+		ID: 7, Name: "Valid", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, ProxyID: &proxyID,
+	}}}
+	proxies := &resourceProxies{
+		entries: []Proxy{{ID: 3, Protocol: "http", Host: "valid.example", Port: 8080, Status: StatusActive}},
+		err:     errors.New("database unavailable"),
+	}
+	base := &fakeAccountDirectory{infos: []PluginAccountInfo{{ID: 7, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
+	d := NewPluginResourceDirectory(base, accounts, proxies)
+	scope := newPluginAccountScope(pluginAccountScopeEntry{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
+	s := newPluginHostServiceServer("test.plugin", nil, d, scope)
+	_, err := s.ListResources(context.Background(), &pluginv1.ListResourcesRequest{})
+	require.Error(t, err)
+	_, err = s.ResolveProxy(context.Background(), &pluginv1.ResolveProxyRequest{ProxyId: 3})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "database unavailable")
+}
+
+type notFoundProxyRepo struct {
+	resourceProxies
+}
+
+func (r *notFoundProxyRepo) GetByID(ctx context.Context, id int64) (*Proxy, error) {
+	p, err := r.resourceProxies.GetByID(ctx, id)
+	if p == nil && err == nil {
+		return nil, ErrProxyNotFound
+	}
+	return p, err
 }
 
 func TestPluginResourceDirectoryCapabilityGateAndLegacy(t *testing.T) {

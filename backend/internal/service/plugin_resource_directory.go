@@ -58,20 +58,90 @@ func (d *pluginResourceDirectory) ResolvePluginProxy(ctx context.Context, scope 
 	if err != nil {
 		return "", err
 	}
-	proxies, err := d.proxiesForAccounts(ctx, accounts)
-	if err != nil {
-		return "", err
+	if d == nil || d.proxies == nil {
+		if !proxyDirectlyBound(accounts, id) && !accountHasProxyGroup(accounts) {
+			return "", nil
+		}
+		return "", errors.New("proxy repository unavailable")
 	}
-	for _, p := range proxies {
-		if p.ID == id {
-			return p.URL(), nil
+	// A direct or hydrated binding is loaded by itself. Sibling bindings are
+	// not queried, so a missing or failing unrelated proxy cannot fail this one.
+	if proxyDirectlyBound(accounts, id) {
+		return d.activeProxyURL(ctx, id)
+	}
+	for _, gid := range proxyGroupIDs(accounts) {
+		members, err := d.proxies.ListByGroupID(ctx, gid)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range members {
+			if p.ID == id && p.IsActive() && !p.IsExpired(time.Now()) {
+				return p.URL(), nil
+			}
 		}
 	}
 	return "", nil
 }
 
-// scopedAccounts returns OpenAI accounts the plugin directory already exposed
-// for this scope. Proxy binding is derived only from that set.
+func proxyDirectlyBound(accounts []Account, id int64) bool {
+	for _, a := range accounts {
+		if a.ProxyID != nil && *a.ProxyID == id {
+			return true
+		}
+		if a.Proxy != nil && a.Proxy.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func accountHasProxyGroup(accounts []Account) bool {
+	return len(proxyGroupIDs(accounts)) > 0
+}
+
+func proxyGroupIDs(accounts []Account) []int64 {
+	seen := map[int64]struct{}{}
+	var out []int64
+	for _, a := range accounts {
+		if a.ProxyGroupID == nil || *a.ProxyGroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[*a.ProxyGroupID]; ok {
+			continue
+		}
+		seen[*a.ProxyGroupID] = struct{}{}
+		out = append(out, *a.ProxyGroupID)
+	}
+	return out
+}
+
+func (d *pluginResourceDirectory) activeProxyURL(ctx context.Context, id int64) (string, error) {
+	p, err := d.lookupBoundProxy(ctx, id)
+	if err != nil || p == nil || !p.IsActive() || p.IsExpired(time.Now()) {
+		return "", err
+	}
+	return p.URL(), nil
+}
+
+// lookupBoundProxy treats a deleted or never-stored proxy as absent. Any other
+// repository error is returned to the caller.
+func (d *pluginResourceDirectory) lookupBoundProxy(ctx context.Context, id int64) (*Proxy, error) {
+	p, err := d.proxies.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrProxyNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return p, nil
+}
+
+// scopedAccounts returns the account rows whose current platform, type, and
+// lifecycle still match the plugin scope. The directory listing and the binding
+// snapshot are separate queries, so an ID from the first query is not enough:
+// the second row is checked again for scope, the OpenAI OAuth filter, active
+// status, and shadow exclusion. Paused accounts stay visible because they keep
+// Status==active.
 func (d *pluginResourceDirectory) scopedAccounts(ctx context.Context, scope PluginAccountScope) ([]Account, error) {
 	if d == nil || d.accounts == nil {
 		return nil, errors.New("account repository unavailable")
@@ -93,11 +163,33 @@ func (d *pluginResourceDirectory) scopedAccounts(ctx context.Context, scope Plug
 	}
 	out := make([]Account, 0, len(allowed))
 	for _, a := range accounts {
-		if _, ok := allowed[a.ID]; ok {
-			out = append(out, a)
+		if _, ok := allowed[a.ID]; !ok {
+			continue
 		}
+		if !accountVisibleToPluginScope(scope, &a, PlatformOpenAI, AccountTypeOAuth) {
+			continue
+		}
+		out = append(out, a)
 	}
 	return out, nil
+}
+
+// accountVisibleToPluginScope re-validates a freshly loaded account. Schedulable
+// is intentionally not required: a paused account remains Status==active.
+func accountVisibleToPluginScope(scope PluginAccountScope, account *Account, platform, accountType string) bool {
+	if account == nil || account.IsShadow() || !account.IsActive() {
+		return false
+	}
+	if !scope.Contains(account.Platform, account.Type) {
+		return false
+	}
+	if platform != "" && account.Platform != platform {
+		return false
+	}
+	if accountType != "" && account.Type != accountType {
+		return false
+	}
+	return true
 }
 
 // proxiesForAccounts returns active, unexpired proxies currently bound to the
@@ -138,7 +230,7 @@ func (d *pluginResourceDirectory) proxiesForAccounts(ctx context.Context, accoun
 		if _, ok := byID[id]; ok {
 			continue
 		}
-		p, err := d.proxies.GetByID(ctx, id)
+		p, err := d.lookupBoundProxy(ctx, id)
 		if err != nil {
 			return nil, err
 		}
