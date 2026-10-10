@@ -33,8 +33,10 @@ describe('harvest availability', () => {
   })
 
   it('shows clock-only recovery on the same day', () => {
-    const now = new Date('2026-09-20T23:13:00+08:00')
-    expect(harvestAvailabilityRecoverClock('2026-09-20T23:52:00+08:00', now)).toEqual({ clock: '23:52' })
-    expect(harvestAvailabilityRecoverClock('2026-09-21T00:40:00+08:00', now)).toEqual({ clock: '00:40', date: '09-21' })
+    // The clock renders in the runner's zone, so inputs are local wall-clock times.
+    const local = (day: number, hour: number, minute: number) => new Date(2026, 8, day, hour, minute)
+    const now = local(20, 23, 13)
+    expect(harvestAvailabilityRecoverClock(local(20, 23, 52).toISOString(), now)).toEqual({ clock: '23:52' })
+    expect(harvestAvailabilityRecoverClock(local(21, 0, 40).toISOString(), now)).toEqual({ clock: '00:40', date: '09-21' })
   })
 })
