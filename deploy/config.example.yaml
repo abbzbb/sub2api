@@ -1,3 +1,9 @@
+# Process role: full retains the dashboard and global background jobs (default).
+# gateway exposes model gateway APIs only and keeps request-local workers running.
+# Keep exactly one full instance until every enabled global job has a shared lease.
+runtime:
+  role: "full"
+
 # Sub2API Configuration File
 # Sub2API 配置文件
 #
@@ -11,6 +17,14 @@
 # 服务器配置
 # =============================================================================
 server:
+  # Shared PostgreSQL/Redis readiness budget: 0 = 1s (default), allowed 1..60s.
+  # If changed, Kubernetes readinessProbe.timeoutSeconds must exceed this budget.
+  readiness_timeout_seconds: 0
+  # HTTP/WS request drain budget after load-balancer withdrawal (seconds).
+  # Default 5 preserves existing deployments; Kubernetes example uses 240.
+  graceful_shutdown_timeout: 5
+  # Fail readiness/reject new work, then wait for endpoint propagation.
+  shutdown_drain_delay: 0
   # Bind address (0.0.0.0 for all interfaces)
   # 绑定地址（0.0.0.0 表示监听所有网络接口）
   host: "0.0.0.0"
@@ -217,6 +231,24 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Route upstream hosts through operator-managed regional HTTP(S)/SOCKS5 exits.
+  # Disabled by default; reload requires a process restart. Explicit account
+  # proxies, Codex harvest proxies and BPS keep their existing exit policy.
+  upstream_routing:
+    enabled: false
+    regions: []
+    rules: []
+    # regions:
+    #   - id: us
+    #     proxy_url_env: SUB2API_EGRESS_US_PROXY_URL
+    # rules:
+    #   - domain: api.vendor.example
+    #     region: us
+    #     account_ids: [123] # optional upstream account IDs, not client API Key IDs
+    #   - domain: "*.us.vendor.example"
+    #     region: us
+    # Inject SUB2API_EGRESS_US_PROXY_URL via Secret/EnvironmentFile, for example
+    # socks5h://127.0.0.1:11080 (SSH SOCKS tunnel terminating on a US host).
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600
@@ -326,22 +358,24 @@ gateway:
   # 再在住宅 IP 业务请求中覆盖该头。默认关闭。
   # Env: GATEWAY_OPENAI_CODEX_TICKET_ENABLED=true
   #      GATEWAY_OPENAI_CODEX_TICKET_HARVEST_PROXY_URL=socks5h://user:pass@host:port
-  # Admin UI 开关（系统设置 → 网关 → Codex 设置 → 292 打票）可覆盖 enabled，无需重启。
+  # Admin UI 开关（系统设置 → 网关 → Codex 设置 → 780 打票）可覆盖 enabled，无需重启。
   # Off: do not harvest or inject. On: harvest in the background and inject on production requests.
   # The harvest proxy should rotate egress IPs itself (fresh CONNECT per request).
   # Credential shadow accounts retain their existing forwarding policy and are not ticket-gated.
   openai_codex_ticket:
     enabled: false
-    target_length: 292
-    ttl_seconds: 3600
-    refresh_before_seconds: 600
+    target_length: 780
+    ttl_seconds: 240
+    refresh_before_seconds: 60
     # 后台「系统设置 → 网关 → Codex 设置」可覆盖此值，无需重启。
     # 后台值的读取缓存为 5 秒，下个探测周期使用新代理；代理服务商自行负责轮换 IP。
     harvest_proxy_url: ""
-    harvest_probe_interval_seconds: 6
+    harvest_probe_interval_seconds: 180
+    harvest_cooldown_seconds: 180
+    max_probes_per_round: 6
     harvest_attempt_timeout_seconds: 25
-    # 无有效 292 票时是否暂停调度。管理端「Codex 设置 → 缺票拦截」可覆盖，无需重启。
-    fail_closed: true
+    # 默认仅把票据作为可选增强；开启后，无有效票据的目标模型账号会暂停调度。
+    fail_closed: false
     models:
       - gpt-6-astra
       - gpt-5.6-sol
@@ -382,6 +416,10 @@ gateway:
     store_disabled_force_new_conn: true
     # 是否启用 WSv2 generate=false 预热（默认 false）
     prewarm_generate_enabled: false
+    # HTTP 流式 WS 加速：编码后的消息超过此字节数时，在发送前保留 HTTP/SSE。
+    # 包含 JSON 换行；默认 15 MiB 是保守路由阈值，不代表上游公布的消息大小限制。
+    # 必须为正数；不影响原生 WS 入口。环境变量 GATEWAY_OPENAI_WS_SSE_ACCELERATION_MAX_PAYLOAD_BYTES。
+    sse_acceleration_max_payload_bytes: 15728640
     # 协议 feature 开关，v2 优先于 v1
     responses_websockets: false
     responses_websockets_v2: true
@@ -514,6 +552,9 @@ gateway:
   # Stream data interval timeout (seconds), 0=disable
   # 流数据间隔超时（秒），0=禁用
   stream_data_interval_timeout: 180
+  # BPS 原始响应读取无进展超时；默认 120 秒，0 禁用，启用时允许 30–300 秒。
+  # 上游 SSE 注释和下游 keepalive 不续期；不重放已接受的生成。
+  excel_bps_stream_data_interval_timeout: 120
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10
@@ -544,6 +585,15 @@ gateway:
     # Max image requests waiting in this process when overflow_mode=wait, 0=unlimited
     # wait 模式当前进程允许排队等待的图片请求数，0=不限制
     max_waiting_requests: 100
+  # API Key concurrency wait queue. Global policy; no per-key database field.
+  # API Key 并发等待队列（全局策略，无逐 Key 数据库字段；进程启动时读取）。
+  api_key_queue:
+    # Extra waiting requests per API key with concurrency_limit>0; 0 disables key queueing.
+    # 每个受限 Key 允许额外等待的请求数；0 关闭 Key 排队（仍保留并发上限）。
+    max_waiting: 5
+    # Max wait budget per request in seconds (positive integer; 0 is rejected).
+    # 单个请求等待 Key 容量的最长秒数（正整数，0 会被拒绝）。
+    timeout_seconds: 30
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040
@@ -593,6 +643,9 @@ gateway:
     db_fallback_timeout_seconds: 0
     # 受控回源限流（实例级 QPS），0 表示不限制
     db_fallback_max_qps: 0
+    # OpenAI 发送前账户快照的进程内缓存 TTL（秒）；0 表示关闭。
+    # 启用后账户停用、换组或代理变更最坏可延迟该时长生效。
+    openai_turn_admission_cache_ttl_seconds: 0
     # outbox 轮询周期（秒）
     outbox_poll_interval_seconds: 1
     # outbox 滞后告警阈值（秒）
@@ -753,86 +806,6 @@ api_key_auth_cache:
     # Maximum tracked client identities per process; memory remains bounded.
     # 每进程最多跟踪的客户端身份数量，确保内存有界。
     capacity: 16384
-
-# =============================================================================
-# Connection Risk Detection (方案 B)
-# 异常用户连接检测：热路径 Redis 信号 + 异步评分
-# Master kill switch — detailed thresholds live in settings key
-# connection_risk_settings (admin API). Defaults keep everything OFF.
-# =============================================================================
-connection_risk:
-  # Process-level master kill. false = emit and worker both no-op.
-  # 进程级总开关；false 时热路径与 Worker 均不工作。
-  enabled: false
-  # Hot-path Redis pipeline timeout (ms); timeouts fail-open.
-  # 热路径 Redis 超时（毫秒）；超时 fail-open，不阻断网关。
-  emit_timeout_ms: 8
-
-# =============================================================================
-# Proxy pool health poller (generic SOCKS/HTTP proxies)
-# 代理池轮询测活：连续失败自动标记 inactive（停用），可选自动恢复
-# WARP 代理仍由 warp.auto_detach_unhealthy + WarpSyncWorker 管理
-# =============================================================================
-proxy_health:
-  # Master switch (default off). Enable after confirming probe endpoints work.
-  # 总开关（默认关）；确认探测可达后再开
-  enabled: false
-  # Full round interval (seconds, min 10)
-  interval_sec: 60
-  # Single probe timeout (ms)
-  timeout_ms: 10000
-  # Concurrent probes per tick
-  concurrency: 8
-  # Consecutive failures before status=inactive
-  fail_threshold: 3
-  # Consecutive successes before auto-recover (only isolated_by=health)
-  success_threshold: 2
-  # group_members = only proxies in active groups; all_active = every active proxy
-  probe_scope: group_members
-  # Re-enable health-isolated proxies after success_threshold
-  auto_recover: true
-  # Skip name prefixes (avoid double-probe with WarpSyncWorker)
-  skip_name_prefix:
-    - "warp-"
-  # Redis leader lock TTL for multi-instance deployments
-  leader_lock_ttl_sec: 50
-  # Max proxies probed per tick
-  batch_size: 100
-  # connectivity = exit-IP probe only; quality = connectivity + AI target quality checks
-  # connectivity 仅测出口连通；quality 在连通成功后再跑 AI 目标质量探测（更慢）
-  probe_mode: connectivity
-
-# =============================================================================
-# Cloudflare WARP Gateway (tools/warp-gateway)
-# WARP 出站控制面：实例池 / 健康检查 / rotate / exit_ip 去重
-# Docs: docs/warp-gateway.md
-# =============================================================================
-warp:
-  # Enable HTTP client to warp-gateway control plane
-  # 是否启用 warp-gateway 控制面客户端
-  enabled: false
-  gateway:
-    base_url: "http://127.0.0.1:19798"
-    token: ""
-    timeout_ms: 3000
-    reconcile_interval_sec: 15
-    # Optional TLS / mTLS for multi-host control plane (use https:// base_url)
-    # 多机控制面可选 TLS / mTLS（base_url 使用 https://）
-    tls_ca_file: ""
-    tls_cert_file: ""
-    tls_key_file: ""
-    tls_insecure_skip_verify: false
-  # Phase 3: mark mapped proxies status=error (stay in group, skip scheduling)
-  # when the gateway reports them unhealthy. Does not set group_id=NULL.
-  auto_detach_unhealthy: true
-  # Phase 3: alert when multiple instances share the same exit IP
-  alert_duplicate_exit_ip: true
-  # When enabled, 292 ticket harvest round-robins healthy warp-gateway SOCKS
-  # endpoints (unique exit_ip first) instead of pinning harvest_proxy_url.
-  default_group_name: "warp-pool"
-  # Optional key material for profile secret handling (gateway prefers WARP_GATEWAY_PROFILE_KEY)
-  # 可选 profile 密钥材料（gateway 优先使用 WARP_GATEWAY_PROFILE_KEY 做落盘加密）
-  profile_encryption_key: ""
 
 # =============================================================================
 # API Key Creation Limits

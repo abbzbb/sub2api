@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -34,8 +35,14 @@ func (r *bmSettingRepo) Set(_ context.Context, _, _ string) error {
 	panic("unexpected Set call")
 }
 
-func (r *bmSettingRepo) GetMultiple(_ context.Context, _ []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
+func (r *bmSettingRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	values := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			values[key] = value
+		}
+	}
+	return values, nil
 }
 
 func (r *bmSettingRepo) SetMultiple(_ context.Context, settings map[string]string) error {
@@ -391,5 +398,28 @@ func TestBackendModeAuthGuard(t *testing.T) {
 
 			require.Equal(t, tc.wantStatus, w.Code)
 		})
+	}
+}
+
+func TestBackendModeObserverOwnUsageOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	paths := []string{"/api/v1/usage", "/api/v1/usage/:id/timing", "/api/v1/usage/stats", "/api/v1/usage/filter-options", "/api/v1/usage/errors", "/api/v1/usage/errors/:id", "/api/v1/usage/dashboard/models", "/api/v1/usage/dashboard/snapshot-v2", "/api/v1/keys", "/api/v1/usage/cleanup-tasks"}
+	for _, role := range []string{service.RoleObserver, service.RoleUser} {
+		for _, path := range paths {
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				t.Run(role+method+path, func(t *testing.T) {
+					router := gin.New()
+					router.Use(func(c *gin.Context) { c.Set(string(ContextKeyUserRole), role) }, BackendModeUserGuard(newBackendModeSettingService(t, "true")))
+					router.Handle(method, path, func(c *gin.Context) { c.Status(200) })
+					w := httptest.NewRecorder()
+					router.ServeHTTP(w, httptest.NewRequest(method, strings.ReplaceAll(path, ":id", "1"), nil))
+					want := 403
+					if role == service.RoleObserver && method == http.MethodGet && path != "/api/v1/keys" && path != "/api/v1/usage/cleanup-tasks" {
+						want = 200
+					}
+					require.Equal(t, want, w.Code)
+				})
+			}
+		}
 	}
 }

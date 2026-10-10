@@ -520,7 +520,7 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 		"1.0.047",
 		"1.0.47-alpha..1",
 		"1.1",
-		"2",
+		"1",
 		"1.0.47+build.1",
 	} {
 		t.Run("rejects invalid semver "+version, func(t *testing.T) {
@@ -536,7 +536,7 @@ func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	}
 
 	t.Run("leaves direct xAI API requests unchanged", func(t *testing.T) {
-		t.Setenv("XAI_GROK_CLI_VERSION", "1.0.47")
+		t.Setenv("XAI_GROK_CLI_VERSION", "1.0.46")
 		req, err := http.NewRequest(http.MethodPost, "https://api.x.ai/v1/responses", nil)
 		require.NoError(t, err)
 		req.Header.Set("User-Agent", "direct-api-client/1.0")

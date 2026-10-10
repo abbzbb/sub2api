@@ -263,8 +263,6 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLi
 	require.True(t, result.ClearedError)
 	require.True(t, result.ClearedRateLimit)
 
-	// ClearRateLimit re-reads the account before releasing the runtime block so
-	// an explicit reset cannot bypass a concurrently-established Free pending lock.
 	require.Equal(t, 2, repo.getByIDCalls)
 	require.Equal(t, 1, repo.clearErrorCalls)
 	require.Equal(t, 1, repo.clearRateLimitCalls)

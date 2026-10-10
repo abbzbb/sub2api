@@ -241,7 +241,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Icon from '@/components/icons/Icon.vue'
@@ -398,6 +398,13 @@ const toggle = () => {
     })
   }
 }
+
+watch(() => props.disabled, (disabled) => {
+  if (disabled) {
+    isOpen.value = false
+    searchQuery.value = ''
+  }
+})
 
 const selectOption = (value: number | null) => {
   emit('update:modelValue', value)

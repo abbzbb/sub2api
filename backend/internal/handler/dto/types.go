@@ -10,19 +10,20 @@ import (
 )
 
 type User struct {
-	ID            int64      `json:"id"`
-	Email         string     `json:"email"`
-	Username      string     `json:"username"`
-	Role          string     `json:"role"`
-	Balance       float64    `json:"balance"`
-	FrozenBalance float64    `json:"frozen_balance"`
-	Concurrency   int        `json:"concurrency"`
-	Status        string     `json:"status"`
-	AllowedGroups []int64    `json:"allowed_groups"`
-	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	ID               int64      `json:"id"`
+	Email            string     `json:"email"`
+	Username         string     `json:"username"`
+	Role             string     `json:"role"`
+	Balance          float64    `json:"balance"`
+	FrozenBalance    float64    `json:"frozen_balance"`
+	Concurrency      int        `json:"concurrency"`
+	Status           string     `json:"status"`
+	AllowedGroups    []int64    `json:"allowed_groups"`
+	ObserverGroupIDs []int64    `json:"observer_group_ids"`
+	LastActiveAt     *time.Time `json:"last_active_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
 
 	// 余额不足通知
 	BalanceNotifyEnabled       bool               `json:"balance_notify_enabled"`
@@ -73,18 +74,19 @@ type APIKey struct {
 	CurrentConcurrency int `json:"current_concurrency"`
 
 	// Rate limit fields
-	RateLimit5h   float64    `json:"rate_limit_5h"`
-	RateLimit1d   float64    `json:"rate_limit_1d"`
-	RateLimit7d   float64    `json:"rate_limit_7d"`
-	Usage5h       float64    `json:"usage_5h"`
-	Usage1d       float64    `json:"usage_1d"`
-	Usage7d       float64    `json:"usage_7d"`
-	Window5hStart *time.Time `json:"window_5h_start"`
-	Window1dStart *time.Time `json:"window_1d_start"`
-	Window7dStart *time.Time `json:"window_7d_start"`
-	Reset5hAt     *time.Time `json:"reset_5h_at,omitempty"`
-	Reset1dAt     *time.Time `json:"reset_1d_at,omitempty"`
-	Reset7dAt     *time.Time `json:"reset_7d_at,omitempty"`
+	ConcurrencyLimit int        `json:"concurrency_limit"`
+	RateLimit5h      float64    `json:"rate_limit_5h"`
+	RateLimit1d      float64    `json:"rate_limit_1d"`
+	RateLimit7d      float64    `json:"rate_limit_7d"`
+	Usage5h          float64    `json:"usage_5h"`
+	Usage1d          float64    `json:"usage_1d"`
+	Usage7d          float64    `json:"usage_7d"`
+	Window5hStart    *time.Time `json:"window_5h_start"`
+	Window1dStart    *time.Time `json:"window_1d_start"`
+	Window7dStart    *time.Time `json:"window_7d_start"`
+	Reset5hAt        *time.Time `json:"reset_5h_at,omitempty"`
+	Reset1dAt        *time.Time `json:"reset_1d_at,omitempty"`
+	Reset7dAt        *time.Time `json:"reset_7d_at,omitempty"`
 
 	User  *User  `json:"user,omitempty"`
 	Group *Group `json:"group,omitempty"`
@@ -170,6 +172,8 @@ type AdminGroup struct {
 	ForceOpenAIFast bool `json:"force_openai_fast"`
 	// FreeOpenAIFast 是管理端计费策略，用户侧分组 DTO 无需暴露。
 	FreeOpenAIFast bool `json:"free_openai_fast"`
+	// StreamOnly 是管理端请求策略（只接受流式的对话生成请求），用户侧分组 DTO 无需暴露。
+	StreamOnly bool `json:"stream_only"`
 
 	// 分组利润控制（五个 token 平台分组可启用；margin/buffer 为小数存储）。
 	// 仅管理员可见：这三个字段与同响应中的 rate_multiplier 相乘即可反推出
@@ -226,6 +230,7 @@ type Account struct {
 	LoadFactor              *int                              `json:"load_factor,omitempty"`
 	Priority                int                               `json:"priority"`
 	RateMultiplier          float64                           `json:"rate_multiplier"`
+	GroupRateMultiplier     float64                           `json:"group_rate_multiplier"`
 	Status                  string                            `json:"status"`
 	ErrorMessage            string                            `json:"error_message"`
 	LastUsedAt              *time.Time                        `json:"last_used_at"`
@@ -233,6 +238,7 @@ type Account struct {
 	AutoPauseOnExpired      bool                              `json:"auto_pause_on_expired"`
 	CreatedAt               time.Time                         `json:"created_at"`
 	UpdatedAt               time.Time                         `json:"updated_at"`
+	OpenCodeGoUsage         *service.OpenCodeGoUsageState     `json:"opencode_go_usage,omitempty"`
 
 	Schedulable bool `json:"schedulable"`
 
@@ -261,7 +267,7 @@ type Account struct {
 	MaxSessions           *int `json:"max_sessions,omitempty"`
 	SessionIdleTimeoutMin *int `json:"session_idle_timeout_minutes,omitempty"`
 
-	// RPM 限制（仅 Anthropic OAuth/SetupToken 账号有效）
+	// RPM 限制（Anthropic OAuth/SetupToken 与 OpenAI OAuth 账号有效）
 	// 从 extra 字段提取，方便前端显示和编辑
 	BaseRPM          *int    `json:"base_rpm,omitempty"`
 	RPMStrategy      *string `json:"rpm_strategy,omitempty"`
@@ -349,6 +355,7 @@ type AccountListItem struct {
 	OllamaCloudUsage  *service.OllamaCloudUsageState    `json:"ollama_cloud_usage,omitempty"`
 	OpenCodeGoUsage   *service.OpenCodeGoUsageState     `json:"opencode_go_usage,omitempty"`
 	CodexTurnTickets  []service.OpenAICodexTicketStatus `json:"codex_turn_tickets,omitempty"`
+	OpenCodeGoUsage   *service.OpenCodeGoUsageState     `json:"opencode_go_usage,omitempty"`
 
 	ProxyID                 *int64     `json:"proxy_id"`
 	ProxyGroupID            *int64     `json:"proxy_group_id"`
@@ -358,6 +365,7 @@ type AccountListItem struct {
 	LoadFactor              *int       `json:"load_factor,omitempty"`
 	Priority                int        `json:"priority"`
 	RateMultiplier          float64    `json:"rate_multiplier"`
+	GroupRateMultiplier     float64    `json:"group_rate_multiplier"`
 	Status                  string     `json:"status"`
 	ErrorMessage            string     `json:"error_message"`
 	LastUsedAt              *time.Time `json:"last_used_at"`
@@ -435,10 +443,12 @@ type AccountListItem struct {
 }
 
 type AccountGroup struct {
-	AccountID int64     `json:"account_id"`
-	GroupID   int64     `json:"group_id"`
-	Priority  int       `json:"priority"`
-	CreatedAt time.Time `json:"created_at"`
+	AccountID int64 `json:"account_id"`
+	GroupID   int64 `json:"group_id"`
+	Priority  int   `json:"priority"`
+	// AllowedModels 为空表示账号在该分组内不限制模型
+	AllowedModels []string  `json:"allowed_models,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 
 	Account *Account `json:"account,omitempty"`
 	Group   *Group   `json:"group,omitempty"`

@@ -28,9 +28,6 @@ service HostService {
   rpc KVSet(KVSetRequest) returns (KVSetResponse);
   rpc KVDelete(KVDeleteRequest) returns (KVDeleteResponse);
   rpc KVList(KVListRequest) returns (KVListResponse);
-  // Optional resource catalog; metadata only. Proxy credentials are resolved on demand.
-  rpc ListResources(ListResourcesRequest) returns (ListResourcesResponse);
-  rpc ResolveProxy(ResolveProxyRequest) returns (ResolveProxyResponse);
   // Account directory: enumerate the accounts the plugin is bound to act on
   // (with full readable metadata) and resolve the outbound identity
   // (credentials/headers/proxy) the host would attach to a live request. The
@@ -276,13 +273,3 @@ message ResolveOutboundIdentityResponse {
   string token = 6;
   map<string, HeaderValues> headers = 7;
 }
-
-message ListResourcesRequest {}
-message AccountSummary { int64 id = 1; string name = 2; }
-message ProxySummary { int64 id = 1; string name = 2; string protocol = 3; string host = 4; int32 port = 5; }
-message ListResourcesResponse { repeated AccountSummary accounts = 1; repeated ProxySummary proxies = 2; bool actions_supported = 3; }
-message ResolveProxyRequest { int64 proxy_id = 1; }
-message ResolveProxyResponse { bool found = 1; string proxy_url = 2; }
-
-message RunActionRequest { bytes action_json = 1; }
-message RunActionResponse { bool accepted = 1; string message = 2; }

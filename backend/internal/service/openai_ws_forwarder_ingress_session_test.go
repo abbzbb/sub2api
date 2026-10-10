@@ -670,6 +670,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 	}
 	account := &Account{
 		ID:          31,
+		GroupIDs:    []int64{groupID},
 		Name:        "openai-codex-image-ws",
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,

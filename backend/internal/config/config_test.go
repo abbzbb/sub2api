@@ -506,6 +506,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.ClientReadLimitBytes != 64*1024*1024 {
 		t.Fatalf("Gateway.OpenAIWS.ClientReadLimitBytes = %d, want %d", cfg.Gateway.OpenAIWS.ClientReadLimitBytes, 64*1024*1024)
 	}
+	if cfg.Gateway.OpenAIWS.SSEAccelerationMaxPayloadBytes != 15*1024*1024 {
+		t.Fatalf("SSEAccelerationMaxPayloadBytes = %d, want 15 MiB", cfg.Gateway.OpenAIWS.SSEAccelerationMaxPayloadBytes)
+	}
 	if !cfg.Gateway.OpenAIWS.HTTPBridgeEnabled {
 		t.Fatalf("Gateway.OpenAIWS.HTTPBridgeEnabled = false, want true")
 	}
@@ -1953,6 +1956,12 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.stream_data_interval_timeout",
 		},
 		{
+			name: "gateway BPS progress interval range", mutate: func(c *Config) { c.Gateway.ExcelBPSStreamDataIntervalTimeout = 5 }, wantErr: "gateway.excel_bps_stream_data_interval_timeout",
+		},
+		{
+			name: "gateway BPS progress interval negative", mutate: func(c *Config) { c.Gateway.ExcelBPSStreamDataIntervalTimeout = -1 }, wantErr: "gateway.excel_bps_stream_data_interval_timeout",
+		},
+		{
 			name:    "gateway stream data interval negative",
 			mutate:  func(c *Config) { c.Gateway.StreamDataIntervalTimeout = -1 },
 			wantErr: "gateway.stream_data_interval_timeout must be non-negative",
@@ -2611,6 +2620,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.StreamDataIntervalTimeout != 180 {
 		t.Fatalf("stream_data_interval_timeout = %d, want 180", cfg.Gateway.StreamDataIntervalTimeout)
 	}
+	if cfg.Gateway.ExcelBPSStreamDataIntervalTimeout != 120 {
+		t.Fatalf("excel_bps_stream_data_interval_timeout = %d, want 120", cfg.Gateway.ExcelBPSStreamDataIntervalTimeout)
+	}
 	if cfg.Gateway.StreamKeepaliveInterval != 10 {
 		t.Fatalf("stream_keepalive_interval = %d, want 10", cfg.Gateway.StreamKeepaliveInterval)
 	}
@@ -2679,5 +2691,17 @@ func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestOpenAIWSSSEPayloadLimitConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_WS_SSE_ACCELERATION_MAX_PAYLOAD_BYTES", "1048576")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.EqualValues(t, 1048576, cfg.Gateway.OpenAIWS.SSEAccelerationMaxPayloadBytes)
+	for _, limit := range []int64{0, -1} {
+		cfg.Gateway.OpenAIWS.SSEAccelerationMaxPayloadBytes = limit
+		require.ErrorContains(t, cfg.Validate(), "sse_acceleration_max_payload_bytes must be positive")
 	}
 }

@@ -73,6 +73,20 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 	if err == nil {
 		return fallback
 	}
+	if errors.Is(err, service.ErrOpenAIRPMExhausted) {
+		return noAccountErrorClassification{
+			Status:  http.StatusTooManyRequests,
+			ErrType: "rate_limit_error",
+			Message: "All eligible OpenAI OAuth accounts are at their per-minute request limit. Please retry after the current minute resets.",
+		}
+	}
+	if errors.Is(err, service.ErrOpenAIRPMUnavailable) {
+		return noAccountErrorClassification{
+			Status:  http.StatusServiceUnavailable,
+			ErrType: "api_error",
+			Message: "OpenAI OAuth RPM protection is temporarily unavailable. Please retry later.",
+		}
+	}
 	// A 404 model_not_found fallback is authoritative and must not be downgraded
 	// to a rate-limit verdict. classifyNoAccountError only reaches it through
 	// DiagnoseModelAvailabilityForPlatform, a dedicated database query over
@@ -118,8 +132,9 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 // Its dedicated database query considers only persistent eligibility
 // (active status + schedulable setting) and model_mapping, bypassing scheduler
 // snapshots and transient filters. That guarantees a 404 is only returned
-// when persistent account/group/model configuration must change before the
-// request can succeed.
+// when no configured candidate supports the model, including candidates with
+// a still-valid explicit upstream model capability rejection. Ordinary capacity
+// cooldowns never remove model support.
 //
 // routingModel is the model name that account selection actually compared
 // against (i.e. after group-level dispatch mapping). displayModel is the

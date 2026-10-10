@@ -31,6 +31,60 @@ func TestResolveOpenAIWSClientFirstMessageTimeout(t *testing.T) {
 	require.Equal(t, 120*time.Second, ResolveOpenAIWSClientFirstMessageTimeout(cfg))
 }
 
+// The transport owns interruption of its underlying read on request cancel;
+// the consumer remains the sole owner of response-body Close.
+type contextAwareBridgeUpstream struct {
+	httpUpstreamRecorder
+	writer *io.PipeWriter
+}
+
+func (u *contextAwareBridgeUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
+	context.AfterFunc(req.Context(), func() { _ = u.writer.CloseWithError(req.Context().Err()) })
+	return u.httpUpstreamRecorder.Do(req, proxyURL, accountID, concurrency)
+}
+
+func TestProxyOpenAIWSHTTPBridgeSilentDisconnectBoundsDrain(t *testing.T) {
+	for _, usageArrives := range []bool{false, true} {
+		t.Run(fmt.Sprint("usage=", usageArrives), func(t *testing.T) {
+			body, writer := io.Pipe()
+			defer func() { _ = writer.Close() }()
+			upstream := &contextAwareBridgeUpstream{httpUpstreamRecorder: httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}}, writer: writer}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			disconnected := make(chan struct{})
+			ctx := context.WithValue(context.Background(), openAIWSDisconnectKey{}, (<-chan struct{})(disconnected))
+			payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi"}`)
+			done := make(chan struct{})
+			var result *OpenAIForwardResult
+			var err error
+			go func() {
+				defer close(done)
+				result, err = svc.proxyOpenAIWSHTTPBridgeTurn(ctx, c, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "sk-test", payload, len(payload), "gpt-5", "", "", "", "", 2, func([]byte) error { return io.EOF })
+			}()
+			close(disconnected)
+			if usageArrives {
+				_, writeErr := io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":11,\"output_tokens\":3}}}\n\n")
+				require.NoError(t, writeErr)
+			}
+			select {
+			case <-done:
+			case <-time.After(4 * time.Second):
+				t.Fatal("detached body did not terminate")
+			}
+			if usageArrives {
+				require.NoError(t, err)
+				require.Equal(t, 11, result.Usage.InputTokens)
+				require.Equal(t, 3, result.Usage.OutputTokens)
+			} else {
+				require.Error(t, err)
+			}
+			_, writeErr := writer.Write([]byte("still open?"))
+			require.Error(t, writeErr, "body must be closed before returning")
+		})
+	}
+}
+
 func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 	body, err := prepareOpenAIWSHTTPBridgeBody(nil, []byte(`{"type":"response.create","generate":true,"model":"gpt-5","stream":false,"previous_response_id":"resp_prev","input":"hi","sequence":900719925474099312345}`))
 	require.NoError(t, err)
@@ -47,18 +101,88 @@ func TestPrepareOpenAIWSHTTPBridgeBodyStripsWSFields(t *testing.T) {
 
 func TestPrepareOpenAIWSHTTPBridgeBodyStripsNoneReasoningForCompatibleEndpoint(t *testing.T) {
 	payload := []byte(`{"type":"response.create","model":"company-coding-model","reasoning":{"effort":"none"},"input":"hi"}`)
-	compatible := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
-		"base_url": "https://compat.example/v1",
-	}}
+	compatible := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		Platform:    PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+			"base_url": "https://compat.example/v1",
+		}}
 
 	body, err := prepareOpenAIWSHTTPBridgeBody(compatible, payload)
 	require.NoError(t, err)
 	require.False(t, gjson.GetBytes(body, "reasoning.effort").Exists())
 	require.False(t, gjson.GetBytes(body, "reasoning").Exists())
 
-	officialBody, err := prepareOpenAIWSHTTPBridgeBody(&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, payload)
+	officialBody, err := prepareOpenAIWSHTTPBridgeBody(&Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		Platform:    PlatformOpenAI, Type: AccountTypeAPIKey}, payload)
 	require.NoError(t, err)
 	require.Equal(t, "none", gjson.GetBytes(officialBody, "reasoning.effort").String())
+}
+
+func TestOpenAIWSHTTPBridgeAdmissionFailureClearsStickyState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const (
+		groupID     int64 = 281
+		accountID   int64 = 129
+		sessionHash       = "bridge-admission-session"
+		responseID        = "resp_bridge_rejected"
+	)
+	selected := ticketTestAccount(accountID)
+	latest := *selected
+	latest.Schedulable = false
+
+	stateStore := NewOpenAIWSStateStore(nil)
+	require.NoError(t, stateStore.BindResponseAccount(context.Background(), groupID, responseID, accountID, time.Hour))
+	stateStore.BindResponseConn(responseID, "conn-bridge-rejected", time.Hour)
+	stateStore.BindSessionTurnState(groupID, sessionHash, "turn-bridge-rejected", time.Hour)
+	stateStore.BindSessionConn(groupID, sessionHash, "conn-bridge-rejected", time.Hour)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	c.Set(openAIWSIngressSessionHashContextKey, sessionHash)
+	c.Set("api_key", &APIKey{GroupID: func() *int64 { v := groupID; return &v }()})
+
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{
+		cfg:                &config.Config{},
+		httpUpstream:       upstream,
+		accountRepo:        &turnAdmissionRepo{account: &latest},
+		openaiWSStateStore: stateStore,
+	}
+	payload := []byte(`{"type":"response.create","model":"gpt-5.6-sol","previous_response_id":"resp_bridge_rejected","input":"continue"}`)
+
+	_, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+		context.Background(),
+		c,
+		selected,
+		"access-token",
+		payload,
+		len(payload),
+		"gpt-5.6-sol",
+		"",
+		"",
+		"",
+		"",
+		2,
+		func([]byte) error { return nil },
+	)
+
+	require.Error(t, err)
+	require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+	require.Empty(t, upstream.bodies, "an admission failure must not reach the upstream")
+
+	account, getErr := stateStore.GetResponseAccount(context.Background(), groupID, responseID)
+	require.NoError(t, getErr)
+	require.Zero(t, account)
+	_, ok := stateStore.GetResponseConn(responseID)
+	require.False(t, ok)
+	_, ok = stateStore.GetSessionTurnState(groupID, sessionHash)
+	require.False(t, ok)
+	_, ok = stateStore.GetSessionConn(groupID, sessionHash)
+	require.False(t, ok)
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurn_KeepsOutboundAndObservedServiceTiersSeparate(t *testing.T) {
@@ -81,7 +205,10 @@ func TestProxyOpenAIWSHTTPBridgeTurn_KeepsOutboundAndObservedServiceTiersSeparat
 		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
 		httpUpstream: upstream,
 	}
-	account := &Account{ID: 5881, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          5881, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	payload := []byte(`{"type":"response.create","model":"gpt-5.5","stream":true,"service_tier":"priority","input":"hi"}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -119,7 +246,10 @@ func TestProxyOpenAIWSHTTPBridgeTurn_NormalizesFastWithoutLosingObservedDefault(
 		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
 		httpUpstream: upstream,
 	}
-	account := &Account{ID: 5882, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          5882, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	payload := []byte(`{"type":"response.create","model":"gpt-5.5","stream":true,"service_tier":"fast","input":"hi"}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -160,7 +290,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyAdaptsClientTools(t *testing.T) {
 		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
 		httpUpstream: upstream,
 	}
-	account := &Account{ID: 5659, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          5659, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	payload := []byte(`{
 		"type":"response.create","model":"gpt-5","stream":true,
 		"tools":[{"type":"custom","name":"exec","description":"Run a command"}],
@@ -233,7 +366,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnAPIKeyRestoresClientToolsInResponseDone(t *t
 		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
 		httpUpstream: upstream,
 	}
-	account := &Account{ID: 5764, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          5764, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	payload := []byte(`{
 		"type":"response.create","model":"gpt-5","stream":true,
 		"tools":[{"type":"custom","name":"exec","description":"Run a command"}],
@@ -779,6 +915,9 @@ func TestProxyOpenAIWSHTTPBridgeTurnTransportErrorFailoverSafety(t *testing.T) {
 				httpUpstream: upstream,
 			}
 			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+
 				ID:          8,
 				Name:        "api-key",
 				Platform:    PlatformOpenAI,
@@ -842,7 +981,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnHTTPStatusFailoverSafety(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"temporary upstream failure"}}`)),
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-			account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				ID:          9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -892,7 +1034,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRetriesRejectedFieldBeforeClientOutput(t *te
 		},
 	}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	account := &Account{ID: 91, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          91, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -931,7 +1076,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnSSEErrorFailoverSafety(t *testing.T) {
 				)),
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-			account := &Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				ID:          10, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -989,7 +1137,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRewritesCapacityShedCodeForClient(t *testing
 				Body:       io.NopCloser(strings.NewReader(tt.body)),
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-			account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
+			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				ID:          11, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1031,7 +1182,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorUsesAuthoritativeFailed(t *testing.
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}}
 	repo := &openAIStream403AccountRepo{}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: &RateLimitService{accountRepo: repo}}
-	account := &Account{ID: 111, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          111, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1102,7 +1256,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnMarksCyberPolicyForFailureShapes(t *testing.
 				Body:       io.NopCloser(strings.NewReader(tt.body)),
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-			account := &Account{ID: 112, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				ID:          112, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1132,7 +1289,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorEOFSynthesizesFailed(t *testing.T) 
 		"data: {\"type\":\"error\",\"error\":{\"code\":\"invalid_request\",\"message\":\"bad request\"}}\n\n"
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	account := &Account{ID: 112, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          112, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1165,7 +1325,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorFollowedByCompletedUsesCompleted(t 
 	}, "\n")
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	account := &Account{ID: 113, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          113, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1224,7 +1387,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataAndRelaysKeepaliveBeforeCapaci
 		Body:       reader,
 	}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	account := &Account{ID: 12, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          12, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1275,7 +1441,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	account := &Account{ID: 13, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
+	account := &Account{
+		Status:      StatusActive,
+		Schedulable: true,
+		ID:          13, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1466,7 +1635,10 @@ func TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(tt.body)),
 			}}
 			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-			account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
+			account := &Account{
+				Status:      StatusActive,
+				Schedulable: true,
+				ID:          11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -1529,6 +1701,8 @@ func TestOpenAIWSHTTPBridgeRelaysSSEFramesAsWebSocketMessages(t *testing.T) {
 		toolCorrector: NewCodexToolCorrector(),
 	}
 	account := &Account{
+		Schedulable: true,
+
 		ID:          7,
 		Name:        "api-key",
 		Platform:    PlatformOpenAI,
@@ -2194,6 +2368,8 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 		toolCorrector: NewCodexToolCorrector(),
 	}
 	account := &Account{
+		Schedulable: true,
+
 		ID:       9,
 		Name:     "api-key",
 		Platform: PlatformOpenAI,
@@ -2211,6 +2387,7 @@ func TestOpenAIWSHTTPBridgeAcceptsFirstFrameAboveLegacy16MiB(t *testing.T) {
 		Status:      StatusActive,
 	}
 
+	account.Schedulable = true
 	payload := []byte(strings.Repeat(" ", 1024) + `{"type":"response.create","generate":true,"model":"gpt-5","stream":true,"input":"` + strings.Repeat("x", 17*1024*1024) + `"}`)
 	require.Greater(t, len(payload), 16*1024*1024)
 	require.GreaterOrEqual(t, int64(len(payload)), cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes)

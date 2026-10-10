@@ -14,6 +14,8 @@ const authStore = vi.hoisted(() => ({
   checkAuth: vi.fn(),
   isAuthenticated: true,
   isAdmin: false,
+  isObserver: false,
+  canManageAccounts: false,
   isSimpleMode: false,
   hasPendingAuthSession: false,
 }))
@@ -26,6 +28,7 @@ const appStore = vi.hoisted(() => ({
     payment_enabled?: boolean
     risk_control_enabled?: boolean
     subscription_enabled?: boolean
+    support_ticket_enabled?: boolean
     custom_menu_items?: []
   },
   fetchPublicSettings: vi.fn(),
@@ -114,10 +117,33 @@ describe('feature route guard', () => {
   beforeEach(() => {
     authStore.isAuthenticated = true
     authStore.isAdmin = false
+    authStore.isObserver = false
+    appStore.backendModeEnabled = false
     authStore.isSimpleMode = false
     appStore.publicSettingsLoaded = false
     appStore.cachedPublicSettings = null
     appStore.fetchPublicSettings.mockReset()
+  })
+
+  it('allows observers own usage in backend mode without opening other user or admin pages', async () => {
+    appStore.backendModeEnabled = true
+    authStore.isObserver = true
+    for (const simple of [false, true]) {
+      authStore.isSimpleMode = simple
+      const own = runGuard({}, '/usage')
+      await own.navigation
+      expect(own.next).toHaveBeenCalledWith()
+    }
+    const admin = runGuard({ requiresAdmin: true }, '/admin/usage')
+    await admin.navigation
+    expect(admin.next).toHaveBeenCalledWith('/dashboard')
+    const other = runGuard({}, '/keys')
+    await other.navigation
+    expect(other.next).toHaveBeenCalledWith('/login')
+    authStore.isObserver = false
+    const user = runGuard({}, '/usage')
+    await user.navigation
+    expect(user.next).toHaveBeenCalledWith('/login')
   })
 
   it('waits for the first public-settings request before deciding payment access', async () => {
@@ -208,5 +234,46 @@ describe('subscription route guard (opt-out flag)', () => {
     await navigation
 
     expect(next).toHaveBeenCalledWith('/admin/dashboard')
+  })
+})
+
+describe('support ticket route guard (opt-in flag)', () => {
+  beforeEach(() => {
+    authStore.isAdmin = false
+    authStore.isSimpleMode = false
+    appStore.publicSettingsLoaded = true
+    appStore.fetchPublicSettings.mockReset()
+  })
+
+  it.each([
+    ['missing', {}, false, '/dashboard'],
+    ['off', { support_ticket_enabled: false }, false, '/dashboard'],
+    ['off for an admin', { support_ticket_enabled: false }, true, '/admin/settings'],
+  ])('redirects when the switch is %s', async (_name, settings, admin, target) => {
+    authStore.isAdmin = admin
+    appStore.cachedPublicSettings = settings
+    const { navigation, next } = runGuard({ requiresSupportTickets: true, requiresAdmin: admin }, '/support-tickets')
+    await navigation
+    expect(next).toHaveBeenCalledWith(target)
+  })
+
+  it('opens the pages when the switch is on', async () => {
+    appStore.cachedPublicSettings = { support_ticket_enabled: true }
+    const { navigation, next } = runGuard({ requiresSupportTickets: true }, '/support-tickets/7')
+    await navigation
+    expect(next).toHaveBeenCalledWith()
+  })
+
+  it('loads public settings before deciding', async () => {
+    appStore.publicSettingsLoaded = false
+    appStore.cachedPublicSettings = null
+    appStore.fetchPublicSettings.mockImplementation(async () => {
+      appStore.cachedPublicSettings = { support_ticket_enabled: true }
+      appStore.publicSettingsLoaded = true
+    })
+    const { navigation, next } = runGuard({ requiresSupportTickets: true }, '/support-tickets')
+    await navigation
+    expect(appStore.fetchPublicSettings).toHaveBeenCalledTimes(1)
+    expect(next).toHaveBeenCalledWith()
   })
 })

@@ -26,6 +26,7 @@ type FrameConn interface {
 
 type Usage struct {
 	InputTokens              int
+	ImageInputTokens         int
 	OutputTokens             int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
@@ -104,7 +105,7 @@ type RelayTraceEvent struct {
 type relayState struct {
 	usage                   Usage
 	turnUsage               Usage
-	turnWroteDownstream     atomic.Bool
+	turnWroteDownstream     atomic.Pointer[atomic.Bool]
 	requestModelMu          sync.RWMutex
 	requestModel            string
 	pendingTurnStart        atomic.Pointer[time.Time]
@@ -183,6 +184,7 @@ func Relay(
 	}
 	startAt := nowFn()
 	state := &relayState{requestModel: result.RequestModel}
+	state.turnWroteDownstream.Store(&atomic.Bool{})
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
 		if firstTurnStartedAt.IsZero() {
@@ -208,6 +210,7 @@ func Relay(
 	}
 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
 		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
+		var turnWroteDownstream *atomic.Bool
 		if isResponseCreate {
 			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
 			turnStartedAt := time.Time{}
@@ -221,13 +224,16 @@ func Relay(
 			// The policy-enforcing client connection has accepted this turn.
 			// Reset before the write so an immediate upstream response cannot race
 			// with the transport returning from WriteFrame.
-			state.turnWroteDownstream.Store(false)
+			// Give each turn its own flag: the previous downstream write may
+			// still be returning after the client has received its terminal.
+			turnWroteDownstream = &atomic.Bool{}
+			state.turnWroteDownstream.Store(turnWroteDownstream)
 		}
 		err := writeUpstream(msgType, payload)
 		if err != nil && isResponseCreate {
 			// The relay exits on this error, but retain the previous turn's state
 			// for accurate diagnostics while the two relay goroutines settle.
-			state.turnWroteDownstream.Store(true)
+			turnWroteDownstream.Store(true)
 		}
 		return err
 	}
@@ -284,47 +290,48 @@ func Relay(
 	exitCh := make(chan relayExitSignal, 3)
 	dropDownstreamWrites := atomic.Bool{}
 	clientReaderStarted := atomic.Bool{}
+	var readers sync.WaitGroup
 	startClientReader := func() {
 		if !clientReaderStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeClientFrameUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeClientFrameUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+		}()
 	}
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
 	}
-	var upstreamWG sync.WaitGroup
-	startUpstreamReader := func() {
-		upstreamWG.Add(1)
-		go func() {
-			defer upstreamWG.Done()
-			runUpstreamToClient(
-				relayCtx,
-				upstreamConn,
-				writeClient,
-				startAt,
-				nowFn,
-				state,
-				options.OnUsageParseFailure,
-				options.OnTurnComplete,
-				options.BeforeWriteClient,
-				options.BeforeClientWrite,
-				options.AfterClientWrite,
-				func(coderws.MessageType, []byte) {
-					if options.StartClientAfterFirstDownstream {
-						startClientReader()
-					}
-				},
-				&dropDownstreamWrites,
-				upstreamToClientFrames,
-				droppedDownstreamFrames,
-				markActivity,
-				onTrace,
-				exitCh,
-			)
-		}()
-	}
-	startUpstreamReader()
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		runUpstreamToClient(
+			relayCtx,
+			upstreamConn,
+			writeClient,
+			startAt,
+			nowFn,
+			state,
+			options.OnUsageParseFailure,
+			options.OnTurnComplete,
+			options.BeforeWriteClient,
+			options.BeforeClientWrite,
+			options.AfterClientWrite,
+			func(msgType coderws.MessageType, payload []byte) {
+				if options.StartClientAfterFirstDownstream {
+					startClientReader()
+				}
+			},
+			&dropDownstreamWrites,
+			upstreamToClientFrames,
+			droppedDownstreamFrames,
+			markActivity,
+			onTrace,
+			exitCh,
+		)
+	}()
 	go runIdleWatchdog(relayCtx, nowFn, options.IdleTimeout, &lastActivity, onTrace, exitCh)
 
 	firstExit := <-exitCh
@@ -389,15 +396,14 @@ func Relay(
 	// ReadFrame observes relayCtx cancellation and Close is the transport-level
 	// fallback. Join the reader before touching relayState or firing the final
 	// turn callback; otherwise a late read can race Relay's result settlement.
-	upstreamWG.Wait()
+	readers.Wait()
 
 	emitTurnComplete(options.OnTurnComplete, state, finalizePendingBareError(state, nowFn()), clientDisconnected)
 	enrichResult(&result, state, nowFn().Sub(startAt))
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
-	result.ClientDisconnect = clientDisconnected
-	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful {
+	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_client_closed",
 			Graceful:        true,
@@ -585,11 +591,16 @@ func runUpstreamToClient(
 			return
 		}
 		markActivity()
-		dropDownstream := dropDownstreamWrites != nil && dropDownstreamWrites.Load()
-		if !dropDownstream && beforeWriteClient != nil {
+		// Keep this frame's turn identity across callbacks and WriteFrame. A
+		// new response.create must not receive the prior turn's completion.
+		var turnWroteDownstream *atomic.Bool
+		if state != nil {
+			turnWroteDownstream = state.turnWroteDownstream.Load()
+		}
+		if beforeWriteClient != nil {
 			wroteDownstreamInTurn := wroteDownstream
 			if state != nil {
-				wroteDownstreamInTurn = state.turnWroteDownstream.Load()
+				wroteDownstreamInTurn = turnWroteDownstream != nil && turnWroteDownstream.Load()
 			}
 			if err := beforeWriteClient(msgType, payload, wroteDownstreamInTurn); err != nil {
 				emitRelayTrace(onTrace, RelayTraceEvent{
@@ -670,8 +681,8 @@ func runUpstreamToClient(
 			return
 		}
 		wroteDownstream = true
-		if state != nil {
-			state.turnWroteDownstream.Store(true)
+		if turnWroteDownstream != nil {
+			turnWroteDownstream.Store(true)
 		}
 		if afterWriteClient != nil {
 			afterWriteClient(msgType, payload)
@@ -821,8 +832,8 @@ func observeUpstreamMessage(
 	observeRelayTurnResponseServiceTier(turnTiming, firstRelayResponseServiceTier(message))
 	state.terminalEventType = eventType
 	if eventType == "error" {
-		// Some Responses servers emit error immediately before response.failed.
-		// Defer turn settlement so the authoritative failed usage can replace
+		// Some Responses servers emit error immediately before a response terminal.
+		// Defer turn settlement so the authoritative response usage can replace
 		// this fallback instead of billing both terminal frames.
 		if observed.responseID == "" {
 			observed.responseID = openAIWSRelayActiveTurnID(state)
@@ -840,8 +851,28 @@ func shouldFinalizePendingBareError(state *relayState, payload []byte, eventType
 		return false
 	}
 	eventType = strings.TrimSpace(eventType)
-	if eventType == "" || eventType == "error" || eventType == "response.failed" {
+	if eventType == "" || eventType == "error" {
 		return false
+	}
+	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+	if responseID == "" {
+		responseID = strings.TrimSpace(gjson.GetBytes(payload, "response_id").String())
+	}
+	if responseID == "" && isTerminalEvent(eventType) {
+		responseID = strings.TrimSpace(gjson.GetBytes(payload, "id").String())
+	}
+	if isTerminalEvent(eventType) {
+		pendingID := state.pendingBareError.responseID
+		if responseID != "" && pendingID != "" {
+			// A terminal for this response replaces the provisional error before
+			// any callback releases its slot. Different responses settle separately.
+			return responseID != pendingID
+		}
+		// Preserve providers' error -> response.failed association when no ID
+		// is available. An unassociated successful terminal starts another turn.
+		if eventType == "response.failed" {
+			return false
+		}
 	}
 	if isTerminalEvent(eventType) || eventType == "response.created" {
 		return true
@@ -849,7 +880,6 @@ func shouldFinalizePendingBareError(state *relayState, payload []byte, eventType
 	// Auxiliary provider frames may be interleaved between error and its
 	// authoritative response.failed. Only a response event identifying a
 	// different turn closes the pending error.
-	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
 	if responseID == "" || state.pendingBareError.responseID == "" {
 		return false
 	}
@@ -1136,6 +1166,21 @@ func parseUsageAndAccumulate(
 	if imageTokens == 0 {
 		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
 	}
+	imageInputTokens := usageResult.Get("input_tokens_details.image_tokens").Int()
+	if imageInputTokens <= 0 {
+		imageInputTokens = usageResult.Get("prompt_tokens_details.image_tokens").Int()
+	}
+	// 与 HTTP Responses 同口径：usage 缺图片计数时由托管工具 tool_usage.image_gen 回填。
+	imageGen := gjson.GetBytes(message, "response.tool_usage.image_gen")
+	if !imageGen.Exists() {
+		imageGen = gjson.GetBytes(message, "tool_usage.image_gen")
+	}
+	if imageTokens <= 0 {
+		imageTokens = max(imageGen.Get("output_tokens_details.image_tokens").Int(), 0)
+	}
+	if imageInputTokens <= 0 {
+		imageInputTokens = max(imageGen.Get("input_tokens_details.image_tokens").Int(), 0)
+	}
 
 	requireTotals := isTerminalEvent(strings.TrimSpace(eventType))
 	inputTokens, inputOK := parseUsageIntField(inputResult, requireTotals)
@@ -1160,6 +1205,7 @@ func parseUsageAndAccumulate(
 	}
 	parsedUsage := Usage{
 		InputTokens:              inputTokens,
+		ImageInputTokens:         int(imageInputTokens),
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
 		CacheReadInputTokens:     cachedTokens,
@@ -1180,7 +1226,7 @@ func parseUsageAndAccumulate(
 func relayUsageHasTokens(usage Usage) bool {
 	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 ||
-		usage.ImageOutputTokens > 0
+		usage.ImageInputTokens > 0 || usage.ImageOutputTokens > 0
 }
 
 func mergeRelayUsageNonZero(dst *Usage, src Usage) {
@@ -1199,6 +1245,9 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 	if src.CacheReadInputTokens > 0 {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
 	}
+	if src.ImageInputTokens > 0 {
+		dst.ImageInputTokens = src.ImageInputTokens
+	}
 	if src.ImageOutputTokens > 0 {
 		dst.ImageOutputTokens = src.ImageOutputTokens
 	}
@@ -1210,6 +1259,7 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
 	}
 	turnUsage := state.turnUsage
 	state.usage.InputTokens += turnUsage.InputTokens
+	state.usage.ImageInputTokens += turnUsage.ImageInputTokens
 	state.usage.OutputTokens += turnUsage.OutputTokens
 	state.usage.CacheCreationInputTokens += turnUsage.CacheCreationInputTokens
 	state.usage.CacheReadInputTokens += turnUsage.CacheReadInputTokens

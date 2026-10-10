@@ -51,47 +51,77 @@ function makeAccount(overrides: Partial<Account>): Account {
 }
 
 describe('AccountStatusIndicator', () => {
-  it('keeps pending Grok Free accounts limited without showing a recovery countdown', () => {
+  it.each([
+    [{}, 'active'],
+    [{ status: 'error', error_message: 'Upstream unavailable' }, 'error'],
+    [{ rate_limit_reset_at: '2099-01-01T00:00:00Z' }, 'rateLimited'],
+    [{ overload_until: '2099-01-01T00:00:00Z' }, 'overloaded'],
+    [{ temp_unschedulable_until: '2099-01-01T00:00:00Z' }, 'tempUnschedulable'],
+    [{ schedulable: false }, 'paused'],
+  ] as [Partial<Account>, string][])('keeps the BPS badge above the %s status', (overrides, status) => {
     const wrapper = mount(AccountStatusIndicator, {
-      props: {
-        account: makeAccount({
-          id: 6,
-          name: 'grok-free-pending',
-          platform: 'grok',
-          type: 'oauth',
-          grok_free_recovery_pending: true,
-          grok_free_recovery_next_probe_at: '2026-07-18T01:05:00Z',
-          grok_free_recovery_last_probe_at: '2026-07-18T01:00:00Z',
-          grok_free_recovery_last_probe_result: 'http_429',
-          rate_limited_at: '2026-07-11T12:00:00Z',
-          rate_limit_reset_at: '2000-01-01T00:00:00Z'
-        })
-      },
-      global: {
-        stubs: {
-          Icon: true
-        }
-      }
+      props: { account: makeAccount({ platform: 'openai', extra: { openai_excel_bps: true }, ...overrides }) },
+      global: { stubs: { Icon: true } },
     })
 
-    expect(wrapper.find('.badge-warning').text()).toBe('admin.accounts.status.rateLimited')
-    expect(wrapper.text()).toContain('429')
-    expect(wrapper.get('[data-testid="rate-limit-resume"]').text()).toBe(
-      'admin.accounts.status.grokFreeRecoveryNextProbe'
-    )
-    expect(wrapper.get('[data-testid="rate-limit-tooltip"]').text()).toContain(
-      'admin.accounts.status.grokFreeRecoveryPending'
-    )
-    expect(wrapper.get('[data-testid="rate-limit-tooltip"]').text()).toContain(
-      'admin.accounts.status.grokFreeRecoveryLastProbe'
-    )
-    expect(wrapper.get('[data-testid="rate-limit-tooltip"]').text()).toContain(
-      'admin.accounts.status.grokFreeRecoveryProbeResult'
-    )
-    expect(wrapper.text()).not.toContain('admin.accounts.status.rateLimitedAutoResume')
-    expect(wrapper.text()).not.toContain('admin.accounts.status.rateLimitedUntil')
+    const badge = wrapper.get('[data-testid="bps-status-badge"]')
+    expect(badge.text()).toBe('bps')
+    expect(badge.attributes('title')).toBe('admin.accounts.openai.excelBPS')
+    expect(wrapper.element.firstElementChild).toBe(badge.element)
+    expect(badge.element.nextElementSibling?.textContent).toContain(`admin.accounts.status.${status}`)
   })
 
+  it.each([
+    { extra: undefined },
+    { extra: { openai_excel_bps: false } },
+    { extra: { openai_excel_bps: 'true' } },
+    { platform: 'anthropic' },
+    { type: 'apikey' },
+    { parent_account_id: 2 },
+    { credentials: { plan_type: ' Free ' } },
+    { credentials: { auth_mode: ' agentIdentity ' } },
+    { credentials: { auth_mode: 'personalAccessToken' } },
+    { credentials: { openai_auth_mode: ' PERSONAL_ACCESS_TOKEN ' } },
+  ] as Partial<Account>[])('hides BPS for disabled or unsupported accounts: %j', overrides => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: { account: makeAccount({ platform: 'openai', extra: { openai_excel_bps: true }, ...overrides }) },
+    })
+
+    expect(wrapper.find('[data-testid="bps-status-badge"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('admin.accounts.status.active')
+  })
+
+  it('updates the BPS badge when the account setting changes', async () => {
+    const account = makeAccount({ platform: 'openai', extra: { openai_excel_bps: false } })
+    const wrapper = mount(AccountStatusIndicator, { props: { account } })
+    expect(wrapper.find('[data-testid="bps-status-badge"]').exists()).toBe(false)
+
+    await wrapper.setProps({ account: { ...account, extra: { openai_excel_bps: true } } })
+    expect(wrapper.find('[data-testid="bps-status-badge"]').exists()).toBe(true)
+
+    await wrapper.setProps({ account })
+    expect(wrapper.find('[data-testid="bps-status-badge"]').exists()).toBe(false)
+  })
+
+  it('hides the BPS badge when the global protocol switch is off', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({ platform: 'openai', extra: { openai_excel_bps: true } }),
+        globalBpsEnabled: false,
+      },
+    })
+
+    expect(wrapper.find('[data-testid="bps-status-badge"]').exists()).toBe(false)
+  })
+
+  it('shows the RPM pause reason and clears it when refreshed after reset', async () => {
+    const account = makeAccount({ platform: 'openai', base_rpm: 10, current_rpm: 10, rpm_paused: true, rpm_reset_at: 1_900_000_020 })
+    const wrapper = mount(AccountStatusIndicator, { props: { account }, global: { stubs: { Icon: true } } })
+    expect(wrapper.text()).toContain('admin.accounts.status.rpmPaused')
+    expect(wrapper.text()).toContain('admin.accounts.status.rpmPausedUntil')
+    await wrapper.setProps({ account: { ...account, current_rpm: 0, rpm_paused: false, rpm_reset_at: undefined } })
+    expect(wrapper.text()).not.toContain('admin.accounts.status.rpmPaused')
+  })
   it('Claude 5 系列模型限流时显示 Opus 和 Sonnet 的短别名', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {

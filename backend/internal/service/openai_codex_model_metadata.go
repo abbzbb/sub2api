@@ -6,6 +6,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"net/url"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 var codexToolCapabilityFields = []string{
@@ -21,7 +23,11 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		if len(value) == 0 {
 			continue
 		}
-		// These Codex fields are nullable booleans or strings, never arbitrary objects.
+		// Unlike the scalar capability fields, Codex service_tiers is a
+		// non-nullable array. An explicit null declares no available tiers.
+		if field == "service_tiers" && bytes.Equal(value, []byte("null")) {
+			value = json.RawMessage("[]")
+		}
 		if !bytes.Equal(value, []byte("null")) {
 			if field == "service_tiers" {
 				var tiers []configuredCodexServiceTier
@@ -88,9 +94,12 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		target := modelID
 		if isOpenAIGPT6AstraModel(target) {
 			target = "gpt-6-astra"
+		} else if openai.IsGPT61SolModelSpelling(target) {
+			target = "gpt-6.1-sol"
 		}
 		_, disabled := apiKeyCodexModelsWithoutResponsesLite[target]
-		if disabled && bytes.Equal(capabilities["use_responses_lite"], []byte("true")) {
+		if disabled {
+			// Override bundled defaults even when this account has no snapshot.
 			capabilities["use_responses_lite"] = json.RawMessage("false")
 		}
 	}
@@ -104,6 +113,14 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 			panic(err)
 		}
 		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"service_tiers": encoded}, false)
+	}
+	// This function receives the mapped upstream model. A BPS relay does not
+	// implement Codex's native encrypted multi-agent message contract, even
+	// when the underlying ChatGPT model advertises it. Explicit nulls override
+	// synced/bundled declarations without disabling ordinary plaintext tools.
+	if account.isExcelBPSUpstreamModelEnabled(modelID) {
+		capabilities["multi_agent_version"] = json.RawMessage("null")
+		capabilities["multi_agent_reasoning_effort"] = json.RawMessage("null")
 	}
 	return capabilities
 }
@@ -278,8 +295,11 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 			result.CodexToolCapabilities[field] = value
 		} else if declared {
 			fallback := json.RawMessage("null")
-			if field == "supports_search_tool" || field == "use_responses_lite" {
+			switch field {
+			case "supports_search_tool", "use_responses_lite":
 				fallback = json.RawMessage("false")
+			case "service_tiers":
+				fallback = json.RawMessage("[]")
 			}
 			result.CodexToolCapabilities[field] = fallback
 		}

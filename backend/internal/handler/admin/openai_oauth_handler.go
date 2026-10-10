@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -107,6 +109,7 @@ func NewOpenAIOAuthHandler(
 type OpenAIGenerateAuthURLRequest struct {
 	ProxyID     *int64 `json:"proxy_id"`
 	RedirectURI string `json:"redirect_uri"`
+	OAuthClient string `json:"oauth_client"`
 }
 
 // GenerateAuthURL generates OpenAI OAuth authorization URL
@@ -114,8 +117,10 @@ type OpenAIGenerateAuthURLRequest struct {
 func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	var req OpenAIGenerateAuthURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// Allow empty body
-		req = OpenAIGenerateAuthURLRequest{}
+		if !errors.Is(err, io.EOF) {
+			response.BadRequest(c, "Invalid OAuth authorization request")
+			return
+		}
 	}
 
 	result, err := h.openaiOAuthService.GenerateAuthURL(
@@ -123,6 +128,7 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		req.ProxyID,
 		req.RedirectURI,
 		oauthPlatformFromPath(c),
+		req.OAuthClient,
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -294,7 +300,7 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(updatedAccount))
+	response.Success(c, dto.AccountForObserver(c.Request.Context(), dto.AccountFromService(updatedAccount)))
 }
 
 // CreateAccountFromOAuth creates a new OpenAI OAuth account from token info
@@ -360,7 +366,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(account))
+	response.Success(c, dto.AccountForObserver(c.Request.Context(), dto.AccountFromService(account)))
 }
 
 // CreateAccountFromCodexPAT creates an OpenAI OAuth account from a Codex at-* personal access token.
@@ -458,7 +464,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AccountFromService(account))
+	response.Success(c, dto.AccountForObserver(c.Request.Context(), dto.AccountFromService(account)))
 }
 
 func buildOpenAICodexPATAccountName(name string, tokenInfo *service.OpenAITokenInfo) string {
@@ -579,7 +585,7 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AccountFromServiceShallow(shadow))
+	response.Success(c, dto.AccountForObserver(c.Request.Context(), dto.AccountFromServiceShallow(shadow)))
 }
 
 // ResetQuota consumes one rate-limit reset credit for an OpenAI account.
@@ -620,7 +626,7 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	resetResponse.AccountStateRecovered = postResult.AccountStateRecovered
 	resetResponse.WarningCode = postResult.WarningCode
 	if postResult.Account != nil {
-		resetResponse.Account = dto.AccountFromService(postResult.Account)
+		resetResponse.Account = dto.AccountForObserver(c.Request.Context(), dto.AccountFromService(postResult.Account))
 	}
 	response.Success(c, resetResponse)
 }

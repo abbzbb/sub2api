@@ -44,9 +44,13 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 		service.SettingKeyCyberPolicyUserAllowlist: "1751",
 	})
 	payload := []byte(`{"type":"response.create","model":"gpt-5.1","prompt_cache_key":"trusted-session","input":"test"}`)
+	// Session blocks only use explicit session identities in this fork, so the
+	// HTTP admission check uses its own pre-blocked session ID.
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(string(payload)))
+	c.Request.Header.Set("session_id", "trusted-http-session")
 	explicitKey := service.CyberSessionExplicitBlockKey(harness.apiKey.ID, c, payload)
+	require.NotEmpty(t, explicitKey)
 	store, ok := harness.gatewayCache.(service.CyberSessionBlockStore)
 	require.True(t, ok)
 	require.NoError(t, store.SetCyberSessionBlocked(context.Background(), "", []string{explicitKey}, time.Minute))
@@ -63,9 +67,14 @@ func TestCyberAllowlistedUserBypassesExistingBlocksAndContinuesWebSocket(t *test
 		logs := harness.moderationRepo.logSnapshot()
 		return len(logs) == 1 && logs[0].Mode == service.ContentModerationModeCyberLogOnly
 	}, 3*time.Second, 10*time.Millisecond)
-	matched, err := store.FindCyberSessionBlocked(ctx, service.CyberSessionTranscriptBlockKeys(harness.apiKey.ID, payload))
+	wsKeyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	wsKeyCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(string(payload)))
+	wsKeyCtx.Request.Header.Set("session_id", "ws-test-session")
+	wsBlockKey := service.CyberSessionExplicitBlockKey(harness.apiKey.ID, wsKeyCtx, payload)
+	require.NotEmpty(t, wsBlockKey)
+	matched, err := store.FindCyberSessionBlocked(ctx, []string{wsBlockKey})
 	require.NoError(t, err)
-	require.Empty(t, matched, "the cyber response must not write new transcript blocks")
+	require.Empty(t, matched, "the cyber response must not write a new session block")
 	require.NoError(t, harness.clientConn.Write(ctx, coderws.MessageText, payload))
 	_, event, err = harness.clientConn.Read(ctx)
 	require.NoError(t, err)

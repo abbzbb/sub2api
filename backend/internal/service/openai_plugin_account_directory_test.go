@@ -90,17 +90,18 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	// Fields the snapshot intentionally strips. Credentials = long-lived secret
 	// (refresh_token) not handed out by ResolveOutboundIdentity. Groups/AccountGroups
 	// = relational graphs with back-references that would cycle under encoding/json.
+	// InitialQualityPlan = internal creation-only policy, not readable plugin metadata.
 	stripped := map[string]struct{}{
-		"Credentials": {}, "Groups": {}, "AccountGroups": {},
+		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {},
 	}
-	// Fields intentionally exposed as readable metadata. Proxy endpoint fields stay;
-	// username and password are cleared before marshal.
+	// Fields intentionally exposed as readable metadata (incl. Extra and Proxy —
+	// the proxy password is already handed out via ResolveOutboundIdentity's URL).
 	safeToExpose := map[string]struct{}{
 		"ID": {}, "Name": {}, "Notes": {}, "Platform": {}, "Type": {}, "Extra": {},
-		"Proxy": {}, "ProxyID": {}, "ProxyGroupID": {}, "ProxyGroupExhausted": {},
-		"ProxyFallbackOriginID": {}, "ProxyFallbackOriginName": {},
+		"Proxy": {}, "ProxyID": {}, "ProxyFallbackOriginID": {}, "ProxyFallbackOriginName": {},
 		"Concurrency": {}, "Priority": {}, "RateMultiplier": {}, "LoadFactor": {},
-		"Status": {}, "ErrorMessage": {}, "LastUsedAt": {}, "ExpiresAt": {},
+		"GroupRateMultiplier": {},
+		"Status":              {}, "ErrorMessage": {}, "LastUsedAt": {}, "ExpiresAt": {},
 		"AutoPauseOnExpired": {}, "CreatedAt": {}, "UpdatedAt": {}, "Schedulable": {},
 		"RateLimitedAt": {}, "RateLimitResetAt": {}, "OverloadUntil": {},
 		"TempUnschedulableUntil": {}, "TempUnschedulableReason": {},
@@ -122,35 +123,27 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 		}
 	}
 
-	// The raw Credentials blob and proxy authentication must never serialize.
-	// Extra and non-secret proxy endpoint fields stay readable.
+	// The raw Credentials blob must never serialize; Extra and the proxy ARE released.
 	acct := &Account{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
-		Credentials: map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
-		Extra: map[string]any{
-			"opaque":                  "extra-released",
-			"codex_harvest_proxy_url": "http://user:password@host",
-		},
-		Proxy: &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
+		InitialQualityPlan: &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
+		Credentials:        map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
+		Extra:              map[string]any{"opaque": "extra-released", "codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"}},
+		Proxy:              &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
 	}
 	snap := accountReadableSnapshotJSON(acct)
 	require.NotNil(t, snap)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(snap, &m))
 	assert.NotContains(t, string(snap), "LEAK-REFRESH", "raw Credentials must never appear in metadata")
-	assert.Contains(t, string(snap), "extra-released", "ordinary Extra fields stay readable")
-	assert.NotContains(t, string(snap), "codex_harvest_proxy_url", "private harvest proxy URL must not appear in metadata")
-	assert.NotContains(t, string(snap), "user:password@host", "authenticated harvest proxy URL must not appear in metadata")
-	assert.Equal(t, "http://user:password@host", acct.Extra["codex_harvest_proxy_url"], "snapshot must not mutate the source Extra")
-	assert.NotContains(t, string(snap), "pw-released", "proxy password must not appear in metadata")
-	assert.NotContains(t, string(snap), `"Username":"user"`, "proxy username must not appear in metadata")
-	assert.Contains(t, string(snap), "host", "non-secret proxy endpoint stays readable")
-	proxySnap, _ := m["Proxy"].(map[string]any)
-	require.NotNil(t, proxySnap)
-	assert.Empty(t, proxySnap["Username"])
-	assert.Empty(t, proxySnap["Password"])
-	assert.Equal(t, "user", acct.Proxy.Username, "snapshot must not mutate the source proxy")
-	assert.Equal(t, "pw-released", acct.Proxy.Password, "snapshot must not mutate the source proxy")
+	assert.NotContains(t, string(snap), "private-ticket-state")
+	assert.NotContains(t, m, "InitialQualityPlan")
+	assert.NotContains(t, string(snap), "PRIVATE-INITIAL-QUALITY-PROMPT")
+	require.NotNil(t, acct.InitialQualityPlan, "snapshot must not mutate creation-only policy")
+	assert.Equal(t, "PRIVATE-INITIAL-QUALITY-PROMPT", acct.InitialQualityPlan.PelicanConfig.Prompt)
+	assert.Contains(t, acct.Extra, "codex_turn_ticket:gpt-6-astra", "redaction must not mutate the source account")
+	assert.Contains(t, string(snap), "extra-released", "Extra is intentionally released")
+	assert.Contains(t, string(snap), "pw-released", "proxy is intentionally released (already exposed via 打票)")
 
 	// Cycle safety: a populated Groups/AccountGroups back-reference cycle must NOT
 	// crash json.Marshal (encoding/json does not detect cycles). Stripping them

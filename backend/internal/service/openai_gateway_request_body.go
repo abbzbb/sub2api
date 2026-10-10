@@ -53,11 +53,17 @@ func buildOpenAIResponsesURL(base string) string {
 }
 
 // buildOpenAIResponsesURLForPlatform 组装 Responses 端点（平台感知）。
-// DeepSeek 官方 Responses 端点为 /responses（无 /v1 前缀，适配 Codex）；
-// 其余平台维持 /v1/responses。
+// 供应商 profile 声明了 ResponsesPath 时按其拼接（如 DeepSeek 为无 /v1 前缀的
+// /responses）；其余平台维持 /v1/responses。
+//
+// 第三方 DeepSeek 兼容上游（聚合站/自建 relay）不统一：有的与官方一样在根路径
+// 提供 /responses，有的只提供 /v1/responses。因此在 base_url 上显式带上版本号
+// 是唯一可靠的配置方式：base 以 /v1 结尾时 buildOpenAIEndpointURL 不再追加
+// /v1，直接得到 /v1/responses；base 写成 .../responses 时也不再追加路径。
+// 多协议账号用 credentials.api_base_urls.responses 指定该地址即可。
 func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
-	if platform == PlatformDeepseek {
-		return buildOpenAIEndpointURL(base, "/responses")
+	if profile := LookupProviderProfile(platform); profile != nil && profile.ResponsesPath != "" {
+		return buildOpenAIEndpointURL(base, profile.ResponsesPath)
 	}
 	return buildOpenAIResponsesURL(base)
 }
@@ -190,7 +196,7 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 }
 
 func shouldAliasDeepSeekResponsesInputImages(account *Account) bool {
-	return targetsDeepSeekAPIHost(account)
+	return account != nil && (account.Platform == PlatformDeepseek || isDeepSeekAPIHost(account.GetOpenAIBaseURL()))
 }
 
 // aliasDeepSeekResponsesInputImages 把图片 part 改写成 DeepSeek 能反序列化
@@ -656,6 +662,13 @@ func openAIRequestBodyHasTools(body []byte) bool {
 	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
 		return true
 	}
+	return openAIRequestBodyHasAdditionalTools(body)
+}
+
+// openAIRequestBodyHasAdditionalTools 报告请求是否把工具声明放在
+// input[].additional_tools 条目上。这是 Codex Responses Lite 的形状：顶层没有
+// tools，工具声明挂在 input 的 additional_tools 条目里。
+func openAIRequestBodyHasAdditionalTools(body []byte) bool {
 	for _, item := range gjson.GetBytes(body, "input").Array() {
 		if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
 			continue
@@ -668,8 +681,8 @@ func openAIRequestBodyHasTools(body []byte) bool {
 }
 
 // normalizeOpenAIResponsesReasoningContentReplay removes non-portable
-// reasoning.content arrays before history is sent to a real OpenAI Responses
-// endpoint. Compatible providers may return visible reasoning blocks there,
+// reasoning.content arrays and output-only reasoning.status before history
+// is sent to a real OpenAI Responses endpoint. Compatible providers may return visible reasoning blocks there,
 // while OpenAI accepts only an empty array when the item is replayed.
 //
 // Keep the reasoning item and its portable fields (summary, encrypted_content,
@@ -687,7 +700,7 @@ func normalizeOpenAIResponsesReasoningContentReplay(body []byte) ([]byte, bool, 
 			return true
 		}
 		content := item.Get("content")
-		if content.IsArray() && len(content.Array()) > 0 {
+		if item.Get("status").Exists() || (content.IsArray() && len(content.Array()) > 0) {
 			needsNormalization = true
 			return false
 		}
@@ -710,6 +723,12 @@ func normalizeOpenAIResponsesReasoningContentReplay(body []byte) ([]byte, bool, 
 		item, ok := rawItem.(map[string]any)
 		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "reasoning" {
 			continue
+		}
+		// Response output metadata is rejected when replayed as reasoning input.
+		// Restrict this to the item itself; message/tool/nested status is meaningful.
+		if _, exists := item["status"]; exists {
+			delete(item, "status")
+			changed = true
 		}
 		content, ok := item["content"].([]any)
 		if !ok || len(content) == 0 {
@@ -1430,6 +1449,18 @@ func normalizeOpenAIResponseFormatSchemasBody(body []byte) ([]byte, bool, error)
 }
 
 func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Account, responsesLite bool) ([]byte, bool, error) {
+	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{ResponsesLite: responsesLite})
+}
+
+type openAIResponsesCompatibilityOptions struct {
+	ResponsesLite bool
+	// Compact marks the /responses/compact wire shape, which is left as-is
+	// by request-shape compatibility rewrites such as web_search history.
+	Compact bool
+}
+
+func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *Account, opts openAIResponsesCompatibilityOptions) ([]byte, bool, error) {
+	responsesLite := opts.ResponsesLite
 	if account == nil || !account.IsOpenAI() {
 		return body, false, nil
 	}
@@ -1493,6 +1524,14 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			}
 			normalized = next
 			changed = true
+		}
+		if !opts.Compact {
+			webSearchBody, webSearchChanged, err := ensureOpenAIOAuthWebSearchToolForHistoryBody(normalized, responsesLite)
+			if err != nil {
+				return body, false, fmt.Errorf("normalize websocket body: %w", err)
+			}
+			normalized = webSearchBody
+			changed = changed || webSearchChanged
 		}
 	}
 	needsOrphanCleanup := account != nil && account.IsOpenAIOAuthLike() &&

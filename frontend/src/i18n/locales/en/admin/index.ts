@@ -1,3 +1,5 @@
+import requestCapture from './requestCapture'
+import astraGateway from './astraGateway'
 import overview from './overview'
 import channels from './channels'
 import accounts from './accounts'
@@ -10,8 +12,11 @@ import connectionRisk from './connectionRisk'
 import warp from './warp'
 import proxyHealth from './proxyHealth'
 import plugins from './plugins'
+import harvestFlow from './harvestFlow'
 
 export default {
+  ...requestCapture,
+  ...astraGateway,
   ...overview,
   ...channels,
   ...accounts,
@@ -24,4 +29,5 @@ export default {
   ...warp,
   ...proxyHealth,
   ...plugins,
+  ...harvestFlow,
 }

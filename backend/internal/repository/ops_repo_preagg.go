@@ -76,14 +76,12 @@ error_base AS (
     -- value so platform-level GROUPING SETS don't collide with the overall (platform=NULL) row.
     COALESCE(platform, 'unknown') AS platform,
     group_id AS group_id,
-    is_business_limited AS is_business_limited,
+    effective_business_limited AS is_business_limited,
     error_owner AS error_owner,
+    error_type AS error_type,
     status_code AS client_status_code,
     COALESCE(upstream_status_code, status_code, 0) AS effective_status_code
-  FROM ops_error_logs
-  -- Exclude count_tokens requests from error metrics as they are informational probes
-  WHERE created_at >= $1 AND created_at < $2
-    AND is_count_tokens = FALSE
+  FROM ` + opsMetricErrorRowsSQL("WHERE created_at >= $1 AND created_at < $2 AND is_count_tokens = FALSE") + `
 ),
 error_agg AS (
   SELECT
@@ -92,7 +90,7 @@ error_agg AS (
     CASE WHEN GROUPING(group_id) = 1 THEN NULL ELSE group_id END AS group_id,
     COUNT(*) FILTER (WHERE COALESCE(client_status_code, 0) >= 400) AS error_count_total,
     COUNT(*) FILTER (WHERE COALESCE(client_status_code, 0) >= 400 AND is_business_limited) AS business_limited_count,
-    COUNT(*) FILTER (WHERE COALESCE(client_status_code, 0) >= 400 AND NOT is_business_limited) AS error_count_sla,
+    COUNT(*) FILTER (WHERE COALESCE(client_status_code, 0) >= 400 AND NOT is_business_limited AND error_type <> 'client_canceled') AS error_count_sla,
     COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(effective_status_code, 0) NOT IN (429, 529)) AS upstream_error_count_excl_429_529,
     COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(effective_status_code, 0) = 429) AS upstream_429_count,
     COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(effective_status_code, 0) = 529) AS upstream_529_count

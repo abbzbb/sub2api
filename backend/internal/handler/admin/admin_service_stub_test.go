@@ -31,6 +31,10 @@ type stubAdminService struct {
 	guardedDeletedGroupIDs              []int64
 	deleteGroupIfEmptyErr               error
 	advancedGroupOperationCalls         int
+	userDeniedModelsGroupID             int64
+	userDeniedModelsEntries             []service.GroupUserDeniedModelsInput
+	clearUserDeniedModelsCalls          int
+	batchSetUserDeniedModelsErr         error
 	lastListGroupsIsExclusive           *bool
 	createdProxies                      []*service.CreateProxyInput
 	updatedProxyIDs                     []int64
@@ -425,6 +429,19 @@ func (s *stubAdminService) BatchSetGroupRPMOverrides(_ context.Context, _ int64,
 	return nil
 }
 
+func (s *stubAdminService) ClearGroupUserDeniedModels(_ context.Context, groupID int64) error {
+	s.clearUserDeniedModelsCalls++
+	s.userDeniedModelsGroupID = groupID
+	return nil
+}
+
+func (s *stubAdminService) BatchSetGroupUserDeniedModels(_ context.Context, groupID int64, entries []service.GroupUserDeniedModelsInput) error {
+	s.advancedGroupOperationCalls++
+	s.userDeniedModelsGroupID = groupID
+	s.userDeniedModelsEntries = entries
+	return s.batchSetUserDeniedModelsErr
+}
+
 func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]service.Account, int64, error) {
 	s.lastListAccounts.platform = platform
 	s.lastListAccounts.accountType = accountType
@@ -810,6 +827,14 @@ func (s *stubAdminService) CheckProxyQuality(ctx context.Context, id int64) (*se
 			{Target: "gemini", Status: "pass", HTTPStatus: 200},
 		},
 	}, nil
+}
+
+func (s *stubAdminService) TestMihomoNode(ctx context.Context, kernel service.MihomoNodeProber, name string) (*service.ProxyTestResult, error) {
+	return &service.ProxyTestResult{Success: true, Message: "ok"}, nil
+}
+
+func (s *stubAdminService) CheckMihomoNodeQuality(ctx context.Context, kernel service.MihomoNodeProber, name string) (*service.ProxyQualityCheckResult, error) {
+	return &service.ProxyQualityCheckResult{Score: 100, Grade: "A", CheckedAt: time.Now().Unix()}, nil
 }
 
 func (s *stubAdminService) ListRedeemCodes(ctx context.Context, page, pageSize int, codeType, status, search string, sortBy, sortOrder string) ([]service.RedeemCode, int64, error) {

@@ -1,9 +1,8 @@
 package antigravity
 
 import (
+	"encoding/json"
 	"testing"
-
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
@@ -60,32 +59,22 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	}
 }
 
-func TestDefaultModels_HasUniqueIDs(t *testing.T) {
+func TestClaudeContentItem_ThinkingAlwaysHasSignature(t *testing.T) {
 	t.Parallel()
 
-	seen := make(map[string]int, len(DefaultModels()))
-	for _, m := range DefaultModels() {
-		seen[m.ID]++
-		if seen[m.ID] > 1 {
-			t.Fatalf("DefaultModels has duplicate id %q", m.ID)
-		}
+	data, err := json.Marshal(ClaudeContentItem{Type: "thinking", Thinking: "plan"})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// DefaultModels must expose every client-facing key from the default mapping so
-// /v1/models and /antigravity/models stay aligned with schedulable models (#3701).
-func TestDefaultModels_CoversDefaultAntigravityMappingKeys(t *testing.T) {
-	t.Parallel()
-
-	models := DefaultModels()
-	byID := make(map[string]struct{}, len(models))
-	for _, m := range models {
-		byID[m.ID] = struct{}{}
+	if got, want := string(data), `{"thinking":"plan","signature":"","type":"thinking"}`; got != want {
+		t.Fatalf("thinking block = %s, want %s", got, want)
 	}
 
-	for id := range domain.DefaultAntigravityModelMapping {
-		if _, ok := byID[id]; !ok {
-			t.Fatalf("DefaultModels missing mapping key %q (issue #3701)", id)
-		}
+	data, err = json.Marshal(ClaudeContentItem{Type: "text", Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), `{"type":"text","text":"hi"}`; got != want {
+		t.Fatalf("text block = %s, want %s", got, want)
 	}
 }

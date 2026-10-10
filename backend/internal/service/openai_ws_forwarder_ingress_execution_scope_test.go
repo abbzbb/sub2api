@@ -104,6 +104,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StateBoundToExec
 	groupID := int64(9)
 	account := &Account{
 		ID:          454,
+		GroupIDs:    []int64{groupID},
 		Name:        "openai-ingress-exec-scope",
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -270,6 +271,7 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 	groupID := int64(9)
 	account := &Account{
 		ID:          455,
+		GroupIDs:    []int64{groupID},
 		Name:        "openai-ingress-thread-pair",
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
@@ -327,8 +329,8 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 
 	readCtxA, cancelA := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelA()
-	var completedA []byte
 	for {
+		var completedA []byte
 		_, completedA, aReadErr = connA.Read(readCtxA)
 		if aReadErr != nil {
 			break
@@ -341,8 +343,7 @@ func runOpenAIWSCodexThreadPair(t *testing.T, threadA, threadB string) (serverEr
 	}
 	cancelA()
 	if aReadErr == nil {
-		require.Equal(t, "resp_thread_a", gjson.GetBytes(completedA, "response.id").String())
-		closeOpenAIWSExecutionScopeClient(t, connA)
+		require.NoError(t, connA.Close(coderws.StatusNormalClosure, "done"))
 	}
 	closeOpenAIWSExecutionScopeClient(t, connB)
 

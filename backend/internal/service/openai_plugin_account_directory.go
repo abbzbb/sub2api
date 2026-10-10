@@ -87,18 +87,15 @@ func accountToPluginInfo(account *Account) PluginAccountInfo {
 
 // accountReadableSnapshotJSON marshals the account's readable field set to JSON.
 // It is a DENYLIST on purpose: any non-secret field added to the account model
-// later flows through automatically with no host change. Stripped categories:
+// later flows through automatically with no host change. Only two categories are
+// stripped:
 //
 //   - Credentials: holds the refresh_token (and possibly api_key), a long-lived
 //     credential that ResolveOutboundIdentity does NOT hand out (that channel only
-//     mints a short-lived access token).
-//   - Proxy username/password: the Proxy struct itself stays so plugins can see
-//     which endpoint an in-scope account uses, but authentication material is
-//     removed. ResolveOutboundIdentity remains the only channel that returns an
-//     authenticated proxy URL, and only for an account inside scope.
-//   - Private Extra keys: RedactOpenAICodexTicketExtra drops ticket material and
-//     the retired codex_harvest_proxy_url, which older records may still store
-//     as an authenticated proxy URL. Other Extra fields stay.
+//     mints a short-lived access token). Keeping it out of this list keeps the
+//     credential surface exactly what the outbound-identity channel already
+//     exposes. (Extra and the proxy — including its password, which is already
+//     handed out via the resolved ProxyURL — are intentionally NOT stripped.)
 //   - Groups / AccountGroups: relational graphs with *Group/*Account
 //     back-references. encoding/json does NOT detect reference cycles and would
 //     recurse into a stack-overflow panic if the reverse relation is ever
@@ -111,16 +108,17 @@ func accountReadableSnapshotJSON(account *Account) []byte {
 		return nil
 	}
 	clone := *account
+	// Creation-only quality policy is not part of the plugin account directory.
+	clone.InitialQualityPlan = nil
 	clone.Credentials = nil
 	clone.Groups = nil
 	clone.AccountGroups = nil
-	if account.Proxy != nil {
-		proxyCopy := *account.Proxy
-		proxyCopy.Username = ""
-		proxyCopy.Password = ""
-		clone.Proxy = &proxyCopy
+	clone.Extra = make(map[string]any, len(account.Extra))
+	for key, value := range account.Extra {
+		if !IsOpenAICodexTicketPrivateExtraKey(key) {
+			clone.Extra[key] = value
+		}
 	}
-	clone.Extra = RedactOpenAICodexTicketExtra(account.Extra)
 	data, err := json.Marshal(&clone)
 	if err != nil {
 		return nil
@@ -166,17 +164,11 @@ func (s *OpenAIGatewayService) ResolvePluginOutboundIdentity(ctx context.Context
 	}
 	ensureCodexIdentityHeaders(headers)
 	enforceCodexIdentityHeaders(headers)
-	// GetByID hydrates Proxy (including proxy-group members). Fail closed on
-	// exhausted groups instead of handing plugins a direct-exit identity.
-	proxyURL, err := resolveAccountProxyURL(ctx, nil, account)
-	if err != nil {
-		return nil, err
-	}
 	return &PluginOutboundIdentity{
 		AccountID:   account.ID,
 		Platform:    account.Platform,
 		AccountType: account.Type,
-		ProxyURL:    proxyURL,
+		ProxyURL:    resolveAccountProxyURL(account),
 		Token:       token,
 		Headers:     headers,
 	}, nil

@@ -46,10 +46,11 @@ func TestEnableHTTP2KeepAlive_EnablesPingHealthCheck(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			tr := &http.Transport{}
-			enableHTTP2KeepAlive(tr, tc.mode)
-			require.NotNil(t, tr.HTTP2, "必须写入 HTTP/2 配置")
-			require.Equal(t, tc.readIdleTimeout, tr.HTTP2.SendPingTimeout)
-			require.Equal(t, tc.pingTimeout, tr.HTTP2.PingTimeout, "各模式应使用独立的 PING 应答期限")
+			h2, err := enableHTTP2KeepAlive(tr, tc.mode)
+			require.NoError(t, err)
+			require.NotNil(t, h2, "必须返回已配置的 *http2.Transport")
+			require.Equal(t, tc.readIdleTimeout, h2.ReadIdleTimeout)
+			require.Equal(t, tc.pingTimeout, h2.PingTimeout, "各模式应使用独立的 PING 应答期限")
 			requireHTTP2Configured(t, tr, "http2 必须已挂到底层 http.Transport 上")
 		})
 	}

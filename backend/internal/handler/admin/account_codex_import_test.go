@@ -145,6 +145,36 @@ func TestNormalizeCodexSessionJSONExtractsCredentialsAndIgnoresSessionToken(t *t
 	}
 }
 
+func TestNormalizeCodexSessionInfoUsesUserInfoAccountIDThenAccessTokenClaim(t *testing.T) {
+	accessToken := buildCodexImportTestJWT(t, time.Now().Add(time.Hour), map[string]any{
+		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "jwt-account"},
+	})
+	for _, tt := range []struct {
+		name     string
+		userInfo map[string]any
+		wantID   string
+	}{
+		{"user_info account", map[string]any{"chatgpt_account_id": "user-info-account"}, "user-info-account"},
+		{"JWT fallback", map[string]any{}, "jwt-account"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			item, err := normalizeCodexImportEntry(codexImportEntry{Index: 1, Value: map[string]any{
+				"session_info": map[string]any{"access_token": accessToken},
+				"user_info":    tt.userInfo,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := item.Credentials["access_token"]; got != accessToken {
+				t.Fatalf("access_token = %v, want session_info token", got)
+			}
+			if got := item.Credentials["chatgpt_account_id"]; got != tt.wantID {
+				t.Fatalf("chatgpt_account_id = %v, want %s", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestMergeCodexImportCredentialsPreservesExistingRefreshFieldsWhenIncomingHasNoRefreshToken(t *testing.T) {
 	existing := map[string]any{
 		"access_token":       "old-access-token",
@@ -1020,4 +1050,28 @@ func buildCodexImportTestJWT(t *testing.T, exp time.Time, extraClaims map[string
 		t.Fatalf("marshal claims: %v", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(headerBytes) + "." + base64.RawURLEncoding.EncodeToString(claimBytes) + "."
+}
+
+func TestImportCodexSessionsSkipExistingPreservesAccount(t *testing.T) {
+	svc := newCodexImportMemoryAdminService(nil)
+	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	entries := []codexImportEntry{{Index: 1, Value: buildCodexRefreshImportValue(t, "workspace-1", "user-1", "refresh-new")}}
+	req := CodexSessionImportRequest{SkipDefaultGroupBind: boolPtr(true), UpdateExisting: boolPtr(false), SkipExisting: true}
+	first, err := h.importCodexSessions(context.Background(), req, entries)
+	if err != nil || first.Created != 1 {
+		t.Fatal("initial import did not create an account")
+	}
+	second, err := h.importCodexSessions(context.Background(), req, entries)
+	if err != nil || second.Skipped != 1 || second.Created != 0 || second.Updated != 0 || second.Failed != 0 {
+		t.Fatalf("repeat import counts = created:%d updated:%d skipped:%d failed:%d", second.Created, second.Updated, second.Skipped, second.Failed)
+	}
+	if len(svc.createdAccounts) != 1 || len(svc.updatedAccounts) != 0 {
+		t.Fatal("repeat import modified an account")
+	}
+	// Existing callers can still intentionally create duplicates by omitting skip_existing.
+	req.SkipExisting = false
+	third, err := h.importCodexSessions(context.Background(), req, entries)
+	if err != nil || third.Created != 1 {
+		t.Fatal("legacy create-only behavior changed")
+	}
 }
