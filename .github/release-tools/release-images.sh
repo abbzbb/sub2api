@@ -9,7 +9,9 @@ fi
 arches=(amd64 arm64)
 if [[ ${SIMPLE_RELEASE:-false} == true ]]; then arches=(amd64); fi
 for arch in "${arches[@]}"; do
-  args=(--platform "linux/$arch" --file ".release-context/$arch/Dockerfile"
+  # Buildx provenance needs a package read GHCR denies to this token
+  # (v0.2.15 push: permission_denied: read_package).
+  args=(--platform "linux/$arch" --provenance=false --file ".release-context/$arch/Dockerfile"
     --label "org.opencontainers.image.version=$RELEASE_VERSION"
     --label "org.opencontainers.image.revision=$RELEASE_SHA"
     --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")
