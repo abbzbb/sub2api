@@ -201,9 +201,9 @@ func ProvideOpenAITokenProvider(
 }
 
 // ProvidePluginManager preserves account-directory wiring when regenerating Wire.
-func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService) *PluginManager {
+func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService, accountRepo AccountRepository, proxyRepo ProxyRepository) *PluginManager {
 	manager := NewPluginManager(repo, encryptor, cfg, hostInfo, kvStore)
-	manager.SetAccountDirectory(gateway)
+	manager.SetAccountDirectory(NewPluginResourceDirectory(gateway, accountRepo, proxyRepo))
 	return manager
 }
 
@@ -511,16 +511,12 @@ func ProvideClaudeCodeVersionSyncService(
 	return svc
 }
 
-// ProvideClaudeCodeVersionSyncService creates and starts ClaudeCodeVersionSyncService.
-// 出站 Claude Code 身份的版本号靠它跟随官方发布，无需为了跟版本而发新版本；面板可关闭。
-func ProvideClaudeCodeVersionSyncService(
-	settingRepo SettingRepository,
-	settingService *SettingService,
-	githubClient GitHubReleaseClient,
-) *ClaudeCodeVersionSyncService {
-	svc := NewClaudeCodeVersionSyncService(settingRepo, settingService, githubClient, claudeCodeVersionSyncInterval)
-	svc.Start()
-	return svc
+// ProvideClaudeResetCreditService wires the Claude reset query and, with the
+// idempotency store and Redis leases, manual redemption.
+func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeTokenProvider, proxies ProxyRepository, settings *SettingService, idem *IdempotencyCoordinator, locks LeaderLockCache) *ClaudeResetCreditService {
+	s := NewClaudeResetCreditService(accounts, tokens, proxies, settings)
+	s.ConfigureRedemption(idem, locks)
+	return s
 }
 
 // ProvideProxyExpiryService creates and starts ProxyExpiryService.

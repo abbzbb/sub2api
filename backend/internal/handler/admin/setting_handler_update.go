@@ -2357,6 +2357,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return previousSettings.CyberSessionIdentityStrictEnabled
 		}(),
 	}
+	if settings.OpenAICodexTicketEnabled && !h.settingService.OpenAICodexTicketHarvestConfiguredFor(settings) {
+		response.BadRequest(c, "harvest proxy is required when 292 ticket harvest is enabled")
+		return
+	}
 
 	// req.AuthSourceXxxPlatformQuotas 为 nil 表示本次请求未包含该 source 的 quota 配置（保留 previousAuthSourceDefaults 中的值）；
 	// non-nil（含 empty map）表示整体覆盖：empty map = 清空该 source 的所有 quota 配置。

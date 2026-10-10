@@ -162,6 +162,7 @@ type UpdateAccountRequest struct {
 	Credentials         map[string]any `json:"credentials"`
 	Extra               map[string]any `json:"extra"`
 	ProxyID             *int64         `json:"proxy_id"`
+	ProxyGroupID        *int64         `json:"proxy_group_id"`
 	Concurrency         *int           `json:"concurrency"`
 	Priority            *int           `json:"priority"`
 	RateMultiplier      *float64       `json:"rate_multiplier"`
@@ -390,11 +391,11 @@ func (h *AccountHandler) accountListResponseFromService(account *service.Account
 func (h *AccountHandler) enrichCodexTicketStatus(account *service.Account, out *dto.Account) {
 	if h != nil && h.cfg != nil && out != nil {
 		cfg := h.cfg.Gateway.OpenAICodexTicket
-		harvestURL := strings.TrimSpace(cfg.HarvestProxyURL)
 		if h.codexTicketSettings != nil {
-			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(context.Background(), cfg.Enabled)
-			cfg.Models = h.codexTicketSettings.GetOpenAICodexTicketModels(context.Background(), cfg.Models)
-			cfg.FailClosed = h.codexTicketSettings.GetOpenAICodexTicketFailClosed(context.Background())
+			ctx := context.Background()
+			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(ctx, cfg.Enabled)
+			cfg.Models = h.codexTicketSettings.GetOpenAICodexTicketModels(ctx, cfg.Models)
+			cfg.FailClosed = h.codexTicketSettings.GetOpenAICodexTicketFailClosed(ctx)
 		}
 		out.CodexTurnTickets = service.OpenAICodexTicketStatuses(account, cfg, time.Now())
 	}

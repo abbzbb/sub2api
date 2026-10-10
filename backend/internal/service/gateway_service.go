@@ -1472,8 +1472,6 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 				modelSet[model] = struct{}{}
 				hasAnyMapping = true
 			}
-			modelSet[model] = struct{}{}
-			hasAnyMapping = true
 		}
 	}
 

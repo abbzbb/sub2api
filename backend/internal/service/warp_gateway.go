@@ -111,28 +111,6 @@ func warpHostUnspecified(host string) bool {
 	return ip != nil && ip.IsUnspecified()
 }
 
-// socksURLDialable reports whether raw is safe to dial from this process given
-// the warp control-plane base URL. Remote control planes reject loopback and
-// unspecified SOCKS hosts.
-func socksURLDialable(controlBaseURL, raw string) bool {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return false
-	}
-	if warpControlPlaneIsLoopback(controlBaseURL) {
-		return true
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	if host == "" || warpHostLoopback(host) || warpHostUnspecified(host) {
-		return false
-	}
-	return true
-}
-
 // WarpPoolSnapshot mirrors gateway /v1/pools/snapshot.
 type WarpPoolSnapshot struct {
 	Instances    []WarpInstance      `json:"instances"`

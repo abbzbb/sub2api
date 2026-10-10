@@ -1032,6 +1032,7 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatDateTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { proxyQualityOverallClass, proxyQualityOverallLabelKey, summarizeProxyQuality } from '@/utils/proxyQuality'
+import { proxyStatusBadgeClass, proxyStatusLabelKey } from '@/utils/proxyStatus'
 
 const route = useRoute()
 const router = useRouter()

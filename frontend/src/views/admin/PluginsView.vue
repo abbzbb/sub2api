@@ -620,7 +620,8 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
     message.type === "config.load" ||
     message.type === "config.save" ||
     message.type === "config.test" ||
-    message.type === "plugin.status";
+    message.type === "plugin.status" || message.type === "plugin.action" ||
+    message.type === "plugin.resources";
   if (expectsResponse) {
     if (!requestID || pendingBridgeRequests.has(requestID)) return;
     registerBridgeRequest(requestID);
@@ -666,6 +667,17 @@ async function handleBridgeMessage(event: MessageEvent): Promise<void> {
         // explicit "test" action, and those must not spam a success toast.
         if (!result.success)
           appStore.showError(result.message || t("common.error"));
+        break;
+      }
+      case "plugin.action": {
+        if (!message.action || typeof message.action !== "object" || Array.isArray(message.action)) throw new Error(t("admin.plugins.bridgeRejected"));
+        const result = await pluginStepUp.run(() => adminAPI.plugins.action(configPlugin.value!.id, { ...(message.action as Record<string, unknown>), request_id: requestID }));
+        postBridgeResult(message, { ok: result.accepted, result });
+        break;
+      }
+      case "plugin.resources": {
+        const resources = await loadPluginResources(configPlugin.value);
+        postBridgeResult(message, { ok: true, resources });
         break;
       }
       case "plugin.status": {

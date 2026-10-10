@@ -73,7 +73,9 @@ func TestGrokAmbiguousFailureTrackerResetClearsHistory(t *testing.T) {
 }
 
 func TestHandleGrokAccountUpstreamErrorAmbiguous403EscalatesToRuntimeOnlyCooldown(t *testing.T) {
-	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+	// Non-pool 403 keeps the legacy entitlement cooldown; pool-mode 403 is
+	// covered by TestHandleGrokAccountUpstreamErrorAmbiguousCooldownRespectsPoolMode.
+	for _, status := range []int{http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			account := &Account{ID: 623, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 			repo := &grokQuotaAccountRepo{}
@@ -106,12 +108,12 @@ func TestHandleGrokAccountUpstreamErrorAmbiguousSuccessResetsCounter(t *testing.
 	body := []byte(`{"error":{"code":"permission_denied","message":"permission denied"}}`)
 
 	for i := 0; i < grokAmbiguousFailureThreshold-1; i++ {
-		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusForbidden, nil, body)
+		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusNotFound, nil, body)
 	}
 	svc.updateGrokUsageFromResponse(context.Background(), account, http.Header{}, http.StatusOK)
 
 	for i := 0; i < grokAmbiguousFailureThreshold-1; i++ {
-		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusForbidden, nil, body)
+		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusNotFound, nil, body)
 	}
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "a success in between must restart the window")
 }

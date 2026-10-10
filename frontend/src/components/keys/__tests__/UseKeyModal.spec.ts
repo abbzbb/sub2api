@@ -1046,17 +1046,11 @@ describe('UseKeyModal', () => {
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
 
-        await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('file')
-        const fileConfig = wrapper.findAll('pre code')
-          .map((code) => code.text())
-          .find((content) => content.includes('model_provider = "OpenAI"'))!
-        expect(fileConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
-        expect(fileConfig).not.toContain('model_catalog_url')
-        expect(fileConfig.indexOf('model_catalog_json')).toBeLessThan(fileConfig.indexOf('[model_providers.OpenAI]'))
-        await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('remote')
-      }
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
+    const configToml = wrapper.findAll('pre code')
+      .map((code) => code.text())
+      .find((content) => content.includes('model_provider = "OpenAI"'))
+    expect(configToml).toContain('model = "glm-5.3"')
+    expect(configToml).not.toContain('model_reasoning_effort')
   })
 
   it('offers remote and optional file catalogs for OpenAI in both transport modes and on both platforms', async () => {

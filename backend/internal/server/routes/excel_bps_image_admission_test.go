@@ -33,7 +33,7 @@ func TestExcelBPSImageAdmissionCoversGatewayAliasesBeforeBodyRead(t *testing.T) 
 	RegisterGatewayRoutes(r, &handler.Handlers{OpenAIGateway: &handler.OpenAIGatewayHandler{}, Gateway: &handler.GatewayHandler{}}, func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI}})
 		c.Next()
-	}, nil, nil, nil, settings, nil, cfg)
+	}, nil, nil, nil, settings, nil, cfg, nil)
 	for _, path := range []string{"/responses", "/responses/compact", "/v1/responses", "/v1/responses/compact", "/backend-api/codex/responses", "/backend-api/codex/responses/compact", "/v1/chat/completions", "/chat/completions", "/v1/messages"} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
 		body := &bpsImageUnreadBody{}

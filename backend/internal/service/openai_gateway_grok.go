@@ -752,11 +752,9 @@ func normalizeGrokReasoningEffortValue(raw, upstreamModel string) (string, bool)
 }
 
 // GrokSupportsXHighReasoningEffort reports whether the model advertises and
-// forwards the xhigh reasoning effort (Grok 4.6/4.7 and their aliases).
+// forwards the xhigh reasoning effort (Grok 4.6/4.7 and grok-4.20-multi-agent).
 func GrokSupportsXHighReasoningEffort(model string) bool {
-	model = strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model)))
-	return model == "grok-4.7" || model == "grok-4.7-latest" ||
-		model == "grok-4.6" || model == "grok-4.6-latest"
+	return xai.SupportsXHighReasoningEffort(model)
 }
 
 func grokSupportsReasoningEffort(model string) bool {
@@ -1631,7 +1629,7 @@ func applyGrokCLIHeaders(headers http.Header) {
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {
-	s.updateGrokUsageSnapshotWithOptions(ctx, account, snapshot, grokUsageSnapshotOptions{installRateLimit: true, installSchedulingExtras: true})
+	s.updateGrokUsageSnapshotForResponse(ctx, account, snapshot, nil, grokUsageSnapshotOptions{installRateLimit: true, installSchedulingExtras: true})
 }
 
 type grokUsageSnapshotOptions struct {
@@ -1639,53 +1637,12 @@ type grokUsageSnapshotOptions struct {
 	installSchedulingExtras bool
 }
 
-func (s *OpenAIGatewayService) updateGrokUsageSnapshotWithOptions(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot, options grokUsageSnapshotOptions) {
-	if s == nil || account == nil || account.ID <= 0 || snapshot == nil {
-		return
-	}
-	accountID := account.ID
-	now := time.Now()
-	resetAt, hasActiveLimit := grokRateLimitResetAtForAccount(account, snapshot, now)
-	if hasActiveLimit {
-		normalizeGrokExhaustedWindowResets(snapshot, resetAt, now)
-	}
-	recovery := isSuccessfulGrokRateLimitRecovery(account, snapshot)
-	critical := snapshot.StatusCode == http.StatusTooManyRequests || hasActiveLimit || recovery
-	if s.codexSnapshotThrottle != nil {
-		allowed := s.codexSnapshotThrottle.Allow(accountID, now)
-		if !critical && !allowed {
-			return
-		}
-	}
-	updates := map[string]any{
-		grokQuotaSnapshotExtraKey: snapshot,
-	}
-	for k, v := range buildGrokSchedulerExtraUpdates(snapshot) {
-		updates[k] = v
-	}
-	stateCtx := ctx
-	if hasActiveLimit {
-		var cancel context.CancelFunc
-		stateCtx, cancel = openAIAccountStateContext(ctx)
-		defer cancel()
-	}
-	if account.Extra == nil {
-		account.Extra = map[string]any{}
-	}
-	account.Extra[grokQuotaSnapshotExtraKey] = snapshot
-	if s.accountRepo != nil {
-		_ = s.accountRepo.UpdateExtra(stateCtx, accountID, updates)
-	}
-	if recovery && !account.IsPoolMode() {
-		clearGrokRateLimitAfterRecovery(stateCtx, s.accountRepo, account)
-	}
-}
-
 func (s *OpenAIGatewayService) updateGrokUsageSnapshotForResponse(
 	ctx context.Context,
 	account *Account,
 	snapshot *xai.QuotaSnapshot,
 	responseBody []byte,
+	options grokUsageSnapshotOptions,
 ) {
 	if s == nil || account == nil || account.ID <= 0 || snapshot == nil {
 		return
@@ -1696,7 +1653,11 @@ func (s *OpenAIGatewayService) updateGrokUsageSnapshotForResponse(
 	if hasActiveLimit {
 		normalizeGrokExhaustedWindowResets(snapshot, resetAt, now)
 	}
-	extraUpdates, freeRecoveryPending := buildGrokQuotaSnapshotUpdatesForResponse(account, snapshot, now, responseBody)
+	extraUpdates := map[string]any{grokQuotaSnapshotExtraKey: snapshot}
+	freeRecoveryPending := false
+	if options.installRateLimit {
+		extraUpdates, freeRecoveryPending = buildGrokQuotaSnapshotUpdatesForResponse(account, snapshot, now, responseBody)
+	}
 	recovery := isSuccessfulGrokRateLimitRecovery(account, snapshot)
 	critical := snapshot.StatusCode == http.StatusTooManyRequests || hasActiveLimit || freeRecoveryPending || recovery
 	if s.codexSnapshotThrottle != nil {
@@ -1706,15 +1667,12 @@ func (s *OpenAIGatewayService) updateGrokUsageSnapshotForResponse(
 		}
 	}
 
-	updates := map[string]any{
-		grokQuotaSnapshotExtraKey: snapshot,
-	}
 	// Also derive the scheduling-threshold extras (grok_sched_*) the evaluator
 	// reads in grokThresholdCandidates. Without this writer the admin-configured
 	// Grok auto-pause threshold could never fire (the read side was dead config).
 	if options.installSchedulingExtras {
 		for k, v := range buildGrokSchedulerExtraUpdates(snapshot) {
-			updates[k] = v
+			extraUpdates[k] = v
 		}
 	}
 	stateCtx := ctx
@@ -1733,19 +1691,28 @@ func (s *OpenAIGatewayService) updateGrokUsageSnapshotForResponse(
 	// Pool-mode API keys keep the snapshot for observability but leave account
 	// health to the upstream pool — never install runtime/durable rate-limit blocks.
 	poolMode := account.IsPoolMode()
-	if (hasActiveLimit || freeRecoveryPending) && !poolMode {
+	installRateLimit := options.installRateLimit && !poolMode
+	if (hasActiveLimit || freeRecoveryPending) && installRateLimit {
 		resetAt = extendGrokFreeRecoveryLease(resetAt, now, freeRecoveryPending)
 		// Block the in-memory scheduler before any persistence call. This closes
 		// the window where another request could select the same account.
 		s.blockGrokScheduling(account, resetAt)
 	}
-	// Error responses are reconciled by handleGrokAccountUpstreamError. Pool-mode
-	// API keys retain the snapshot for observability but leave account health to
-	// the upstream pool. Other accounts install the immediate runtime and durable
-	// rate-limit state when the observed window is exhausted.
-	if options.installRateLimit && hasActiveLimit && !account.IsPoolMode() {
-		s.rateLimitGrok(stateCtx, account, resetAt)
-	} else if recovery {
+	if freeRecoveryPending && installRateLimit {
+		if err := persistGrokFreeRecoveryPendingState(stateCtx, s.accountRepo, account, extraUpdates, resetAt); err != nil {
+			slog.Warn("persist_grok_free_recovery_pending_failed", "account_id", accountID, "error", err)
+		}
+	} else if s.accountRepo != nil {
+		if err := s.accountRepo.UpdateExtra(stateCtx, accountID, extraUpdates); err != nil {
+			slog.Warn("persist_grok_usage_snapshot_failed", "account_id", accountID, "error", err)
+		}
+	}
+	// Successful non-pool responses can still consume the last available
+	// request/token, so persist that exhausted window as a real rate limit.
+	if hasActiveLimit && !freeRecoveryPending && installRateLimit {
+		s.blockGrokScheduling(account, resetAt)
+		persistGrokRateLimit(stateCtx, s.accountRepo, account, resetAt)
+	} else if recovery && !poolMode {
 		clearGrokRateLimitAfterRecovery(stateCtx, s.accountRepo, account)
 	}
 }
@@ -2455,7 +2422,7 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 		// account-wide snapshot limit before their dedicated handlers run.
 		installSnapshotRateLimit = false
 	}
-	s.updateGrokUsageSnapshotWithOptions(ctx, account, snapshot, grokUsageSnapshotOptions{
+	s.updateGrokUsageSnapshotForResponse(ctx, account, snapshot, responseBody, grokUsageSnapshotOptions{
 		installRateLimit:        installSnapshotRateLimit,
 		installSchedulingExtras: installSnapshotRateLimit,
 	})
@@ -2475,10 +2442,9 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 						markGrokModelQuotaBlock(account.ID, decision.Model, resetAt)
 						return false
 					}
-					// Snapshot writer installs the single durable rate-limit (or
-					// free-recovery latch+lease). rateLimitGrok would call
-					// SetRateLimited a second time for the same event.
-					s.updateGrokUsageSnapshotForResponse(ctx, account, snapshot, responseBody)
+					// The snapshot writer above already installed the single durable
+					// rate-limit (or free-recovery latch+lease). rateLimitGrok would
+					// call SetRateLimited a second time for the same event.
 					if model, _ := ctx.Value(grokTeamRateLimitModelContextKey{}).(string); model != "" {
 						markGrokTeamModelRateLimit(account, model, resolveGrokTeamRateLimitUntil(resetAt, now))
 					}
@@ -2491,12 +2457,6 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 		}
 	}
 
-	if decision.Class == GrokFailureModelCapacity {
-		s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, false)
-	} else {
-		s.updateGrokUsageSnapshotForResponse(ctx, account, snapshot, responseBody)
-	}
-
 	// Admin-configured temp rules always apply (pool and non-pool).
 	if s.applyGrokConfiguredUnschedulablePolicy(ctx, account, statusCode, responseBody) {
 		return false
@@ -2504,7 +2464,8 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 
 	// Layered account-scoped policy for 402/403/404 (pool and non-pool):
 	// 1) model/endpoint scope  2) hard permanent death
-	// 3) soft entitlement/billing temp cooldown  4) ambiguous → no state change
+	// 3) soft entitlement/billing temp cooldown  4) remaining non-pool 403 keeps
+	// the legacy entitlement cooldown unless opted out  5) ambiguous → no state change
 	switch statusCode {
 	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
 		if s.handleGrokModelOrEndpointError(ctx, account, model, statusCode, responseBody) {
@@ -2525,10 +2486,20 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 				return false
 			}
 		}
-		// Ambiguous 403/404: leave durable state alone. A single hit changes
-		// nothing; repeated hits inside a short window trip a runtime-only
-		// escalating cooldown so a silently broken account stops consuming a
-		// failover slot on every request (see grok_ambiguous_failure.go).
+		// Administrator rules and recognized account-state markers already
+		// returned above. The opt-out applies only to the remaining unknown 403.
+		if account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(statusCode, responseBody) {
+			return false
+		}
+		if statusCode == http.StatusForbidden && !account.IsPoolMode() &&
+			!grokResponseIndicatesPermanentAccountFailure(statusCode, responseBody) {
+			s.tempUnscheduleGrok(ctx, account, grokSoftEntitlementCooldown, grokSoftEntitlementReason)
+			return false
+		}
+		// Ambiguous 404 (and pool-mode 403): leave durable state alone. A single
+		// hit changes nothing; repeated hits inside a short window trip a
+		// runtime-only escalating cooldown so a silently broken account stops
+		// consuming a failover slot on every request (see grok_ambiguous_failure.go).
 		s.noteGrokAmbiguousFailure(account, statusCode)
 		return false
 	}
@@ -2543,23 +2514,12 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(
 	switch statusCode {
 	case http.StatusUnauthorized:
 		s.tempUnscheduleGrok(ctx, account, 10*time.Minute, "grok credentials unauthorized")
-	case http.StatusPaymentRequired:
-		// 402 without a body-classified billing decision: keep the legacy 30m cool.
-		s.tempUnscheduleGrok(ctx, account, 30*time.Minute, "grok payment required")
-	case http.StatusForbidden:
-		// Spending-limit already handled by body classifier when phrasing matches.
-		if isGrokSpendingLimitError(responseBody) {
-			s.rateLimitGrok(ctx, account, grokSpendingLimitResetAt(account, time.Now()))
-			return
-		}
-		// Administrator rules and recognized account-state markers already
-		// returned above. The opt-out applies only to the remaining unknown 403.
-		if account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(statusCode, responseBody) {
-			return
-		}
-		s.tempUnscheduleGrok(ctx, account, 30*time.Minute, "grok access or entitlement denied")
+	case http.StatusMethodNotAllowed:
+		// Account-scoped: a custom base_url that does not implement /v1/responses
+		// fails identically on every retry and sticky reconnect (upstream #4668).
+		applyGrokMethodNotAllowedCooldown(ctx, s, s.accountRepo, account)
 	case http.StatusTooManyRequests:
-		// updateGrokUsageSnapshot installs both runtime and durable rate-limit state.
+		// The snapshot writer above installs both runtime and durable rate-limit state.
 		// free-usage-exhausted is parsed from responseBody into the snapshot first.
 		// Free-usage 429 was already cooled above via body classification when present.
 	default:

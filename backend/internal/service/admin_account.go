@@ -1542,10 +1542,6 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if s.runtimeBlocker != nil && !updated.IsGrokFreeRecoveryPending() {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
 	}
-	updated, err := s.accountRepo.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	if updated != nil && updated.Platform == PlatformOpenAI {
 		s.settingService.NotifyCodexHarvest()
 	}

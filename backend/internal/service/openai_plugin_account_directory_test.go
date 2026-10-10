@@ -94,11 +94,12 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	stripped := map[string]struct{}{
 		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {},
 	}
-	// Fields intentionally exposed as readable metadata (incl. Extra and Proxy —
-	// the proxy password is already handed out via ResolveOutboundIdentity's URL).
+	// Fields intentionally exposed as readable metadata. Proxy endpoint fields stay;
+	// username and password are cleared before marshal.
 	safeToExpose := map[string]struct{}{
 		"ID": {}, "Name": {}, "Notes": {}, "Platform": {}, "Type": {}, "Extra": {},
-		"Proxy": {}, "ProxyID": {}, "ProxyFallbackOriginID": {}, "ProxyFallbackOriginName": {},
+		"Proxy": {}, "ProxyID": {}, "ProxyGroupID": {}, "ProxyGroupExhausted": {},
+		"ProxyFallbackOriginID": {}, "ProxyFallbackOriginName": {},
 		"Concurrency": {}, "Priority": {}, "RateMultiplier": {}, "LoadFactor": {},
 		"GroupRateMultiplier": {},
 		"Status":              {}, "ErrorMessage": {}, "LastUsedAt": {}, "ExpiresAt": {},
@@ -123,13 +124,18 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 		}
 	}
 
-	// The raw Credentials blob must never serialize; Extra and the proxy ARE released.
+	// The raw Credentials blob and proxy authentication must never serialize.
+	// Extra and non-secret proxy endpoint fields stay readable.
 	acct := &Account{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
 		InitialQualityPlan: &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
 		Credentials:        map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
-		Extra:              map[string]any{"opaque": "extra-released", "codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"}},
-		Proxy:              &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
+		Extra: map[string]any{
+			"opaque":                        "extra-released",
+			"codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"},
+			"codex_harvest_proxy_url":       "http://user:password@host",
+		},
+		Proxy: &Proxy{Host: "host", Port: 1, Username: "user", Password: "pw-released"},
 	}
 	snap := accountReadableSnapshotJSON(acct)
 	require.NotNil(t, snap)
@@ -143,7 +149,14 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	assert.Equal(t, "PRIVATE-INITIAL-QUALITY-PROMPT", acct.InitialQualityPlan.PelicanConfig.Prompt)
 	assert.Contains(t, acct.Extra, "codex_turn_ticket:gpt-6-astra", "redaction must not mutate the source account")
 	assert.Contains(t, string(snap), "extra-released", "Extra is intentionally released")
-	assert.Contains(t, string(snap), "pw-released", "proxy is intentionally released (already exposed via 打票)")
+	assert.NotContains(t, string(snap), "codex_harvest_proxy_url", "private harvest proxy URL must not appear in metadata")
+	assert.NotContains(t, string(snap), "user:password@host", "authenticated harvest proxy URL must not appear in metadata")
+	assert.Equal(t, "http://user:password@host", acct.Extra["codex_harvest_proxy_url"], "snapshot must not mutate the source Extra")
+	assert.NotContains(t, string(snap), `"Username":"user"`, "proxy username must not appear in metadata")
+	assert.NotContains(t, string(snap), "pw-released", "proxy password must be absent from the plugin snapshot")
+	assert.Equal(t, "pw-released", acct.Proxy.Password, "snapshot must not mutate the source proxy password")
+	assert.Equal(t, "user", acct.Proxy.Username, "snapshot must not mutate the source proxy username")
+	assert.Contains(t, string(snap), `"Host":"host"`, "proxy endpoint stays visible without credentials")
 
 	// Cycle safety: a populated Groups/AccountGroups back-reference cycle must NOT
 	// crash json.Marshal (encoding/json does not detect cycles). Stripping them

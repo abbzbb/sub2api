@@ -101,6 +101,7 @@ type Config struct {
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
+	GrokFreeRecovery        GrokFreeRecoveryConfig        `mapstructure:"grok_free_recovery"`
 	SimpleMode              SimpleModeConfig              `mapstructure:"simple_mode" yaml:"simple_mode"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
 	Timezone                string                        `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
@@ -110,9 +111,77 @@ type Config struct {
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
-
+	// ConnectionRisk is the process-level master kill switch for abnormal
+	// connection detection (方案 B). When Enabled is false, emit and worker
+	// are both no-ops regardless of admin settings JSON.
+	ConnectionRisk ConnectionRiskConfig `mapstructure:"connection_risk"`
+	// ProxyHealth is the generic proxy-pool connectivity poller that auto-isolates
+	// failed proxies as inactive.
+	ProxyHealth ProxyHealthConfig `mapstructure:"proxy_health"`
+	// Warp integrates with tools/warp-gateway for Cloudflare WARP SOCKS exits.
+	Warp WarpConfig `mapstructure:"warp"`
 	// Enforce only API-key spending windows in simple mode.
 	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
+}
+
+// ProxyHealthConfig controls periodic proxy connectivity probes and auto-isolation.
+type ProxyHealthConfig struct {
+	// Enabled master switch (default false).
+	Enabled bool `mapstructure:"enabled"`
+	// IntervalSec is the minimum interval between full probe rounds.
+	IntervalSec int `mapstructure:"interval_sec"`
+	// TimeoutMS bounds a single ProbeProxy call.
+	TimeoutMS int `mapstructure:"timeout_ms"`
+	// Concurrency is the max concurrent probes per tick.
+	Concurrency int `mapstructure:"concurrency"`
+	// FailThreshold consecutive failures before marking inactive.
+	FailThreshold int `mapstructure:"fail_threshold"`
+	// SuccessThreshold consecutive successes before auto-recover (when AutoRecover).
+	SuccessThreshold int `mapstructure:"success_threshold"`
+	// ProbeScope: group_members | all_active
+	ProbeScope string `mapstructure:"probe_scope"`
+	// AutoRecover re-enables proxies isolated by health after success_threshold.
+	AutoRecover bool `mapstructure:"auto_recover"`
+	// SkipNamePrefix skips proxies whose name starts with any prefix (e.g. warp-).
+	SkipNamePrefix []string `mapstructure:"skip_name_prefix"`
+	// LeaderLockTTLSec is Redis leader lock TTL for multi-instance safety.
+	LeaderLockTTLSec int `mapstructure:"leader_lock_ttl_sec"`
+	// BatchSize caps how many proxies are probed per tick.
+	BatchSize int `mapstructure:"batch_size"`
+	// ProbeMode: connectivity (default, exit IP probe) | quality (connectivity + AI target quality).
+	ProbeMode string `mapstructure:"probe_mode"`
+}
+
+// WarpConfig configures the optional Cloudflare WARP gateway control client.
+type WarpConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Gateway control plane (tools/warp-gateway).
+	Gateway WarpGatewayConfig `mapstructure:"gateway"`
+	// AutoDetachUnhealthy, when true, reports unhealthy warp proxies in detached_ids
+	// and marks them status=error so they stay in the group but are not scheduled.
+	AutoDetachUnhealthy bool `mapstructure:"auto_detach_unhealthy"`
+	// AlertDuplicateExitIP logs/alerts when multiple instances share an exit IP (Phase 3).
+	AlertDuplicateExitIP bool `mapstructure:"alert_duplicate_exit_ip"`
+	// DefaultGroupName used when attaching a pool to a ProxyGroup.
+	DefaultGroupName string `mapstructure:"default_group_name"`
+	// ProfileEncryptionKey is optional material for encrypting WARP profile secrets
+	// when mirrored/cached by sub2api (AES-256 hex 64 chars, or any passphrase hashed).
+	// Gateway uses WARP_GATEWAY_PROFILE_KEY for its own at-rest encryption.
+	ProfileEncryptionKey string `mapstructure:"profile_encryption_key"`
+}
+
+// WarpGatewayConfig is the HTTP client for warp-gateway.
+type WarpGatewayConfig struct {
+	BaseURL           string `mapstructure:"base_url"`
+	Token             string `mapstructure:"token"`
+	TimeoutMS         int    `mapstructure:"timeout_ms"`
+	ReconcileInterval int    `mapstructure:"reconcile_interval_sec"`
+	// TLS / mTLS for multi-host control plane.
+	// When TLS is used, base_url should be https://...
+	TLSCAFile             string `mapstructure:"tls_ca_file"`
+	TLSCertFile           string `mapstructure:"tls_cert_file"`
+	TLSKeyFile            string `mapstructure:"tls_key_file"`
+	TLSInsecureSkipVerify bool   `mapstructure:"tls_insecure_skip_verify"`
 }
 
 // SimpleModeConfig controls startup behavior in simple mode.
@@ -2640,6 +2709,39 @@ func setDefaults() {
 	viper.SetDefault("api_key_auth_cache.invalid_abuse.capacity", 16384)
 	viper.SetDefault("api_key_create.max_active_per_user", 200)
 	viper.SetDefault("api_key_create.max_per_user_per_hour", 60)
+
+	// Connection risk detection (方案 B) — master kill default off
+	viper.SetDefault("connection_risk.enabled", false)
+	viper.SetDefault("connection_risk.emit_timeout_ms", 8)
+
+	// Proxy pool health poller — disabled by default
+	viper.SetDefault("proxy_health.enabled", false)
+	viper.SetDefault("proxy_health.interval_sec", 60)
+	viper.SetDefault("proxy_health.timeout_ms", 10000)
+	viper.SetDefault("proxy_health.concurrency", 8)
+	viper.SetDefault("proxy_health.fail_threshold", 3)
+	viper.SetDefault("proxy_health.success_threshold", 2)
+	viper.SetDefault("proxy_health.probe_scope", "group_members")
+	viper.SetDefault("proxy_health.auto_recover", true)
+	viper.SetDefault("proxy_health.skip_name_prefix", []string{"warp-"})
+	viper.SetDefault("proxy_health.leader_lock_ttl_sec", 50)
+	viper.SetDefault("proxy_health.batch_size", 100)
+	viper.SetDefault("proxy_health.probe_mode", "connectivity")
+
+	// Cloudflare WARP gateway (tools/warp-gateway) — disabled by default
+	viper.SetDefault("warp.enabled", false)
+	viper.SetDefault("warp.gateway.base_url", "http://127.0.0.1:19798")
+	viper.SetDefault("warp.gateway.token", "")
+	viper.SetDefault("warp.gateway.timeout_ms", 3000)
+	viper.SetDefault("warp.gateway.reconcile_interval_sec", 15)
+	viper.SetDefault("warp.gateway.tls_ca_file", "")
+	viper.SetDefault("warp.gateway.tls_cert_file", "")
+	viper.SetDefault("warp.gateway.tls_key_file", "")
+	viper.SetDefault("warp.gateway.tls_insecure_skip_verify", false)
+	viper.SetDefault("warp.auto_detach_unhealthy", true)
+	viper.SetDefault("warp.alert_duplicate_exit_ip", true)
+	viper.SetDefault("warp.default_group_name", "warp-pool")
+	viper.SetDefault("warp.profile_encryption_key", "")
 
 	// Subscription auth L1 cache
 	viper.SetDefault("subscription_cache.l1_size", 16384)

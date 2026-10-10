@@ -4869,18 +4869,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           cloneOpenCodeGoProtocolRules(defaultProviderProtocolRules(newAccount.platform, currentOpenCodeOrCNMode()))
       }
     }
-    const platformDefaultUrl =
-      newAccount.platform === 'openai'
-        ? 'https://api.openai.com'
-        : newAccount.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : newAccount.platform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : newAccount.platform === 'typesafe'
-              ? 'https://api.typesafe.ai'
-            : isMultiProtocolApiKeyPlatform(newAccount.platform)
-              ? defaultCNBaseUrl(newAccount.platform, currentOpenCodeOrCNMode(), editApiProtocol.value)
-              : 'https://api.anthropic.com'
+    const storedBaseUrl = typeof credentials.base_url === 'string' ? credentials.base_url.trim() : ''
+    // CN 初始化必须自己写好官方默认值：syncingForm 期间 mode/protocol watcher 会直接 return，
+    // 不能依赖 watcher 把 MiniMax 从 anthropic 占位修回来。
     editBaseUrl.value = isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
       : storedBaseUrl || defaultBaseUrl.value

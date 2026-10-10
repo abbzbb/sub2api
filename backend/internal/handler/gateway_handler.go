@@ -1218,6 +1218,17 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeGrokModelsList(c, xai.DefaultModelIDs())
 		return
 	}
+	if platform == service.PlatformAntigravity {
+		c.JSON(http.StatusOK, gin.H{
+			"object": "list",
+			"data":   antigravity.DefaultModels(),
+		})
+		return
+	}
+	if platform == service.PlatformOpenCodeGo {
+		writeModelsList(c, platform, defaultModelIDsForPlatform(platform))
+		return
+	}
 	if platform == service.PlatformTypeSafe {
 		writeModelsList(c, platform, []string{typesafe.JevLatestModel})
 		return

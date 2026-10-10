@@ -334,6 +334,17 @@ func OpenAICodexTicketStatuses(account *Account, cfg config.OpenAICodexTicketCon
 	return out
 }
 
+func (s *OpenAIGatewayService) openAICodexTicketFailClosed() bool {
+	return s.openAICodexTicketConfig().FailClosed
+}
+
+func (s *OpenAIGatewayService) openAIRequestBlockedByCodexTicket(account *Account, requestedModel string, requireCompact bool) bool {
+	if s == nil {
+		return false
+	}
+	return s.openAICodexTicketBlocksAccount(account, s.openAICodexTicketOutboundModel(account, requestedModel, requireCompact))
+}
+
 func (s *OpenAIGatewayService) openAICodexTicketEnabled() bool {
 	return s.openAICodexTicketEnabledContext(context.Background())
 }
@@ -816,7 +827,8 @@ func (s *OpenAIGatewayService) openAICodexTicketBlocksAccount(account *Account, 
 	if s == nil || !isOpenAICodexTicketAccount(account, outboundModel) || !s.openAICodexTicketEnabled() {
 		return false
 	}
-	if !s.openAICodexTicketFailClosed() {
+	cfg := s.openAICodexTicketConfig()
+	if !cfg.FailClosed {
 		return false
 	}
 	model := normalizeOpenAICodexTicketModel(outboundModel)
@@ -1077,7 +1089,6 @@ func (s *OpenAIGatewayService) StartOpenAICodexTicketHarvester() {
 		zap.Strings("models", s.openAICodexTicketConfig().Models),
 		zap.Bool("fail_closed", s.openAICodexTicketFailClosed()),
 		zap.Bool("harvest_proxy_configured", s.openAICodexTicketHarvestProxyURL() != ""),
-		zap.Bool("warp_harvest_pool", s.warpGatewayForHarvest() != nil && s.warpGatewayForHarvest().Enabled()),
 	)
 }
 

@@ -53,16 +53,3 @@ func ResolveProxyFallbackTarget(start Proxy, byID map[int64]Proxy, now time.Time
 		return nil, false
 	}
 }
-
-// isAcceptableProxyFallbackTarget reports whether p may be a rebound target.
-// Only StatusActive + not-expired nodes qualify; inactive/error/expired are skipped.
-func isAcceptableProxyFallbackTarget(p Proxy, now time.Time) bool {
-	switch p.Status {
-	case StatusError, StatusInactive, StatusExpired:
-		return false
-	case StatusActive:
-		return !p.IsExpired(now)
-	default:
-		return false
-	}
-}

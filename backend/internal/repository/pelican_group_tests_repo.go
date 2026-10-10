@@ -253,9 +253,9 @@ func scanPelicanGroupTestPlan(row scannable) (*service.PelicanGroupTestPlan, err
 	if err := json.Unmarshal(config, &plan.PelicanConfig); err != nil {
 		return nil, err
 	}
-	plan.LastRunAt = nullTimePtr(lastRun)
-	plan.NextRunAt = nullTimePtr(nextRun)
-	plan.RunningUntil = nullTimePtr(runningUntil)
+	plan.LastRunAt = sqlNullTimePtr(lastRun)
+	plan.NextRunAt = sqlNullTimePtr(nextRun)
+	plan.RunningUntil = sqlNullTimePtr(runningUntil)
 	if resultID.Valid {
 		last := &service.PelicanGroupTestResult{
 			ID: resultID.Int64, PlanID: plan.ID, GroupID: plan.GroupID, GroupName: plan.GroupName,
@@ -312,7 +312,7 @@ func nonNilAttempts(attempts []service.PelicanGroupTestAttempt) []service.Pelica
 	return attempts
 }
 
-func nullTimePtr(value sql.NullTime) *time.Time {
+func sqlNullTimePtr(value sql.NullTime) *time.Time {
 	if !value.Valid {
 		return nil
 	}

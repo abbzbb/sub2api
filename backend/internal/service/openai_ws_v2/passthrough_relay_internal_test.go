@@ -212,7 +212,7 @@ func TestRunUpstreamToClient_ErrorAndDropPaths(t *testing.T) {
 		require.Equal(t, "drain_terminal", sig.stage)
 		require.True(t, sig.graceful)
 		require.Equal(t, int64(1), dropped.Load())
-		require.Zero(t, beforeWriteCalls)
+		require.Equal(t, 1, beforeWriteCalls)
 		require.Equal(t, "resp_drop", completed.RequestID)
 		require.Equal(t, 1, completed.Usage.InputTokens)
 		require.Equal(t, 1, completed.Usage.OutputTokens)

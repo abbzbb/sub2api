@@ -486,12 +486,13 @@ func TestReconcileGrokStreamFailedAccountStateSoftEntitlementUsesTempCooldown(t 
 
 func TestReconcileGrokStreamFailedAccountStateGeneric403And404DoNotDisableAccount(t *testing.T) {
 	tests := []struct {
-		name       string
-		statusCode int
-		code       string
-		message    string
+		name         string
+		statusCode   int
+		code         string
+		message      string
+		wantCooldown bool
 	}{
-		{name: "generic permission", statusCode: http.StatusForbidden, code: "permission_denied", message: "permission denied"},
+		{name: "generic permission", statusCode: http.StatusForbidden, code: "permission_denied", message: "permission denied", wantCooldown: true},
 		{name: "endpoint not found", statusCode: http.StatusNotFound, code: "not_found", message: "endpoint not found"},
 	}
 
@@ -507,7 +508,7 @@ func TestReconcileGrokStreamFailedAccountStateGeneric403And404DoNotDisableAccoun
 
 			svc.reconcileGrokStreamFailedAccountState(c, account, payload, tt.message)
 
-			require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+			require.Equal(t, tt.wantCooldown, svc.isOpenAIAccountRuntimeBlocked(account))
 			require.Zero(t, repo.errorCalls)
 			require.Zero(t, repo.rateLimitedCalls)
 		})

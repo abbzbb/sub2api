@@ -189,7 +189,7 @@ func TestCodexTicketProxyMaskAndValidation(t *testing.T) {
 }
 
 func TestCodexTicketFailClosedRuntimeSettingOverridesYaml(t *testing.T) {
-	repo := &codexTicketSettingRepo{codexPolicyMigrationRepoStub: &codexPolicyMigrationRepoStub{values: map[string]string{}}}
+	repo := &codexTicketSettingRepo{codexPolicyMigrationRepoStub: &codexPolicyMigrationRepoStub{values: map[string]string{SettingKeyOpenAICodexTicketFailClosed: "true"}}}
 	settings := NewSettingService(repo, &config.Config{})
 	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
 		Enabled:         true,

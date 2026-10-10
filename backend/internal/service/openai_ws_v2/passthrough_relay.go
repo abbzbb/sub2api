@@ -304,34 +304,37 @@ func Relay(
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
 	}
-	readers.Add(1)
-	go func() {
-		defer readers.Done()
-		runUpstreamToClient(
-			relayCtx,
-			upstreamConn,
-			writeClient,
-			startAt,
-			nowFn,
-			state,
-			options.OnUsageParseFailure,
-			options.OnTurnComplete,
-			options.BeforeWriteClient,
-			options.BeforeClientWrite,
-			options.AfterClientWrite,
-			func(msgType coderws.MessageType, payload []byte) {
-				if options.StartClientAfterFirstDownstream {
-					startClientReader()
-				}
-			},
-			&dropDownstreamWrites,
-			upstreamToClientFrames,
-			droppedDownstreamFrames,
-			markActivity,
-			onTrace,
-			exitCh,
-		)
-	}()
+	startUpstreamReader := func(beforeWriteClient func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error) {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			runUpstreamToClient(
+				relayCtx,
+				upstreamConn,
+				writeClient,
+				startAt,
+				nowFn,
+				state,
+				options.OnUsageParseFailure,
+				options.OnTurnComplete,
+				beforeWriteClient,
+				options.BeforeClientWrite,
+				options.AfterClientWrite,
+				func(msgType coderws.MessageType, payload []byte) {
+					if options.StartClientAfterFirstDownstream {
+						startClientReader()
+					}
+				},
+				&dropDownstreamWrites,
+				upstreamToClientFrames,
+				droppedDownstreamFrames,
+				markActivity,
+				onTrace,
+				exitCh,
+			)
+		}()
+	}
+	startUpstreamReader(options.BeforeWriteClient)
 	go runIdleWatchdog(relayCtx, nowFn, options.IdleTimeout, &lastActivity, onTrace, exitCh)
 
 	firstExit := <-exitCh
@@ -368,7 +371,9 @@ func Relay(
 	if clientDisconnected {
 		dropDownstreamWrites.Store(true)
 		if writerDisconnected {
-			startUpstreamReader()
+			// The drain reader only settles usage; a dead writer leaves no
+			// client state for the write callbacks to act on.
+			startUpstreamReader(nil)
 			secondExit, hasSecondExit = waitRelayDrainExit(exitCh, drainTimeout)
 		} else {
 			secondExit, hasSecondExit = waitRelayExit(exitCh, drainTimeout)
@@ -403,6 +408,7 @@ func Relay(
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
+	result.ClientDisconnect = clientDisconnected
 	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_client_closed",
@@ -591,6 +597,7 @@ func runUpstreamToClient(
 			return
 		}
 		markActivity()
+		dropDownstream := dropDownstreamWrites != nil && dropDownstreamWrites.Load()
 		// Keep this frame's turn identity across callbacks and WriteFrame. A
 		// new response.create must not receive the prior turn's completion.
 		var turnWroteDownstream *atomic.Bool

@@ -16,7 +16,7 @@
       <!-- Rate Limit Display (429) - Two-line layout -->
       <div v-else-if="isRateLimited" class="flex flex-col items-center gap-1">
         <span class="badge text-xs badge-warning">{{ t('admin.accounts.status.rateLimited') }}</span>
-        <span class="text-[11px] text-gray-400 dark:text-gray-500">{{ rateLimitResumeText }}</span>
+        <span data-testid="rate-limit-resume" class="text-[11px] text-gray-400 dark:text-gray-500">{{ rateLimitResumeText }}</span>
       </div>
 
       <!-- Overload Display (529) - Two-line layout -->
@@ -75,7 +75,13 @@
             429
           </span>
         </template>
-        {{ t('admin.accounts.status.rateLimitedUntil', { time: formatDateTime(account.rate_limit_reset_at) }) }}
+        <div data-testid="rate-limit-tooltip" class="whitespace-pre-line">
+          {{
+            isGrokRecoveryPending
+              ? grokRecoveryTooltip
+              : t('admin.accounts.status.rateLimitedUntil', { time: formatDateTime(account.rate_limit_reset_at) })
+          }}
+        </div>
       </HelpTooltip>
 
       <!-- Model Status Indicators (普通限流 / 超量请求中) -->
@@ -181,11 +187,10 @@ const isExcelBPSEnabled = computed(() => {
     !isPAT(credential('auth_mode')) && !isPAT(credential('openai_auth_mode'))
 })
 
-// Computed: is rate limited (429)
-const isRateLimited = computed(() => {
-  if (!props.account.rate_limit_reset_at) return false
-  return new Date(props.account.rate_limit_reset_at) > new Date()
-})
+const isGrokRecoveryPending = computed(() => isGrokFreeRecoveryPending(props.account))
+
+// Probe-managed Grok Free accounts stay limited until a successful probe clears the marker.
+const isRateLimited = computed(() => isAccountRateLimited(props.account))
 
 type AccountModelStatusItem = {
   kind: 'rate_limit' | 'credits_exhausted' | 'credits_active'

@@ -3460,8 +3460,9 @@ func TestHandleGrokAccountUpstreamErrorAmbiguousPermissionAndEndpointFailuresDoN
 		body           string
 		model          string
 		wantModelScope bool
+		wantCooldown   bool
 	}{
-		{name: "generic permission denied", status: http.StatusForbidden, body: `{"error":{"code":"permission_denied","message":"permission denied"}}`},
+		{name: "generic permission denied", status: http.StatusForbidden, body: `{"error":{"code":"permission_denied","message":"permission denied"}}`, wantCooldown: true},
 		{name: "model permission denied", status: http.StatusForbidden, body: `{"error":{"code":"permission_denied","message":"model grok-4.5 is not allowed"}}`, model: "grok-4.5", wantModelScope: true},
 		{name: "endpoint not found", status: http.StatusNotFound, body: `{"error":{"code":"not_found","message":"account endpoint not found"}}`, model: "grok-4.5", wantModelScope: true},
 		{name: "model not found without model context", status: http.StatusNotFound, body: `{"error":{"code":"model_not_found","message":"model grok-4.5 not found"}}`},
@@ -3478,7 +3479,7 @@ func TestHandleGrokAccountUpstreamErrorAmbiguousPermissionAndEndpointFailuresDoN
 			)
 
 			require.False(t, permanentlyDisabled)
-			require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+			require.Equal(t, tt.wantCooldown, svc.isOpenAIAccountRuntimeBlocked(account))
 			require.Zero(t, repo.errorCalls)
 			require.Zero(t, repo.credentialErrorCalls)
 			if tt.wantModelScope {

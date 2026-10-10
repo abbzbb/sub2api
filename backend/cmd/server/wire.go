@@ -138,6 +138,7 @@ func provideCleanup(
 	auditLog *service.AuditLogService,
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
+	grokFreeRecovery *service.GrokFreeRecoveryService,
 	connectionRiskWorker *service.ConnectionRiskWorker,
 	warpSyncWorker *service.WarpSyncWorker,
 	proxyHealthWorker *service.ProxyHealthWorker,

@@ -85,7 +85,7 @@ func TestAccountTokenGuardV2RepositoryLeasesAndReauth(t *testing.T) {
 	_, started, err := reauth.BeginDirectCallback(ctx, task.ID, "worker-a")
 	require.NoError(t, err)
 	require.True(t, started)
-	accountRepo := NewAccountRepository(testEntClient(t), integrationDB, nil).(service.OpenAIOAuthReauthCredentialUpdater)
+	accountRepo := NewAccountRepository(testEntClient(t), integrationDB, nil, nil).(service.OpenAIOAuthReauthCredentialUpdater)
 	updated := map[string]any{"access_token": "test-new-token"}
 	applied, err := accountRepo.ApplyOpenAIOAuthReauth(ctx, task.ID, "worker-a", account.ID, map[string]any{"access_token": "stale-token"}, updated, nil)
 	require.NoError(t, err)

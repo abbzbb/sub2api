@@ -872,7 +872,18 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
     { path: '/admin/support-tickets', label: t('nav.supportTickets'), icon: SupportTicketInboxIcon, featureFlag: flagSupportTickets, badge: () => supportTicketStore.adminPending },
-    { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
+    {
+      path: '/admin/proxies',
+      label: t('nav.proxies'),
+      icon: ServerIcon,
+      expandOnly: true,
+      children: [
+        { path: '/admin/proxies', label: t('nav.proxiesList'), icon: ServerIcon },
+        { path: '/admin/proxy-groups', label: t('nav.proxyGroups'), icon: ServerIcon },
+        { path: '/admin/proxy-health', label: t('nav.proxyHealth'), icon: ServerIcon },
+        { path: '/admin/warp', label: t('nav.warp'), icon: ServerIcon },
+      ],
+    },
     {
       path: '/admin/security-audit',
       label: t('nav.securityAudit'),

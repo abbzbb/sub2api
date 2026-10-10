@@ -275,7 +275,7 @@ func TestAdminAuthRejectsObserverUsageAndCleanup(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/usage/cleanup-tasks"},
 	} {
 		router := gin.New()
-		router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, service.NewUserService(repo, nil, nil, nil), nil, nil)))
+		router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, service.NewUserService(repo, nil, nil, nil), nil, nil, nil)))
 		called := false
 		router.Handle(route.method, route.path, func(c *gin.Context) { called = true; c.Status(200) })
 		req := httptest.NewRequest(route.method, route.path, nil)

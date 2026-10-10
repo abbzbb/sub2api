@@ -1291,6 +1291,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !service.IsOpenAITurnAdmissionError(err) {
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), false, nil, err)
 				}
+				if h.writeOpenAICodexTicketUnavailable(c, err, streamStarted) {
+					submitResponsesUsage(result)
+					return
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {

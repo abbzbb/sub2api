@@ -1338,51 +1338,72 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(responseBody))
 	}
-	if isGrokContentPolicyRejection(resp.StatusCode, responseBody) {
+	s.reconcileGrokTestResponseState(ctx, account, resp.StatusCode, resp.Header, responseBody)
+}
+
+// reconcileGrokTestResponseState applies the same account-level state policy
+// used by live Grok traffic to manual and scheduled health probes.
+func (s *AccountTestService) reconcileGrokTestResponseState(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+) {
+	if s == nil || account == nil {
 		return
 	}
-	decision := classifyGrokUpstreamFailure(resp.StatusCode, responseBody, grokRequestedModelFromCtx(ctx))
-	skipAccountState := isGrokExplicitModelFreeUsage(decision) || account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(resp.StatusCode, responseBody)
-	snapshot := parseGrokQuotaSnapshot(resp.Header, resp.StatusCode, now)
+	if hit, _, _ := detectOpenAICyberPolicy(responseBody); hit {
+		return
+	}
+	if isGrokContentPolicyRejection(statusCode, responseBody) {
+		return
+	}
+
+	now := time.Now()
+	decision := classifyGrokUpstreamFailure(statusCode, responseBody, grokRequestedModelFromCtx(ctx))
+	skipAccountState := isGrokExplicitModelFreeUsage(decision) || account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(statusCode, responseBody)
+	snapshot := parseGrokQuotaSnapshot(headers, statusCode, now)
 	stampGrokQuotaSnapshotForPlan(account, snapshot, grokRequestedModelFromCtx(ctx))
 	if snapshot != nil && s.accountRepo != nil {
 		resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, now)
 		if limited {
 			normalizeGrokExhaustedWindowResets(snapshot, resetAt, now)
 		}
-		updates := map[string]any{grokQuotaSnapshotExtraKey: snapshot}
-		if !skipAccountState {
-			for key, value := range buildGrokSchedulerExtraUpdates(snapshot) {
-				updates[key] = value
-			}
-		}
-		_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
-		if limited && !skipAccountState {
-			persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
-		} else if isSuccessfulGrokRateLimitRecovery(account, snapshot) {
-			clearGrokRateLimitAfterRecovery(ctx, s.accountRepo, account)
-		}
-		var persistErr error
-		if freeRecoveryPending {
-			persistErr = persistGrokFreeRecoveryPendingState(stateCtx, s.accountRepo, account, extraUpdates, resetAt)
+		if skipAccountState {
+			_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokQuotaSnapshotExtraKey: snapshot})
 		} else {
-			persistErr = s.accountRepo.UpdateExtra(stateCtx, account.ID, extraUpdates)
-		}
-		if persistErr != nil {
-			log.Printf("failed to persist Grok test quota snapshot for account %d: %v", account.ID, persistErr)
-		}
-		if limited && !freeRecoveryPending {
-			persistGrokRateLimit(stateCtx, s.accountRepo, account, resetAt)
-		} else if isSuccessfulGrokRateLimitRecovery(account, snapshot) {
-			clearGrokRateLimitAfterRecovery(stateCtx, s.accountRepo, account)
+			extraUpdates, freeRecoveryPending := buildGrokQuotaSnapshotUpdatesForResponse(account, snapshot, now, responseBody)
+			for key, value := range buildGrokSchedulerExtraUpdates(snapshot) {
+				extraUpdates[key] = value
+			}
+			stateCtx := ctx
+			if limited || freeRecoveryPending {
+				var cancel context.CancelFunc
+				stateCtx, cancel = openAIAccountStateContext(ctx)
+				defer cancel()
+				resetAt = extendGrokFreeRecoveryLease(resetAt, now, freeRecoveryPending)
+				blockGrokAccountScheduling(s.runtimeBlocker, account, resetAt)
+			}
+			var persistErr error
+			if freeRecoveryPending {
+				persistErr = persistGrokFreeRecoveryPendingState(stateCtx, s.accountRepo, account, extraUpdates, resetAt)
+			} else {
+				persistErr = s.accountRepo.UpdateExtra(stateCtx, account.ID, extraUpdates)
+			}
+			if persistErr != nil {
+				log.Printf("failed to persist Grok test quota snapshot for account %d: %v", account.ID, persistErr)
+			}
+			if limited && !freeRecoveryPending {
+				persistGrokRateLimit(stateCtx, s.accountRepo, account, resetAt)
+			} else if isSuccessfulGrokRateLimitRecovery(account, snapshot) {
+				clearGrokRateLimitAfterRecovery(stateCtx, s.accountRepo, account)
+			}
 		}
 	} else if s.accountRepo != nil && isSuccessfulGrokRateLimitRecovery(account, &xai.QuotaSnapshot{StatusCode: statusCode}) {
 		clearGrokRateLimitAfterRecovery(ctx, s.accountRepo, account)
 	}
 
-	if isGrokContentPolicyRejection(statusCode, responseBody) {
-		return
-	}
 	if decision.Class == GrokFailureFreeUsage {
 		if isGrokExplicitModelFreeUsage(decision) {
 			resetAt := now.Add(decision.Cooldown)
@@ -1405,15 +1426,17 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 		persistGrokRateLimit(ctx, s.accountRepo, account, grokSpendingLimitResetAt(account, now))
 		return
 	}
-	if resp.StatusCode == http.StatusForbidden && s.applyGrokTestForbiddenPolicy(ctx, account, responseBody) {
+	if statusCode == http.StatusForbidden && s.applyGrokTestForbiddenPolicy(ctx, account, responseBody) {
 		return
 	}
-	if account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(resp.StatusCode, responseBody) {
+	if account.SkipGrokForbiddenPause() && isGrokUnknownForbidden(statusCode, responseBody) {
 		return
 	}
-	cooldown := time.Duration(0)
-	reason := ""
-	switch resp.StatusCode {
+	switch statusCode {
+	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
+		applyGrokAccountScopedHTTPFailure(ctx, s.runtimeBlocker, s.accountRepo, account, statusCode, responseBody)
+	case http.StatusMethodNotAllowed:
+		applyGrokMethodNotAllowedCooldown(ctx, s.runtimeBlocker, s.accountRepo, account)
 	case http.StatusUnauthorized:
 		if s.accountRepo != nil {
 			stateCtx, cancel := openAIAccountStateContext(ctx)
@@ -1433,6 +1456,14 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 				until = *account.TempUnschedulableUntil
 			}
 			_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, until, "grok upstream temporary error")
+		} else if decision.Class == GrokFailureBilling && s.accountRepo != nil {
+			stateCtx, cancel := openAIAccountStateContext(ctx)
+			defer cancel()
+			until := now.Add(30 * time.Minute)
+			if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(until) {
+				until = *account.TempUnschedulableUntil
+			}
+			_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, until, "grok payment required")
 		}
 	}
 }

@@ -389,7 +389,13 @@ func (s *SettingService) InvalidateOpenAICodexTicketEnabledCache() {
 
 type cachedOpenAICodexTicketFailClosed struct {
 	value     bool
+	missing   bool
 	expiresAt int64
+}
+
+type openAICodexTicketFailClosedResult struct {
+	value   bool
+	missing bool
 }
 
 const openAICodexTicketFailClosedCacheTTL = 5 * time.Second
@@ -398,13 +404,22 @@ const openAICodexTicketFailClosedCacheTTL = 5 * time.Second
 // setting is deliberately fail-open: harvesting and injection continue, but a
 // missing ticket does not take an otherwise usable account out of rotation.
 func (s *SettingService) GetOpenAICodexTicketFailClosed(ctx context.Context) bool {
+	return s.lookupOpenAICodexTicketFailClosed(ctx, false)
+}
+
+// lookupOpenAICodexTicketFailClosed returns an explicit admin value. A missing
+// or blank setting keeps fallback so yaml/env still applies on that path.
+func (s *SettingService) lookupOpenAICodexTicketFailClosed(ctx context.Context, fallback bool) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil || s == nil || s.settingRepo == nil {
-		return false
+		return fallback
 	}
 	if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil && time.Now().UnixNano() < cached.expiresAt {
+		if cached.missing {
+			return fallback
+		}
 		return cached.value
 	}
 	resultCh := s.openAICodexTicketFailClosedSF.DoChan(SettingKeyOpenAICodexTicketFailClosed, func() (any, error) {
@@ -412,30 +427,35 @@ func (s *SettingService) GetOpenAICodexTicketFailClosed(ctx context.Context) boo
 		dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpenAICodexTicketFailClosed)
-		if errors.Is(err, ErrSettingNotFound) {
-			value, err = "false", nil
+		missing := errors.Is(err, ErrSettingNotFound)
+		if missing {
+			value, err = "", nil
 		}
 		if err != nil {
-			if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil {
-				return cached.value, nil
+			if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil && !cached.missing {
+				return openAICodexTicketFailClosedResult{value: cached.value}, nil
 			}
-			return false, nil
+			return openAICodexTicketFailClosedResult{missing: true}, nil
 		}
-		failClosed := strings.TrimSpace(value) == "true"
-		s.openAICodexTicketFailClosedCache.CompareAndSwap(snapshot, &cachedOpenAICodexTicketFailClosed{
-			value:     failClosed,
+		resolved := cachedOpenAICodexTicketFailClosed{
+			missing:   missing || strings.TrimSpace(value) == "",
 			expiresAt: time.Now().Add(openAICodexTicketFailClosedCacheTTL).UnixNano(),
-		})
-		return failClosed, nil
+		}
+		if !resolved.missing {
+			resolved.value = strings.TrimSpace(value) == "true"
+		}
+		s.openAICodexTicketFailClosedCache.CompareAndSwap(snapshot, &resolved)
+		return openAICodexTicketFailClosedResult{value: resolved.value, missing: resolved.missing}, nil
 	})
 	select {
 	case <-ctx.Done():
-		return false
+		return fallback
 	case result := <-resultCh:
-		if value, ok := result.Val.(bool); ok && result.Err == nil {
-			return value
+		parsed, ok := result.Val.(openAICodexTicketFailClosedResult)
+		if !ok || result.Err != nil || parsed.missing {
+			return fallback
 		}
-		return false
+		return parsed.value
 	}
 }
 
@@ -593,75 +613,18 @@ func (s *SettingService) InvalidateOpenAICodexTicketHarvestProxyCache() {
 	s.openAICodexTicketHarvestProxyCache.Store(&cachedOpenAICodexTicketHarvestProxy{expiresAt: 0})
 }
 
-type cachedOpenAICodexTicketFailClosed struct {
-	value     bool
-	expiresAt int64
-}
-
-const openAICodexTicketFailClosedCacheTTL = 5 * time.Second
-
-// GetOpenAICodexTicketFailClosed 返回后台 292 打票缺票拦截开关。
-// 设置键存在时以后台为准；缺失则回退 yaml/env。
-func (s *SettingService) GetOpenAICodexTicketFailClosed(ctx context.Context, fallback bool) bool {
-	if ctx == nil {
-		ctx = context.Background()
+// OpenAICodexTicketHarvestConfiguredFor reports whether settings leave ticket
+// harvest an exit: the saved proxy, else the yaml/env proxy. The harvester
+// does not dial through the warp gateway, so it does not count here.
+func (s *SettingService) OpenAICodexTicketHarvestConfiguredFor(settings *SystemSettings) bool {
+	proxy := ""
+	if settings != nil {
+		proxy = strings.TrimSpace(settings.OpenAICodexTicketHarvestProxyURL)
 	}
-	if ctx.Err() != nil {
-		return fallback
+	if proxy == "" && s != nil && s.cfg != nil {
+		proxy = strings.TrimSpace(s.cfg.Gateway.OpenAICodexTicket.HarvestProxyURL)
 	}
-	if s == nil || s.settingRepo == nil {
-		return fallback
-	}
-	if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil {
-		if time.Now().UnixNano() < cached.expiresAt {
-			return cached.value
-		}
-	}
-	resultCh := s.openAICodexTicketFailClosedSF.DoChan(SettingKeyOpenAICodexTicketFailClosed, func() (any, error) {
-		if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil {
-			if time.Now().UnixNano() < cached.expiresAt {
-				return cached.value, nil
-			}
-		}
-		dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpenAICodexTicketFailClosed)
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if err != nil && !errors.Is(err, ErrSettingNotFound) {
-			if cached, ok := s.openAICodexTicketFailClosedCache.Load().(*cachedOpenAICodexTicketFailClosed); ok && cached != nil {
-				return cached.value, nil
-			}
-			return fallback, nil
-		}
-		failClosed := fallback
-		if err == nil && strings.TrimSpace(value) != "" {
-			failClosed = value == "true"
-		}
-		s.openAICodexTicketFailClosedCache.Store(&cachedOpenAICodexTicketFailClosed{
-			value:     failClosed,
-			expiresAt: time.Now().Add(openAICodexTicketFailClosedCacheTTL).UnixNano(),
-		})
-		return failClosed, nil
-	})
-	select {
-	case <-ctx.Done():
-		return fallback
-	case result := <-resultCh:
-		if v, ok := result.Val.(bool); ok && result.Err == nil {
-			return v
-		}
-		return fallback
-	}
-}
-
-func (s *SettingService) InvalidateOpenAICodexTicketFailClosedCache() {
-	if s == nil {
-		return
-	}
-	s.openAICodexTicketFailClosedSF.Forget(SettingKeyOpenAICodexTicketFailClosed)
-	s.openAICodexTicketFailClosedCache.Store(&cachedOpenAICodexTicketFailClosed{expiresAt: 0})
+	return proxy != ""
 }
 
 // GetOpenAICodexUserAgent 返回 OpenAI Codex 上游请求使用的 User-Agent。

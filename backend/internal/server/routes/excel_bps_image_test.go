@@ -20,7 +20,7 @@ func TestExcelBPSImageRouteAllowsUnauthenticatedFetchOnly(t *testing.T) {
 	gateway := handler.NewOpenAIGatewayHandler(serviceGateway, nil, nil, nil, nil, nil, nil, nil, cfg)
 	h := &handler.Handlers{OpenAIGateway: gateway, Gateway: &handler.GatewayHandler{}}
 	router := gin.New()
-	RegisterGatewayRoutes(router, h, func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) }, nil, nil, nil, nil, nil, cfg)
+	RegisterGatewayRoutes(router, h, func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) }, nil, nil, nil, nil, nil, cfg, nil)
 	path := "/api/bps-images/" + strings.Repeat("a", 43)
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		w := httptest.NewRecorder()

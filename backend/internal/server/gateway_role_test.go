@@ -16,7 +16,7 @@ func TestGatewayRoleExposesAuthenticatedModelRoutesWithoutAdminOrPayments(t *tes
 	router := gin.New()
 	cfg := &config.Config{Runtime: config.RuntimeConfig{Role: config.RuntimeRoleGateway}, Gateway: config.GatewayConfig{MaxBodySize: 1024 * 1024, TextMaxBodySize: 1024 * 1024}}
 	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: &handler.OpenAIGatewayHandler{}, AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
-	registerRoutes(router, h, nil, nil, nil, func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) }, nil, nil, nil, nil, nil, nil, nil, cfg, nil)
+	registerRoutes(router, h, nil, nil, nil, func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) }, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil)
 	for _, tc := range []struct {
 		method, path string
 		status       int

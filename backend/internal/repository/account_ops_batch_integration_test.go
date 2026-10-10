@@ -31,7 +31,7 @@ func TestAccountOpsBatchConfigAndOutboxRollbackTogether(t *testing.T) {
 	}
 	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
 	svc := service.NewAccountOpsService(settings, repo, nil)
-	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil), nil, false, "UTC")
+	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil, nil), nil, false, "UTC")
 	on := true
 	cfg := service.AccountOpsConfig{Enabled: true, Recipient: "ops@example.test", CooldownMinutes: 60}
 	for _, id := range ids {
@@ -94,7 +94,7 @@ func TestAccountOpsGroupedBatchRollsBackBothMetricsAndOutbox(t *testing.T) {
 	}
 	repo := NewAccountOpsRepository(integrationDB).(*accountOpsRepository)
 	svc := service.NewAccountOpsService(settings, repo, nil)
-	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil), nil, false, "UTC")
+	svc.SetNotificationDependencies(NewAccountRepository(integrationEntClient, integrationDB, nil, nil), nil, false, "UTC")
 	on, off := true, false
 	cfg := service.AccountOpsConfig{Enabled: true, Recipient: "ops@example.test", CooldownMinutes: 60,
 		BalanceThresholds: []service.AccountOpsBalanceRule{{AccountID: ids[0], Enabled: true, Threshold: 5, Unit: "USD", NotifyAlert: &on, NotifyRecovery: &on}},

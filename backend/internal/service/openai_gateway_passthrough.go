@@ -1419,6 +1419,15 @@ func logOpenAICapacityFailoverSuppressed(
 	logger.FromContext(ctx).Warn("gateway.failover_suppressed_after_semantic_output", fields...)
 }
 
+func openAIStreamPayloadIsFailureEvent(payload []byte) bool {
+	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
+	case "response.failed", "error":
+		return true
+	default:
+		return false
+	}
+}
+
 func openAIStreamPayloadUsesFailureHandling(account *Account, payload []byte) bool {
 	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 	return eventType == "response.failed" || (eventType == "error" && account != nil && account.Platform == PlatformGrok)
@@ -1873,7 +1882,7 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	if c != nil && c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	s.rateLimitService.observeQualityStatus(ctx, account, statusCode)
+	s.rateLimitService.observeQualityStatus(ctx, account, upstreamStatus)
 	if len(payload) > 0 && s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {
@@ -1981,6 +1990,11 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithModel(
 	}
 	failoverErr := s.newOpenAIAccountFailoverErrorWithClassificationHeaders(account, statusCode, headers, classificationHeaders, payload, message, shouldDisable, retryableOnSameAccount)
 	failoverErr = failoverErr.WithGrokForbiddenPolicy(account)
+	if failoverErr != nil && account != nil && account.Platform == PlatformGrok {
+		failoverErr.SameAccountRetryDelay = grokRetryDelay
+		failoverErr.SameAccountRetryDeadline = grokRetryDeadline
+		failoverErr.SameAccountRetryMax = grokRetryMax
+	}
 	if failoverErr.IsCredentialFailure() || failoverErr.RequestScopedTransient {
 		return failoverErr
 	}

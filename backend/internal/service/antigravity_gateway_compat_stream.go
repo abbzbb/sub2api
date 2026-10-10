@@ -153,11 +153,26 @@ func (s *antigravityCompatStreamSession) hasMeaningfulData() bool {
 	return s.meaningfulData || s.processor.HasContent()
 }
 
+func (s *antigravityCompatStreamSession) writePreContentKeepalive(now time.Time) {
+	// Intentional tradeoff: this commits HTTP 200 after 15s, so later upstream
+	// failures cannot fail over; report them as SSE errors to the client instead.
+	if s.hasMeaningfulData() || s.writer.Disconnected() || now.Sub(s.startTime) < s.preContentKeepaliveInterval {
+		return
+	}
+	if s.writer.Write([]byte(": ping\n\n")) {
+		s.preContentKeepaliveSent = true
+	}
+}
+
 func (s *antigravityCompatStreamSession) finish() (*antigravityStreamResult, error) {
 	finalEvents, usage := s.processor.Finish()
 	mergeAntigravityCompatUsage(s.usage, usage)
 	s.consumeClaudeEvents(finalEvents)
 	if !s.hasMeaningfulData() && !s.writer.Disconnected() {
+		if s.preContentKeepaliveSent {
+			s.adapter.WriteError(s.writer, "empty_stream")
+			return s.result(false), errors.New("empty Antigravity compatibility stream after keepalive")
+		}
 		return nil, antigravityCompatEmptyStreamError()
 	}
 	s.adapter.Finalize(s.writer)

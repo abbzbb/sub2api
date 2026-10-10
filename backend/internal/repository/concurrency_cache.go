@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -64,6 +66,11 @@ const (
 	// 后台清理只按批处理索引候选，避免单次任务占用 Redis 太久。
 	activeIndexCleanupBatchSize  = 1000
 	activeIndexPipelineChunkSize = 500
+
+	// 实例心跳：进程级周期续期（与 acquire 解耦），peer 用它判断对方是否仍存活。
+	instanceHeartbeatKeyPrefix     = "concurrency:instance:"
+	instanceHeartbeatTTL           = 90 * time.Second
+	instanceHeartbeatRenewInterval = 30 * time.Second
 )
 
 var (

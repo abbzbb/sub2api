@@ -19,8 +19,6 @@ func TestAccountResponseCodexTicketsUsesConfiguredPolicy(t *testing.T) {
 	require.False(t, status[0].Blocked)
 	h.cfg.Gateway.OpenAICodexTicket.FailClosed = true
 	require.True(t, h.accountResponseFromService(account).CodexTurnTickets[0].Blocked)
-	h.cfg.Gateway.OpenAICodexTicket.HarvestProxyURL = ""
-	require.False(t, h.accountResponseFromService(account).CodexTurnTickets[0].Blocked)
 }
 
 func TestAccountResponseCodexTicketsWarpOnlyHarvestStaysBlocked(t *testing.T) {

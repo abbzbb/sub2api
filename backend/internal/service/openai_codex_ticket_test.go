@@ -661,7 +661,7 @@ func TestOpenAICodexTicketGate_CompactRequestUsesForwardOutboundModel(t *testing
 
 	// 普通请求：出站仍是门控模型且无票 → fail_closed 必须拦号。
 	require.True(t, svc.openAIRequestBlockedByCodexTicket(account, "gpt-6-astra", false))
-	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", false))
+	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", false))
 
 	// compact 请求：出站已被改写成非门控的 gpt-5.5 → 不得拦号。
 	require.False(t, svc.openAIRequestBlockedByCodexTicket(account, "gpt-6-astra", true))

@@ -15,7 +15,7 @@ import (
 
 func TestExcelOAuthIntegrationDualGrantAtomicityAndEngineRouting(t *testing.T) {
 	ctx, repo, cfg := totpRotationFixture(t)
-	accountRepo := NewAccountRepository(integrationEntClient, integrationDB, nil)
+	accountRepo := NewAccountRepository(integrationEntClient, integrationDB, nil, nil)
 	before, err := accountRepo.GetByID(ctx, cfg.AccountID)
 	require.NoError(t, err)
 	encryptor, err := NewAESEncryptor(&config.Config{Totp: config.TotpConfig{EncryptionKey: strings.Repeat("42", 32)}})

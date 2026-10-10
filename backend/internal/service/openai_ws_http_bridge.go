@@ -863,7 +863,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 			}
 			requestScopedCapacity := isOpenAIUpstreamCapacityShedEvent(upstreamMessage)
-			if account.Platform == PlatformGrok && (eventType == "error" || eventType == "response.failed") {
+			if account.Platform == PlatformGrok && eventType == "error" {
 				// SSE error events do not carry an HTTP status. The local status
 				// mapper therefore defaults unknown xAI codes (for example
 				// new_sensitive) to 502; classify the body as a request-scoped
@@ -876,8 +876,20 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			}
 			// A disconnected client needs this attempt drained for usage, not replayed,
 			// even when only non-semantic heartbeats were delivered.
+			// Grok response.failed must be written and the account reconciled before
+			// returning an error. Turn-1 early failover applies only to error events
+			// that have not been written yet. Upstream 429 may retry the same account.
 			if !clientDisconnected && !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
-				if account.Platform == PlatformGrok {
+				if account.Platform == PlatformGrok && eventType == "error" {
+					// HTTP 200 SSE errors must not feed stream handshake headers into
+					// quota parsing (nil headers), but Free/OAuth bare 429 still needs
+					// the requested model so cooling stays model-scoped.
+					canonicalModel := canonicalOpenAIAccountSchedulingModel(account, originalModel)
+					s.handleGrokAccountUpstreamError(ctx, account, statusCode, nil, upstreamMessage, canonicalModel)
+					if c != nil {
+						key := fmt.Sprintf("grok_stream_failed_state:%d:%d", account.ID, statusCode)
+						c.Set(key, true)
+					}
 					return nil, newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false).WithGrokForbiddenPolicy(account)
 				}
 				if account.Platform != PlatformGrok {

@@ -1371,7 +1371,6 @@ export interface Account {
   credentials?: Record<string, unknown>
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
-  opencode_go_usage?: OpenCodeGoUsageState
   codex_turn_tickets?: Array<{
     standby_expires_at?: string
     probe?: { result: string; http_status?: number; checked_at: string; next_probe_at?: string }

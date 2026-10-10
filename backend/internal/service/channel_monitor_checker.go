@@ -293,9 +293,9 @@ var providerOpenCodeGoChatAdapter = providerAdapter{
 // openCodeGoMonitorProtocol 返回探活模型在 OpenCode 上游的原生协议。
 // 依次匹配 Go 与 Zen 的默认路由表（首个命中生效），未命中回退 Chat Completions。
 func openCodeGoMonitorProtocol(model string) string {
-	for _, rules := range [][]OpenCodeGoProtocolRule{DefaultOpenCodeGoProtocolRules(), DefaultOpenCodeZenProtocolRules()} {
+	for _, rules := range [][]ProtocolRule{DefaultOpenCodeGoProtocolRules(), DefaultOpenCodeZenProtocolRules()} {
 		for _, rule := range rules {
-			if openCodeGoPatternMatches(rule.Pattern, model) {
+			if protocolRulePatternMatches(rule.Pattern, model) {
 				return rule.Protocol
 			}
 		}

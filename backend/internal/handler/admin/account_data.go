@@ -65,6 +65,7 @@ type DataAccount struct {
 	Credentials         map[string]any `json:"credentials"`
 	Extra               map[string]any `json:"extra,omitempty"`
 	ProxyKey            *string        `json:"proxy_key,omitempty"`
+	ProxyGroupName      *string        `json:"proxy_group_name,omitempty"`
 	Concurrency         int            `json:"concurrency"`
 	Priority            int            `json:"priority"`
 	RateMultiplier      *float64       `json:"rate_multiplier,omitempty"`
@@ -194,6 +195,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			Credentials:         acc.Credentials,
 			Extra:               service.RedactOpenAICodexTicketExtra(acc.Extra),
 			ProxyKey:            proxyKey,
+			ProxyGroupName:      proxyGroupName,
 			Concurrency:         acc.Concurrency,
 			Priority:            acc.Priority,
 			RateMultiplier:      acc.RateMultiplier,

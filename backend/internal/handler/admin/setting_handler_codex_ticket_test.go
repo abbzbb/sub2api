@@ -56,7 +56,7 @@ func TestSettingsCodexTicketFailClosedWriteAndRead(t *testing.T) {
 	rec := doUpdateSettings(t, h, map[string]any{key: false}, nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, "false", repo.values[key])
-	require.False(t, h.settingService.GetOpenAICodexTicketFailClosed(context.Background(), true))
+	require.False(t, h.settingService.GetOpenAICodexTicketFailClosed(context.Background()))
 	require.Contains(t, rec.Body.String(), `"openai_codex_ticket_fail_closed":false`)
 	rec = doUpdateSettings(t, h, map[string]any{"site_name": "updated"}, nil)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())

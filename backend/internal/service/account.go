@@ -374,6 +374,89 @@ func (a *Account) IsGrokOAuth() bool {
 	return a.IsGrok() && a.Type == AccountTypeOAuth
 }
 
+// IsGrokFreeRecoveryPending reports whether recovery must be proven by the
+// background direct probe rather than by expiration of a local cooldown.
+func (a *Account) IsGrokFreeRecoveryPending() bool {
+	return a != nil && a.IsGrokOAuth() && a.getExtraBool(GrokFreeRecoveryPendingExtraKey)
+}
+
+// IsGrokFreeOrUnknownOAuth fails closed unless the account has positive paid
+// plan evidence. API-key accounts and explicit SuperGrok plans are excluded.
+func (a *Account) IsGrokFreeOrUnknownOAuth() bool {
+	if a == nil || !a.IsGrokOAuth() {
+		return false
+	}
+	for _, key := range []string{"subscription_tier", "plan", "plan_type", "entitlement_status"} {
+		if grokPaidTierEvidence(a.GetCredential(key)) {
+			return false
+		}
+	}
+	if snapshot, err := grokQuotaSnapshotFromExtra(a.Extra); err == nil && snapshot != nil {
+		if grokPaidTierEvidence(snapshot.SubscriptionTier) || grokPaidTierEvidence(snapshot.EntitlementStatus) {
+			return false
+		}
+	}
+	if billing, err := grokBillingSnapshotFromExtra(a.Extra); err == nil && billing != nil {
+		if billing.UsagePercent != nil || billing.UsedPercent != nil ||
+			(billing.MonthlyLimitCents != nil && *billing.MonthlyLimitCents > 0) ||
+			grokPaidTierEvidence(billing.Plan) {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Account) GrokFreeRecoveryNextProbeAt() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+	return a.getExtraTime(GrokFreeRecoveryNextProbeAtExtraKey)
+}
+
+func (a *Account) GrokFreeRecoveryLastProbeAt() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+	if completedAt := a.getExtraTime(GrokFreeRecoveryLastResultAtExtraKey); !completedAt.IsZero() {
+		return completedAt
+	}
+	return a.getExtraTime(GrokFreeRecoveryLastProbeAtExtraKey)
+}
+
+func (a *Account) GrokFreeRecoveryLastProbeResult() string {
+	if a == nil {
+		return ""
+	}
+	return a.getExtraString(GrokFreeRecoveryLastProbeResultExtraKey)
+}
+
+// GrokFreeRecoveryLimitedStreak returns how many consecutive recovery probes
+// have failed (HTTP non-2xx, quota exhausted, or transport error). Zero means
+// no streak has been recorded yet.
+func (a *Account) GrokFreeRecoveryLimitedStreak() int {
+	if a == nil {
+		return 0
+	}
+	streak := a.getExtraInt(GrokFreeRecoveryLimitedStreakExtraKey)
+	if streak < 0 {
+		return 0
+	}
+	return streak
+}
+
+func grokPaidTierEvidence(raw string) bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" || value == "free" || value == "basic" || value == "unknown" {
+		return false
+	}
+	for _, marker := range []string{"supergrok", "super_grok", "heavy", "premium", "enterprise", "ultra", "paid", "pro"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 const grokSkipForbiddenPauseExtraKey = "grok_skip_forbidden_pause"
 
 // SkipGrokForbiddenPause reports the deployed per-account opt-out for pausing

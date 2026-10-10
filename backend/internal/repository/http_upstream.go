@@ -38,6 +38,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"golang.org/x/net/http2"
 )
 
 // 默认配置常量
@@ -1494,13 +1495,18 @@ func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http
 	if err != nil {
 		return nil, err
 	}
+	readIdle := longStreamHTTP2ReadIdleTimeout
+	ping := longStreamHTTP2PingTimeout
+	if protocolMode == upstreamProtocolModeOpenAIH2 {
+		readIdle = openAIHTTP2ReadIdleTimeout
+		ping = openAIHTTP2PingTimeout
+	}
 	if h2 != nil {
-		h2.ReadIdleTimeout = longStreamHTTP2ReadIdleTimeout
-		h2.PingTimeout = longStreamHTTP2PingTimeout
-		if protocolMode == upstreamProtocolModeOpenAIH2 {
-			h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
-			h2.PingTimeout = openAIHTTP2PingTimeout
-		}
+		h2.ReadIdleTimeout = readIdle
+		h2.PingTimeout = ping
+	}
+	if transport.HTTP2 == nil {
+		transport.HTTP2 = &http.HTTP2Config{}
 	}
 	transport.HTTP2.SendPingTimeout = readIdle
 	transport.HTTP2.PingTimeout = ping
@@ -1509,6 +1515,7 @@ func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http
 		transport.Protocols.SetHTTP1(true)
 	}
 	transport.Protocols.SetHTTP2(true)
+	return h2, nil
 }
 
 // buildUpstreamTransportWithTLSFingerprint 构建带 TLS 指纹伪装的 Transport

@@ -61,6 +61,7 @@ type SuccessfulTestRecoveryResult struct {
 // AccountRecoveryOptions 控制账号恢复时的附加行为。
 type AccountRecoveryOptions struct {
 	InvalidateToken          bool
+	PreserveGrokFreeRecovery bool
 	preserveGrokScopedBlocks bool
 }
 
@@ -2201,10 +2202,18 @@ func (s *RateLimitService) clearRateLimit(ctx context.Context, accountID int64, 
 		}
 	}
 	s.ResetOpenAI403Counter(ctx, accountID)
-	if !preserveGrokScopedBlocks {
-		s.clearGrokProcessLocalBlocks(ctx, accountID)
+	latest, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return err
 	}
-	s.notifyAccountSchedulingBlockCleared(accountID)
+	if !preserveGrokScopedBlocks {
+		clearGrokProcessLocalBlocksForAccount(accountID, latest)
+	}
+	// A generic reset must not release the runtime block of a pending Grok Free
+	// account; only the recovery probe (or ForceClearRateLimit) may do that.
+	if latest == nil || !latest.IsGrokFreeRecoveryPending() {
+		s.notifyAccountSchedulingBlockCleared(accountID)
+	}
 	return nil
 }
 
@@ -2278,7 +2287,7 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 
 	hasScopedGrokState := account.IsGrok() && !options.preserveGrokScopedBlocks &&
 		(hasGrokModelQuotaBlockForAccount(account.ID) || hasGrokTeamModelRateLimitForAccount(account))
-	if hasRecoverableRuntimeState(account) || hasScopedGrokState {
+	if (hasRecoverableRuntimeState(account) || hasScopedGrokState) && !preserveGrokFreeRecovery {
 		if err := s.clearRateLimit(ctx, accountID, options.preserveGrokScopedBlocks && account.IsGrok()); err != nil {
 			return nil, err
 		}
@@ -2299,7 +2308,7 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 func (s *RateLimitService) RecoverAccountAfterSuccessfulTest(ctx context.Context, accountID int64) (*SuccessfulTestRecoveryResult, error) {
 	// This callback does not identify the tested model. A successful text probe
 	// cannot establish that another model or the shared team quota recovered.
-	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{preserveGrokScopedBlocks: true})
+	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{PreserveGrokFreeRecovery: true, preserveGrokScopedBlocks: true})
 }
 
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {
@@ -2331,6 +2340,12 @@ func (s *RateLimitService) clearGrokProcessLocalBlocks(ctx context.Context, acco
 			account = loaded
 		}
 	}
+	clearGrokProcessLocalBlocksForAccount(accountID, account)
+}
+
+// clearGrokProcessLocalBlocksForAccount still clears blocks keyed only by
+// account ID when the account could not be loaded.
+func clearGrokProcessLocalBlocksForAccount(accountID int64, account *Account) {
 	if account != nil && !account.IsGrok() {
 		return
 	}

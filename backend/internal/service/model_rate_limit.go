@@ -95,6 +95,18 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 		if walletKey := clineWalletRateLimitKey(modelKey); walletKey != "" {
 			keys = append(keys, walletKey)
 		}
+	case PlatformGrok:
+		requested := strings.TrimSpace(requestedModel)
+		if requested != "" && requested != modelKey {
+			keys = append(keys, requested)
+		}
+		canonical := xai.ResolveGrokTextResponsesModelID(modelKey)
+		if canonical == "" && requested != "" {
+			canonical = xai.ResolveGrokTextResponsesModelID(requested)
+		}
+		if canonical != "" && canonical != modelKey && canonical != requested {
+			keys = append(keys, canonical)
+		}
 	}
 	return keys
 }

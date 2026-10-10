@@ -774,9 +774,6 @@ func lockAndMergeAccountProbeExtra(
 		&currentOpenCodeAutoRefresh,
 		&currentOpenCodeSnapshot,
 		&currentExtraJSON,
-		&opencodeGroupIdentityUnchanged,
-		&currentOpenCodeAutoRefresh,
-		&currentOpenCodeSnapshot,
 	); err != nil {
 		return nil, err
 	}
@@ -1268,6 +1265,7 @@ func accountStatusPredicate(status string) dbpredicate.Account {
 		return dbaccount.And(
 			dbaccount.StatusEQ(status),
 			dbaccount.SchedulableEQ(true),
+			grokFreeRecoverySchedulablePredicate(),
 			dbaccount.Or(
 				dbaccount.RateLimitResetAtIsNil(),
 				dbaccount.RateLimitResetAtLTE(time.Now()),
@@ -1277,7 +1275,10 @@ func accountStatusPredicate(status string) dbpredicate.Account {
 	case "rate_limited":
 		return dbaccount.And(
 			dbaccount.StatusEQ(service.StatusActive),
-			dbaccount.RateLimitResetAtGT(time.Now()),
+			dbaccount.Or(
+				dbaccount.RateLimitResetAtGT(time.Now()),
+				grokFreeRecoveryPendingPredicate(),
+			),
 			notTempUnschedulable,
 		)
 	case "temp_unschedulable":

@@ -5144,7 +5144,7 @@
                     data-testid="opencode-go-usage-global-enabled"
                   />
                 </div>
-                <div v-if="opencodeGoUsageForm.enabled" class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div v-if="opencodeGoUsageForm.enabled || opencodeGoUsageDebounceInvalid" class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700">
                   <div>
                     <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300" for="opencode-go-usage-debounce">
                       {{ t("admin.settings.opencodeGoUsage.debounceMinutes") }}
@@ -5154,13 +5154,20 @@
                       v-model.number="opencodeGoUsageForm.debounce_minutes"
                       type="number"
                       min="1"
-                      max="60"
+                      :max="opencodeGoUsageDebounceMax"
                       class="input w-32"
                       data-testid="opencode-go-usage-global-debounce"
                       @keydown.enter.prevent="saveOpenCodeGoUsageSettings"
                     />
                     <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                       {{ t("admin.settings.opencodeGoUsage.debounceHint") }}
+                    </p>
+                    <p
+                      v-if="opencodeGoUsageDebounceInvalid"
+                      class="mt-1.5 text-xs text-red-600 dark:text-red-400"
+                      data-testid="opencode-go-usage-debounce-error"
+                    >
+                      {{ t("admin.settings.opencodeGoUsage.debounceMustBeLessThanInterval") }}
                     </p>
                   </div>
                   <div>
@@ -9720,6 +9727,45 @@ const opencodeGoUsageForm = reactive({
   debounce_minutes: 1,
 });
 
+function usageQuietPeriodMax(intervalMinutes: number): number {
+  const absoluteMax = 60;
+  if (!Number.isFinite(intervalMinutes)) {
+    return absoluteMax;
+  }
+  const belowInterval = Math.floor(intervalMinutes) - 1;
+  if (belowInterval < 1) {
+    return 1;
+  }
+  return Math.min(absoluteMax, belowInterval);
+}
+
+function usageQuietPeriodInvalid(debounceMinutes: number, intervalMinutes: number): boolean {
+  return (
+    !Number.isFinite(debounceMinutes) ||
+    !Number.isFinite(intervalMinutes) ||
+    debounceMinutes >= intervalMinutes
+  );
+}
+
+const ollamaCloudUsageDebounceMax = computed(() =>
+  usageQuietPeriodMax(ollamaCloudUsageForm.interval_minutes),
+);
+const opencodeGoUsageDebounceMax = computed(() =>
+  usageQuietPeriodMax(opencodeGoUsageForm.interval_minutes),
+);
+const ollamaCloudUsageDebounceInvalid = computed(() =>
+  usageQuietPeriodInvalid(
+    ollamaCloudUsageForm.debounce_minutes,
+    ollamaCloudUsageForm.interval_minutes,
+  ),
+);
+const opencodeGoUsageDebounceInvalid = computed(() =>
+  usageQuietPeriodInvalid(
+    opencodeGoUsageForm.debounce_minutes,
+    opencodeGoUsageForm.interval_minutes,
+  ),
+);
+
 // Overload Cooldown (529) 状态
 const overloadCooldownLoading = ref(true);
 const overloadCooldownSaving = ref(false);
@@ -12880,6 +12926,15 @@ async function loadOpenCodeGoUsageSettings() {
 }
 
 async function saveOpenCodeGoUsageSettings() {
+  if (
+    usageQuietPeriodInvalid(
+      opencodeGoUsageForm.debounce_minutes,
+      opencodeGoUsageForm.interval_minutes,
+    )
+  ) {
+    appStore.showError(t("admin.settings.opencodeGoUsage.debounceMustBeLessThanInterval"));
+    return;
+  }
   opencodeGoUsageSaving.value = true;
   try {
     const updated = await adminAPI.accounts.updateOpenCodeGoUsageSettings({

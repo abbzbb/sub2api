@@ -24,7 +24,7 @@ func TestObserverAdminAuthCapabilitiesAndRevocation(t *testing.T) {
 	token, err := auth.GenerateToken(context.Background(), user)
 	require.NoError(t, err)
 	router := gin.New()
-	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, users, nil, nil)))
+	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, users, nil, nil, nil)))
 	var grants []int64
 	handler := func(c *gin.Context) { grants, _ = service.ObserverGroupIDs(c.Request.Context()); c.Status(204) }
 	router.GET("/api/v1/admin/accounts", handler)

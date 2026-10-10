@@ -80,6 +80,7 @@ const DataTableStub = defineComponent({
     <div>
       <div v-for="row in data" :key="row.id" :data-account-name="row.name">
         <slot name="cell-groups" :row="row" />
+        <slot name="cell-proxy" :row="row" />
         <slot name="cell-capacity" :row="row" />
         <slot name="cell-upstream_billing_rate" :row="row" />
         <slot name="cell-actions" :row="row" />
@@ -159,6 +160,7 @@ const listRow = {
   concurrency: 2,
   priority: 1,
   group_ids: [7],
+  proxy_group_id: 9,
   extra: { auto_config_concurrency: { concurrency: 2, successes: 1, required: 20, maximum: 100, step: 1 } },
   credentials: {}
 }
