@@ -223,6 +223,10 @@ class ReleaseMatrixTest(unittest.TestCase):
         self.assertIs(trigger['workflow_dispatch']['inputs']['notify_release']['default'], False)
         step = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Send Telegram Notification')
         self.assertIn('inputs.notify_release == true', step['if'])
+        workflow_text = (ROOT / '.github/workflows/release.yml').read_text()
+        self.assertIn("vars.SKIP_DOCKER == 'true'", workflow_text)
+        publish = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Build images and publish manifests')
+        self.assertIn("env.SKIP_DOCKER != 'true'", publish['if'])
 
 
 if __name__ == '__main__':
