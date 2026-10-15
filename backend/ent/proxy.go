@@ -32,6 +32,8 @@ type Proxy struct {
 	Host string `json:"host,omitempty"`
 	// Port holds the value of the "port" field.
 	Port int `json:"port,omitempty"`
+	// Managed Mihomo node identity for a dedicated static proxy listener.
+	MihomoNodeID *string `json:"mihomo_node_id,omitempty"`
 	// Username holds the value of the "username" field.
 	Username *string `json:"username,omitempty"`
 	// Password holds the value of the "password" field.
@@ -116,7 +118,7 @@ func (*Proxy) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays, proxy.FieldGroupID:
 			values[i] = new(sql.NullInt64)
-		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode:
+		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldMihomoNodeID, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode:
 			values[i] = new(sql.NullString)
 		case proxy.FieldCreatedAt, proxy.FieldUpdatedAt, proxy.FieldDeletedAt, proxy.FieldExpiresAt:
 			values[i] = new(sql.NullTime)
@@ -183,6 +185,13 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field port", values[i])
 			} else if value.Valid {
 				_m.Port = int(value.Int64)
+			}
+		case proxy.FieldMihomoNodeID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field mihomo_node_id", values[i])
+			} else if value.Valid {
+				_m.MihomoNodeID = new(string)
+				*_m.MihomoNodeID = value.String
 			}
 		case proxy.FieldUsername:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -315,6 +324,11 @@ func (_m *Proxy) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("port=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Port))
+	builder.WriteString(", ")
+	if v := _m.MihomoNodeID; v != nil {
+		builder.WriteString("mihomo_node_id=")
+		builder.WriteString(*v)
+	}
 	builder.WriteString(", ")
 	if v := _m.Username; v != nil {
 		builder.WriteString("username=")

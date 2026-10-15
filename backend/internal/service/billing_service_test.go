@@ -264,7 +264,7 @@ func TestGetModelPricing_LiteralNameTakesPrecedenceOverAntigravityAlias(t *testi
 
 // 未知 Gemini 新版本/内部名必须命中族系档位兑底，不得零计费。
 // gemini-3.6-flash-tiered 是真实回归案例：发布后因版本枚举未覆盖而计费为 0。
-// 未知/更新版 flash 按最新 flash 档（$1.50），已知旧版保持原档（$0.30）。
+// 未知/更新版 flash 按上游当前最新 flash 兜底档（$0.75），已知旧版保持原档（$0.30）。
 func TestGetModelPricing_UnknownGeminiVariantsFallBackByTier(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -287,7 +287,7 @@ func TestGetModelPricing_UnknownGeminiVariantsFallBackByTier(t *testing.T) {
 	for _, model := range newestFlashTier {
 		pricing, err := svc.GetModelPricing(model)
 		require.NoError(t, err, "model %s", model)
-		require.InDelta(t, 1.5e-6, pricing.InputPricePerToken, 1e-12, "model %s should bill at newest flash tier", model)
+		require.InDelta(t, 0.75e-6, pricing.InputPricePerToken, 1e-12, "model %s should bill at newest flash tier", model)
 	}
 	for _, model := range legacyFlashTier {
 		pricing, err := svc.GetModelPricing(model)
@@ -633,7 +633,7 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		// 旧策略对未知 Gemini fail-closed（返回 nil → 零计费），正是
 		// gemini-3.6-flash-tiered 零计费事故的根因；现改为档位兑底。
 		{name: "gemini unknown pro falls back to pro tier", model: "gemini-2.0-pro", expectedInput: 2e-6},
-		{name: "gemini unknown flash variant falls back to newest flash tier", model: "gemini-3.6-flash-tiered", expectedInput: 1.5e-6},
+		{name: "gemini unknown flash variant falls back to newest flash tier", model: "gemini-3.6-flash-tiered", expectedInput: 0.75e-6},
 		{name: "openai gpt5.4", model: "gpt-5.4", expectedInput: 2.5e-6},
 		{name: "openai gpt5.4 mini", model: "gpt-5.4-mini", expectedInput: 7.5e-7},
 		{name: "openai gpt5.3 codex", model: "gpt-5.3-codex", expectedInput: 1.5e-6},
@@ -2186,6 +2186,33 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 				require.InDelta(t, 1000*0.2e-6, cost.CacheReadCost, 1e-10)
 				require.InDelta(t, 500*10e-6, cost.OutputCost, 1e-10)
 				require.False(t, cost.LongContextBillingApplied)
+			})
+		}
+		// claude-haiku-5-5：prompt 超 100k tokens 整单 5x（官方定价），
+		// billing/catalog/fallback 三源口径一致（issue #7919）。
+		for _, model := range []string{
+			"claude-haiku-5-5",
+			"anthropic/claude-haiku-5.5",
+		} {
+			t.Run(source+"/"+model, func(t *testing.T) {
+				for _, n := range []int{99999, 100000, 100001} {
+					tokens := UsageTokens{
+						InputTokens: n - 3000, OutputTokens: 500,
+						CacheReadTokens: 2000, CacheCreationTokens: 1000,
+					}
+					cost, err := svc.CalculateCost(model, tokens, 1)
+					require.NoError(t, err)
+					im, om := 1.0, 1.0
+					if n > 100000 {
+						im, om = 5.0, 5.0
+					}
+					require.InDelta(t, float64(tokens.InputTokens)*1e-7*im, cost.InputCost, 1e-10)
+					require.InDelta(t, 1000*1.25e-7*im, cost.CacheCreationCost, 1e-10)
+					require.InDelta(t, 2000*1e-8*im, cost.CacheReadCost, 1e-10)
+					require.InDelta(t, 500*5e-7*om, cost.OutputCost, 1e-10)
+					require.InDelta(t, cost.InputCost+cost.OutputCost+cost.CacheCreationCost+cost.CacheReadCost, cost.TotalCost, 1e-10)
+					require.Equal(t, n > 100000, cost.LongContextBillingApplied)
+				}
 			})
 		}
 	}

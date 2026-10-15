@@ -341,6 +341,7 @@ type proxyRepoStub struct {
 	accountCount      int64
 	deletedIDs        []int64
 	clearedBindingIDs []int64
+	proxy             *Proxy
 }
 
 func (s *proxyRepoStub) Create(ctx context.Context, proxy *Proxy) error {
@@ -348,8 +349,15 @@ func (s *proxyRepoStub) Create(ctx context.Context, proxy *Proxy) error {
 }
 
 func (s *proxyRepoStub) GetByID(ctx context.Context, id int64) (*Proxy, error) {
+	if s.proxy != nil {
+		return s.proxy, nil
+	}
 	// DeleteProxy always loads the proxy for warp-managed guards.
 	return &Proxy{ID: id, Name: "proxy"}, nil
+}
+
+func (s *proxyRepoStub) GetByMihomoNodeID(ctx context.Context, name string) (*Proxy, error) {
+	return nil, nil
 }
 
 func (s *proxyRepoStub) ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {

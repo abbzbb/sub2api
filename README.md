@@ -46,6 +46,8 @@
 
 新人部署、官方版替换、Excel / BPS 配置、780 / 292 打票边界和“降智”运维步骤，请阅读[新人入门文档](docs/新人入门.md)。
 
+Astra 的网关快速复用、单号自采与后台补票如何共用票库，请阅读[门票获取与复用](docs/astra-ticket-acquisition.md)。
+
 已经托管账号或完成部署，想在 Codex 中使用？请阅读[新人入门：使用 Sub2API 接入 Codex](docs/新人入门-使用Sub2API.md)，按步骤创建 API Key、配置 Cockpit Tools 并验证调用。
 
 
@@ -55,7 +57,7 @@
 
 - **DeepSeek 与 Codex 适配**：支持 Responses 到 Chat Completions 的转换、工具调用历史和上下文压缩兼容。配置模型映射后，可通过切换 API Key 分组使用 DeepSeek，沿用客户端配置。[操作教程](https://tosky.io/docs/?doc=deepseek-switch-group)
 - **Codex ticket 管理**：提供后台采集、注入、模型选择及账号状态展示；相关开关和采集代理由管理员配置。
-- **Mihomo 出口管理**：集成采集出口管理、票据刷新策略和节点状态操作，日常业务代理与采集出口分别配置。
+- **Mihomo 出口管理**：集成采集出口管理、票据刷新策略和节点状态操作；支持从订阅节点或动态代理单条、批量添加为静态代理，再给账号分别选择固定节点。[操作说明](docs/mihomo-static-node-proxies.md)
 - **Excel / Basispoints**：维护模型级 BPS 路由、内嵌图片 HTTPS 中转、磁盘和并发保护、结构化输出校验，以及工具历史和 transport 恢复。开启 BPS 且账号未因 403 自动关闭时，请求强制走 BPS；不支持的能力会由 BPS 返回错误，不再静默回退原 Codex 通道。
 - **上游修复维护**：持续跟踪上游 Codex、Responses、工具调用、密文恢复和限流修复；先确认与本 fork 的行为差异，再按提交级别移植并补充回归测试。
 - **独立发布与升级**：使用 `ranxi2001/sub2api` 的 Release、安装资源和容器镜像。版本变更见 [更新说明](https://github.com/ranxi2001/sub2api/releases)；Release 成功不代表生产服务已经部署，线上状态需要单独验证。
@@ -139,21 +141,36 @@ gateway:
   <a href="https://github.com/ranxi2001"><img src="https://avatars.githubusercontent.com/u/77790009?v=4" width="56" height="56" alt="Onefly" title="Onefly" /></a>
   <a href="https://github.com/akihitohyh"><img src="https://avatars.githubusercontent.com/u/79531840?v=4" width="56" height="56" alt="akihitohyh" title="akihitohyh" /></a>
   <a href="https://github.com/blackdm666"><img src="https://avatars.githubusercontent.com/u/67053678?v=4" width="56" height="56" alt="老黑" title="老黑" /></a>
-  <a href="https://github.com/loserzero-7"><img src="https://avatars.githubusercontent.com/u/177290228?v=4" width="56" height="56" alt="loserzero-7" title="loserzero-7" /></a>
   <a href="https://github.com/psyche314"><img src="https://avatars.githubusercontent.com/u/180074435?v=4" width="56" height="56" alt="psyche314" title="psyche314" /></a>
   <a href="https://github.com/akayedi"><img src="https://avatars.githubusercontent.com/u/90334896?v=4" width="56" height="56" alt="akayedi" title="akayedi" /></a>
+  <a href="https://github.com/loserzero-7"><img src="https://avatars.githubusercontent.com/u/177290228?v=4" width="56" height="56" alt="loserzero-7" title="loserzero-7" /></a>
+  <a href="https://github.com/289989142"><img src="https://avatars.githubusercontent.com/u/63082228?v=4" width="56" height="56" alt="289989142" title="289989142" /></a>
+  <a href="https://github.com/AI8888-SHOP"><img src="https://avatars.githubusercontent.com/u/297756662?v=4" width="56" height="56" alt="AI8888-SHOP" title="AI8888-SHOP" /></a>
+  <a href="https://github.com/damian2848"><img src="https://avatars.githubusercontent.com/u/55676325?v=4" width="56" height="56" alt="damian2848" title="damian2848" /></a>
+  <a href="https://github.com/Cd1s"><img src="https://avatars.githubusercontent.com/u/135119404?v=4" width="56" height="56" alt="Cd1s" title="Cd1s" /></a>
+  <a href="https://github.com/danvilig"><img src="https://avatars.githubusercontent.com/u/230506945?v=4" width="56" height="56" alt="danvilig" title="danvilig" /></a>
   <a href="https://github.com/EdmundMad0309"><img src="https://avatars.githubusercontent.com/u/122854730?v=4" width="56" height="56" alt="EdmundMad0309" title="EdmundMad0309" /></a>
+  <a href="https://github.com/LeeSssong"><img src="https://avatars.githubusercontent.com/u/37948462?v=4" width="56" height="56" alt="LeeSssong" title="LeeSssong" /></a>
+  <a href="https://github.com/QQQHHHDDD"><img src="https://avatars.githubusercontent.com/u/51820811?v=4" width="56" height="56" alt="QQQHHHDDD" title="QQQHHHDDD" /></a>
   <a href="https://github.com/spake404"><img src="https://avatars.githubusercontent.com/u/123435269?v=4" width="56" height="56" alt="spake404" title="spake404" /></a>
+  <a href="https://github.com/stl25"><img src="https://avatars.githubusercontent.com/u/317681732?v=4" width="56" height="56" alt="stl25" title="stl25" /></a>
   <a href="https://github.com/wuwu131452011"><img src="https://avatars.githubusercontent.com/u/165636850?v=4" width="56" height="56" alt="wuwu131452011" title="wuwu131452011" /></a>
   <a href="https://github.com/abcgoodwei"><img src="https://avatars.githubusercontent.com/u/35887090?v=4" width="56" height="56" alt="abcgoodwei" title="abcgoodwei" /></a>
-  <a href="https://github.com/AI8888-SHOP"><img src="https://avatars.githubusercontent.com/u/297756662?v=4" width="56" height="56" alt="AI8888-SHOP" title="AI8888-SHOP" /></a>
+  <a href="https://github.com/alanbulan"><img src="https://avatars.githubusercontent.com/u/140389107?v=4" width="56" height="56" alt="alanbulan" title="alanbulan" /></a>
+  <a href="https://github.com/ambi-vip"><img src="https://avatars.githubusercontent.com/u/46626203?v=4" width="56" height="56" alt="ambi-vip" title="ambi-vip" /></a>
+  <a href="https://github.com/ape-ming"><img src="https://avatars.githubusercontent.com/u/30568607?v=4" width="56" height="56" alt="ape-ming" title="ape-ming" /></a>
+  <a href="https://github.com/BeterXie"><img src="https://avatars.githubusercontent.com/u/30471270?v=4" width="56" height="56" alt="BeterXie" title="BeterXie" /></a>
   <a href="https://github.com/buluw"><img src="https://avatars.githubusercontent.com/u/45087912?v=4" width="56" height="56" alt="buluw" title="buluw" /></a>
-  <a href="https://github.com/danvilig"><img src="https://avatars.githubusercontent.com/u/230506945?v=4" width="56" height="56" alt="danvilig" title="danvilig" /></a>
-  <a href="https://github.com/LeeSssong"><img src="https://avatars.githubusercontent.com/u/37948462?v=4" width="56" height="56" alt="LeeSssong" title="LeeSssong" /></a>
+  <a href="https://github.com/Coke165"><img src="https://avatars.githubusercontent.com/u/259744923?v=4" width="56" height="56" alt="Coke165" title="Coke165" /></a>
+  <a href="https://github.com/Even1997"><img src="https://avatars.githubusercontent.com/u/95899304?v=4" width="56" height="56" alt="Even1997" title="Even1997" /></a>
+  <a href="https://github.com/InCerryGit"><img src="https://avatars.githubusercontent.com/u/36690780?v=4" width="56" height="56" alt="InCerryGit" title="InCerryGit" /></a>
+  <a href="https://github.com/Lanyang1176"><img src="https://avatars.githubusercontent.com/u/187152708?v=4" width="56" height="56" alt="Lanyang1176" title="Lanyang1176" /></a>
   <a href="https://github.com/Mickey0811"><img src="https://avatars.githubusercontent.com/u/49522921?v=4" width="56" height="56" alt="Mickey0811" title="Mickey0811" /></a>
   <a href="https://github.com/mracry"><img src="https://avatars.githubusercontent.com/u/112537993?v=4" width="56" height="56" alt="mracry" title="mracry" /></a>
+  <a href="https://github.com/sylarchen1389"><img src="https://avatars.githubusercontent.com/u/43306063?v=4" width="56" height="56" alt="sylarchen1389" title="sylarchen1389" /></a>
   <a href="https://github.com/Terry1321"><img src="https://avatars.githubusercontent.com/u/41000037?v=4" width="56" height="56" alt="Terry1321" title="Terry1321" /></a>
   <a href="https://github.com/yuanyuan19"><img src="https://avatars.githubusercontent.com/u/120552623?v=4" width="56" height="56" alt="yuanyuan19" title="yuanyuan19" /></a>
+  <a href="https://github.com/ZASENJC"><img src="https://avatars.githubusercontent.com/u/65362072?v=4" width="56" height="56" alt="ZASENJC" title="ZASENJC" /></a>
   <a href="https://github.com/zhoumooooo"><img src="https://avatars.githubusercontent.com/u/271002711?v=4" width="56" height="56" alt="zhoumooooo" title="zhoumooooo" /></a>
 </p>
 

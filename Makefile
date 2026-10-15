@@ -1,6 +1,9 @@
 .PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical test-frontend-all
 
 FRONTEND_CRITICAL_VITEST := \
+	src/api/__tests__/groupCacheTest.spec.ts \
+	src/views/admin/__tests__/GroupCacheTestView.spec.ts \
+	src/components/account/__tests__/OpenAIRequestTimezoneField.spec.ts \
 	src/components/admin/__tests__/HarvestGatewayBorrowPanel.spec.ts \
 	src/components/admin/__tests__/AstraGatewayRuntime.spec.ts \
 	src/components/admin/__tests__/AstraGatewayHistory.spec.ts \
@@ -11,6 +14,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/features/channel-monitor-v3/__tests__/monitorV3.spec.ts \
 	src/features/channel-monitor-v3/__tests__/StatusPage.spec.ts \
 	src/features/channel-monitor-v3/__tests__/V3SettingsPanel.spec.ts \
+	src/features/channel-monitor-v3/__tests__/IdleProbeSettings.spec.ts \
 	src/features/support-tickets/__tests__/supportTickets.spec.ts \
 	src/features/support-tickets/__tests__/TicketComponents.spec.ts \
 	src/views/user/__tests__/SupportTicketsViews.spec.ts \
@@ -36,6 +40,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/admin/usage/__tests__/UsageTable.spec.ts \
 	src/views/user/__tests__/PelicanShowcaseView.spec.ts \
 	src/utils/__tests__/usageTps.spec.ts \
+	src/utils/__tests__/usageCacheRate.spec.ts \
 	src/views/admin/ops/components/__tests__/OpsErrorDetailModal.spec.ts \
 	src/router/__tests__/feature-access.spec.ts \
 	src/api/admin/__tests__/requestCaptures.spec.ts \
@@ -46,6 +51,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/api/__tests__/keys.spec.ts \
 	src/api/__tests__/tokenRefresh.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \
+	src/composables/__tests__/useModelWhitelist.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
 	src/components/account/__tests__/OpenAIQuotaResetCell.spark_shadow.spec.ts \

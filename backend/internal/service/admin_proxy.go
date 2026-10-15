@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/mihomo"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -159,6 +160,7 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 		Protocol:       input.Protocol,
 		Host:           input.Host,
 		Port:           input.Port,
+		MihomoNodeID:   input.MihomoNodeID,
 		Username:       input.Username,
 		Password:       input.Password,
 		Status:         StatusActive,
@@ -220,6 +222,12 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		}
 	} else if input.Name != "" && isWarpManagedProxyName(input.Name) {
 		return nil, errProxyWarpManaged("rename to")
+	}
+	if proxy.MihomoNodeID != "" && ((input.Protocol != "" && input.Protocol != proxy.Protocol) ||
+		(input.Host != "" && input.Host != proxy.Host) || (input.Port != 0 && input.Port != proxy.Port) ||
+		(input.Username != nil && *input.Username != proxy.Username) ||
+		(input.Password != nil && *input.Password != proxy.Password)) {
+		return nil, infraerrors.Conflict("MIHOMO_STATIC_PROXY_ENDPOINT_FIXED", "Mihomo static proxy endpoint is managed by the node")
 	}
 
 	// Merge only supplied fields, then validate the resulting fallback configuration.
@@ -323,6 +331,8 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 }
 
 func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
+	s.mihomoProxyMu.Lock()
+	defer s.mihomoProxyMu.Unlock()
 	// W1: always load for warp-* guard (lifecycle is orphan prune / delete-instance).
 	existing, err := s.proxyRepo.GetByID(ctx, id)
 	if err != nil {
@@ -338,19 +348,37 @@ func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
 	if count > 0 {
 		return ErrProxyInUse
 	}
-	// Soft-delete does not fire ON DELETE SET NULL; clear primary + backup +
-	// sticky origin bindings first (same as warp orphan prune).
-	if _, cerr := s.proxyRepo.ClearAccountProxyBindings(ctx, id); cerr != nil {
-		return fmt.Errorf("clear account proxy bindings before delete: %w", cerr)
-	}
-	if err := s.proxyRepo.Delete(ctx, id); err != nil {
+	return s.deleteProxyWithStaticBinding(ctx, id)
+}
+
+func (s *adminServiceImpl) deleteProxyWithStaticBinding(ctx context.Context, id int64) error {
+	proxy, err := s.proxyRepo.GetByID(ctx, id)
+	if err != nil && !errors.Is(err, ErrProxyNotFound) {
 		return err
 	}
-	s.invalidateProxyGroup(existing)
+	if _, err := s.proxyRepo.ClearAccountProxyBindings(ctx, id); err != nil {
+		return fmt.Errorf("clear account proxy bindings before delete: %w", err)
+	}
+	if proxy != nil && proxy.MihomoNodeID != "" {
+		if err := mihomo.DeactivateStaticNode(ctx, proxy.MihomoNodeID); err != nil {
+			return err
+		}
+	}
+	if err := s.proxyRepo.Delete(ctx, id); err != nil {
+		if proxy != nil && proxy.MihomoNodeID != "" {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			mihomo.RestoreStaticNode(cleanup, proxy.MihomoNodeID)
+		}
+		return err
+	}
+	s.invalidateProxyGroup(proxy)
 	return nil
 }
 
 func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) (*ProxyBatchDeleteResult, error) {
+	s.mihomoProxyMu.Lock()
+	defer s.mihomoProxyMu.Unlock()
 	result := &ProxyBatchDeleteResult{}
 	if len(ids) == 0 {
 		return result, nil
@@ -388,14 +416,7 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 			})
 			continue
 		}
-		if _, cerr := s.proxyRepo.ClearAccountProxyBindings(ctx, id); cerr != nil {
-			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
-				ID:     id,
-				Reason: cerr.Error(),
-			})
-			continue
-		}
-		if err := s.proxyRepo.Delete(ctx, id); err != nil {
+		if err := s.deleteProxyWithStaticBinding(ctx, id); err != nil {
 			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
 				ID:     id,
 				Reason: err.Error(),
