@@ -351,7 +351,7 @@ const sortTestModels = (models: ClaudeModel[]) => {
 
 // Load available models when modal opens
 watch(
-  () => [props.show, props.account?.id] as const,
+  [() => props.show, () => props.account?.id],
   async ([newVal]) => {
     if (newVal && props.account) {
       testPrompt.value = ''

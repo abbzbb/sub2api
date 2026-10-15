@@ -95,6 +95,29 @@ function buildAccount() {
 }
 
 describe('AccountTestModal', () => {
+  it('preserves completed output when the same account is refreshed', async () => {
+    const account = buildAccount()
+    const wrapper = mount(AccountTestModal, {
+      props: { show: false, account },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.handleEvent({ type: 'content', text: 'retained test result' })
+    vm.handleEvent({ type: 'test_complete', success: true })
+    await flushPromises()
+    await wrapper.setProps({ account: { ...account, status: 'error' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('retained test result')
+    expect(getAvailableModelsMock).toHaveBeenCalledTimes(1)
+    await wrapper.setProps({ account: { ...account, id: 2 } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('retained test result')
+    expect(getAvailableModelsMock).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   const originalFetch = global.fetch
 
   beforeEach(() => {

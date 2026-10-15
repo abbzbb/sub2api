@@ -90,6 +90,45 @@ function mountModal(account: Record<string, unknown> = {
 }
 
 describe('AccountTestModal', () => {
+  it('preserves completed output on same-account refresh and resets on reopen or account change', async () => {
+    const account = { id: 13, name: 'GPT20x', platform: 'openai', type: 'oauth', status: 'active' }
+    getAvailableModels.mockResolvedValue([{ id: 'gpt-5', display_name: 'GPT-5' }])
+    global.fetch = vi.fn().mockResolvedValue(createStreamResponse([
+      'data: {"type":"test_start","model":"gpt-5"}\n',
+      'data: {"type":"content","text":"retained test result"}\n',
+      'data: {"type":"test_complete","success":true}\n'
+    ])) as any
+    const wrapper = mountModal(account)
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const start = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!
+    await start.trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('completed')).toEqual([[13]])
+    expect(wrapper.text()).toContain('retained test result')
+
+    await wrapper.setProps({ account: { ...account, status: 'error' } as any })
+    await flushPromises()
+    expect(wrapper.text()).toContain('retained test result')
+    expect(getAvailableModels).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ account: { ...account, id: 14 } as any })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('retained test result')
+    expect(getAvailableModels).toHaveBeenCalledTimes(2)
+    const vm = wrapper.vm as any
+    vm.handleEvent({ type: 'content', text: 'another result' })
+    vm.handleEvent({ type: 'test_complete', success: true })
+    await flushPromises()
+    expect(wrapper.text()).toContain('another result')
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('another result')
+    expect(getAvailableModels).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     getAvailableModels.mockResolvedValue([
       { id: 'gemini-2.0-flash', display_name: 'Gemini 2.0 Flash' },
