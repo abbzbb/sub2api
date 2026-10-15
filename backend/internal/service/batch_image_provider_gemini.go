@@ -101,6 +101,7 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 	if input.Model == "" && job != nil {
 		input.Model = job.Model
 	}
+	input.Model = account.GetMappedModel(input.Model)
 
 	jsonl, err := BuildGeminiBatchJSONL(input)
 	if err != nil {

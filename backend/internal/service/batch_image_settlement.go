@@ -55,12 +55,13 @@ func (r *BatchImageModelPricingResolver) BatchImageUnitPrice(ctx context.Context
 }
 
 type BatchImageSettlementService struct {
-	Repo         BatchImageRepository
-	BillingRepo  UsageBillingRepository
-	UsageLogRepo UsageLogRepository
-	Pricing      BatchImagePricingResolver
-	AuthCache    APIKeyAuthCacheInvalidator
-	Config       *config.Config
+	Repo           BatchImageRepository
+	BillingRepo    UsageBillingRepository
+	UsageLogRepo   UsageLogRepository
+	Pricing        BatchImagePricingResolver
+	AuthCache      APIKeyAuthCacheInvalidator
+	RateLimitCache RateLimitCacheInvalidator
+	Config         *config.Config
 }
 
 type BatchImageSettlementResult struct {
@@ -95,6 +96,9 @@ func (s *BatchImageSettlementService) Settle(ctx context.Context, batchID string
 	}
 	if job.Status == BatchImageJobStatusCompleted {
 		result.AlreadySettled = true
+		if err := s.invalidateRateLimitCache(ctx, job); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 	if job.Status != BatchImageJobStatusSettling {
@@ -157,6 +161,11 @@ func (s *BatchImageSettlementService) Settle(ctx context.Context, batchID string
 		return nil, err
 	}
 	s.invalidateAuthCache(ctx, job.UserID)
+	if err := s.invalidateRateLimitCache(ctx, job); err != nil {
+		// Capture has committed. Keep settling so the durable queue retries
+		// invalidation, without consuming billing retries or refunding spent funds.
+		return nil, err
+	}
 
 	now := time.Now()
 	outputExpiresAt := now.Add(s.outputRetentionAfterTerminal())
@@ -287,6 +296,17 @@ func (s *BatchImageSettlementService) invalidateAuthCache(ctx context.Context, u
 	if s != nil && s.AuthCache != nil && userID > 0 {
 		s.AuthCache.InvalidateAuthCacheByUserID(ctx, userID)
 	}
+}
+
+func (s *BatchImageSettlementService) invalidateRateLimitCache(ctx context.Context, job *BatchImageJob) error {
+	if s.RateLimitCache == nil || job.APIKeyID == nil || *job.APIKeyID <= 0 {
+		return nil
+	}
+	if err := s.RateLimitCache.InvalidateAPIKeyRateLimit(ctx, *job.APIKeyID); err != nil {
+		logger.L().Warn("batch_image.rate_limit_cache_invalidation_failed", zap.Int64("api_key_id", *job.APIKeyID), zap.Error(err))
+		return ErrBatchImageSettlementBillingFailed.WithCause(err)
+	}
+	return nil
 }
 
 func (s *BatchImageSettlementService) settlementUnitPrice(ctx context.Context, job *BatchImageJob) (float64, error) {

@@ -319,6 +319,16 @@ func captureUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 		RETURNING balance, frozen_balance
 	`, cmd.HoldAmount, cmd.ActualAmount, cmd.UserID).Scan(&balance, &frozen)
 	if err == nil {
+		// Keep key spending in the same transaction and dedup claim as the
+		// balance capture. Retrying settlement must not charge these twice.
+		if cmd.ActualAmount > 0 {
+			if _, err := incrementUsageBillingAPIKeyQuota(ctx, tx, cmd.APIKeyID, cmd.ActualAmount); err != nil && !errors.Is(err, service.ErrAPIKeyNotFound) {
+				return nil, err
+			}
+			if err := incrementUsageBillingAPIKeyRateLimit(ctx, tx, cmd.APIKeyID, cmd.ActualAmount); err != nil && !errors.Is(err, service.ErrAPIKeyNotFound) {
+				return nil, err
+			}
+		}
 		return &service.BatchImageBalanceHoldResult{NewBalance: &balance, FrozenBalance: &frozen}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

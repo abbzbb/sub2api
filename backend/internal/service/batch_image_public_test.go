@@ -420,21 +420,88 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		}
 	})
 
-	t.Run("idempotency returns same batch without provider resubmit", func(t *testing.T) {
+	t.Run("idempotency returns same batch across seconds without provider resubmit", func(t *testing.T) {
 		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
 		req := validBatchImageSubmitRequest()
 		req.SessionID = batchImageStringPtr("original-session")
 
 		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "client-key")
 		require.NoError(t, err)
+		require.NotEmpty(t, first.TaskName)
+		time.Sleep(1100 * time.Millisecond)
 		req.SessionID = batchImageStringPtr("retry-session")
 		second, err := svc.Submit(ctx, testBatchImageOwner(), req, "client-key")
 		require.NoError(t, err)
 
 		require.Equal(t, first.ID, second.ID)
+		require.Equal(t, first.TaskName, second.TaskName)
 		require.Equal(t, "original-session", batchImageDerefString(repo.jobs[first.ID].SessionID))
 		require.Len(t, gemini.submits, 1)
 		require.Equal(t, []string{first.ID}, queue.enqueued)
+	})
+
+	t.Run("idempotency preserves explicit task names and rejects changes", func(t *testing.T) {
+		svc, _, _, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		req.TaskName = "campaign"
+		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "named-key")
+		require.NoError(t, err)
+		require.Equal(t, "campaign", first.TaskName)
+		second, err := svc.Submit(ctx, testBatchImageOwner(), req, "named-key")
+		require.NoError(t, err)
+		require.Equal(t, first.ID, second.ID)
+		req.TaskName = "other campaign"
+		_, err = svc.Submit(ctx, testBatchImageOwner(), req, "named-key")
+		require.ErrorIs(t, err, ErrBatchImageIdempotencyConflict)
+		require.Len(t, gemini.submits, 1)
+	})
+
+	t.Run("idempotency accepts persisted legacy explicit task names", func(t *testing.T) {
+		svc, repo, _, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		req.TaskName = "campaign"
+		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "legacy-explicit")
+		require.NoError(t, err)
+		normalized, err := svc.validateSubmitRequest(req)
+		require.NoError(t, err)
+		repo.jobs[first.ID].RequestHash = batchImageStringPtr(HashBatchImageSubmitRequest(normalized))
+		second, err := svc.Submit(ctx, testBatchImageOwner(), req, "legacy-explicit")
+		require.NoError(t, err)
+		require.Equal(t, first.ID, second.ID)
+		require.Len(t, gemini.submits, 1)
+	})
+
+	t.Run("idempotency accepts persisted legacy generated task names", func(t *testing.T) {
+		svc, repo, _, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "legacy-key")
+		require.NoError(t, err)
+		legacy, err := svc.validateSubmitRequest(req)
+		require.NoError(t, err)
+		legacy.TaskName = first.TaskName
+		repo.jobs[first.ID].RequestHash = batchImageStringPtr(HashBatchImageSubmitRequest(legacy))
+		second, err := svc.Submit(ctx, testBatchImageOwner(), req, "legacy-key")
+		require.NoError(t, err)
+		require.Equal(t, first.ID, second.ID)
+		req.Items[0].Prompt = "diff"
+		_, err = svc.Submit(ctx, testBatchImageOwner(), req, "legacy-key")
+		require.ErrorIs(t, err, ErrBatchImageIdempotencyConflict)
+		require.Len(t, gemini.submits, 1)
+	})
+
+	t.Run("idempotency distinguishes explicit timestamp names from omitted names", func(t *testing.T) {
+		svc, _, _, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		req.TaskName = "2026-10-15 12:00:00"
+		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "timestamp-name")
+		require.NoError(t, err)
+		second, err := svc.Submit(ctx, testBatchImageOwner(), req, "timestamp-name")
+		require.NoError(t, err)
+		require.Equal(t, first.ID, second.ID)
+		req.TaskName = ""
+		_, err = svc.Submit(ctx, testBatchImageOwner(), req, "timestamp-name")
+		require.ErrorIs(t, err, ErrBatchImageIdempotencyConflict)
+		require.Len(t, gemini.submits, 1)
 	})
 
 	t.Run("idempotency conflict rejects changed request", func(t *testing.T) {

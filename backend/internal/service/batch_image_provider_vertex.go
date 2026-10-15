@@ -187,6 +187,7 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 	if input.Model == "" && job != nil {
 		input.Model = job.Model
 	}
+	input.Model = account.GetMappedModel(input.Model)
 
 	jsonl, err := BuildVertexBatchJSONL(input)
 	if err != nil {

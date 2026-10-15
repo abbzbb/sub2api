@@ -15,6 +15,47 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
+func TestCaptureBatchImageBalance_ChargesKeyOnce(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB)
+	user := mustCreateUser(t, client, &service.User{
+		Email: "batch-capture-" + uuid.NewString() + "@example.com", PasswordHash: "hash", Balance: 100,
+	})
+	key := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID, Key: "sk-batch-capture-" + uuid.NewString(), Name: "batch", Quota: 1,
+	})
+	batchID := uuid.NewString()
+	hold := &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageHoldRequestID(batchID), APIKeyID: key.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 2,
+	}
+	_, err := repo.ReserveBatchImageBalance(ctx, hold)
+	require.NoError(t, err)
+	capture := &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageCaptureRequestID(batchID), APIKeyID: key.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 2, ActualAmount: 1.25,
+	}
+	first, err := repo.CaptureBatchImageBalance(ctx, capture)
+	require.NoError(t, err)
+	require.True(t, first.Applied)
+	second, err := repo.CaptureBatchImageBalance(ctx, capture)
+	require.NoError(t, err)
+	require.False(t, second.Applied)
+	var balance, frozen float64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance, frozen_balance FROM users WHERE id = $1", user.ID).Scan(&balance, &frozen))
+	require.InDelta(t, 98.75, balance, 0.000001)
+	require.Zero(t, frozen)
+	var quota, usage5h, usage1d, usage7d float64
+	var status string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used, usage_5h, usage_1d, usage_7d, status FROM api_keys WHERE id = $1", key.ID).
+		Scan(&quota, &usage5h, &usage1d, &usage7d, &status))
+	for _, used := range []float64{quota, usage5h, usage1d, usage7d} {
+		require.InDelta(t, 1.25, used, 0.000001)
+	}
+	require.Equal(t, service.StatusAPIKeyQuotaExhausted, status)
+}
+
 func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)

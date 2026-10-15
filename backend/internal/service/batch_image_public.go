@@ -210,13 +210,22 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	if err := s.ensureGroupAllowsBatchImage(ctx, owner.GroupID); err != nil {
 		return nil, err
 	}
-	requestHash := HashBatchImageSubmitRequest(normalized)
+	// Version new fingerprints so an explicit timestamp name cannot be
+	// mistaken for an automatically named request from the legacy format.
+	requestHash := "v2:" + HashBatchImageSubmitRequest(normalized)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey != "" {
 		existing, err := s.Repo.GetBatchImageJobByIdempotencyKey(ctx, owner.UserID, owner.APIKeyID, idempotencyKey)
 		if err == nil {
-			if batchImageDerefString(existing.RequestHash) != requestHash {
-				return nil, ErrBatchImageIdempotencyConflict
+			if batchImageDerefString(existing.RequestHash) != requestHash && batchImageDerefString(existing.RequestHash) != HashBatchImageSubmitRequest(normalized) {
+				// Older versions included the generated timestamp name in the
+				// fingerprint. Preserve retries of those persisted requests.
+				legacy := normalized
+				legacy.TaskName = existing.TaskName
+				_, nameErr := time.Parse("2006-01-02 15:04:05", existing.TaskName)
+				if strings.HasPrefix(batchImageDerefString(existing.RequestHash), "v2:") || normalized.TaskName != "" || nameErr != nil || batchImageDerefString(existing.RequestHash) != HashBatchImageSubmitRequest(legacy) {
+					return nil, ErrBatchImageIdempotencyConflict
+				}
 			}
 			if existing.Status == BatchImageJobStatusSubmitted && s.Queue != nil {
 				if enqueueErr := s.Queue.Enqueue(ctx, existing.BatchID); enqueueErr != nil && !errors.Is(enqueueErr, ErrBatchImageAlreadyQueued) {
@@ -257,6 +266,12 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	accountID := account.ID
 	holdID := BatchImageHoldRequestID(batchID)
 	holdAmount := pricingSnapshot.HoldAmount
+	// Generate presentation defaults only after computing the request hash:
+	// an omitted task name must have the same fingerprint on every retry.
+	taskName := normalized.TaskName
+	if taskName == "" {
+		taskName = defaultBatchImageTaskName(time.Now())
+	}
 	job, err := s.Repo.CreateBatchImageJob(ctx, CreateBatchImageJobParams{
 		BatchID:                 batchID,
 		UserID:                  owner.UserID,
@@ -264,7 +279,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		AccountID:               &accountID,
 		Provider:                provider.Name(),
 		Model:                   normalized.Model,
-		TaskName:                normalized.TaskName,
+		TaskName:                taskName,
 		ParentBatchID:           parentBatchID,
 		Status:                  BatchImageJobStatusCreated,
 		ItemCount:               len(normalized.Items),
@@ -779,9 +794,6 @@ func (s *BatchImagePublicService) validateSubmitRequest(req BatchImageSubmitRequ
 	req.ImageSize = strings.TrimSpace(req.ImageSize)
 	if req.Model == "" {
 		return req, ErrBatchImageInvalidModel
-	}
-	if req.TaskName == "" {
-		req.TaskName = defaultBatchImageTaskName(time.Now())
 	}
 	if len(req.TaskName) > 255 {
 		req.TaskName = truncateBatchImageMessage(req.TaskName, 255)

@@ -89,13 +89,73 @@ func TestBatchImageSettlementService_IdempotentAfterBillingCrash(t *testing.T) {
 	job := testSettlingBatchImageJob("imgbatch_crash")
 	repo.jobs[job.BatchID] = job
 	billing := &fakeBatchImageBillingRepo{alreadyApplied: map[string]bool{BatchImageCaptureRequestID(job.BatchID): true}}
-	svc := &BatchImageSettlementService{Repo: repo, BillingRepo: billing, Pricing: &fakeBatchImagePricingResolver{unitPrice: 0.25}}
+	rateCache := &batchImageRateLimitCacheStub{}
+	svc := &BatchImageSettlementService{Repo: repo, BillingRepo: billing, Pricing: &fakeBatchImagePricingResolver{unitPrice: 0.25}, RateLimitCache: rateCache}
 
 	result, err := svc.Settle(context.Background(), job.BatchID)
 	require.NoError(t, err)
 	require.Equal(t, 0.5, result.ActualCost)
 	require.Equal(t, BatchImageJobStatusCompleted, repo.jobs[job.BatchID].Status)
 	require.Len(t, billing.captures, 1)
+	// A retry after the DB commit must still clear a stale admission cache.
+	require.Equal(t, []int64{*job.APIKeyID}, rateCache.invalidated)
+}
+
+type batchImageRateLimitCacheStub struct {
+	invalidated []int64
+	err         error
+}
+
+func (s *batchImageRateLimitCacheStub) InvalidateAPIKeyRateLimit(_ context.Context, keyID int64) error {
+	s.invalidated = append(s.invalidated, keyID)
+	return s.err
+}
+
+func TestBatchImageSettlementService_RetriesCacheFailureWithoutRefund(t *testing.T) {
+	repo := newFakeBatchImageRepository()
+	job := testSettlingBatchImageJob("imgbatch_cache_retry")
+	repo.jobs[job.BatchID] = job
+	billing := &fakeBatchImageBillingRepo{}
+	cache := &batchImageRateLimitCacheStub{err: errors.New("Redis DEL unavailable")}
+	svc := &BatchImageSettlementService{Repo: repo, BillingRepo: billing, Pricing: &fakeBatchImagePricingResolver{unitPrice: 0.25}, RateLimitCache: cache}
+	pipeline := &BatchImagePipelineProcessor{
+		ProviderProcessor: &BatchImageProviderProcessor{Repo: repo}, SettlementService: svc,
+	}
+	for i := 0; i < batchImageSettlementMaxRetries+2; i++ {
+		result, err := pipeline.Process(context.Background(), job.BatchID)
+		require.NoError(t, err)
+		require.False(t, result.Terminal)
+		require.Positive(t, result.RequeueAfter)
+		require.Equal(t, BatchImageJobStatusSettling, repo.jobs[job.BatchID].Status)
+		require.Zero(t, repo.jobs[job.BatchID].RetryCount)
+		require.Empty(t, billing.releases, "captured money must never be refunded for a cache outage")
+	}
+	require.Len(t, billing.seen, 1, "all attempts share the same capture dedup key")
+	cache.err = nil
+	result, err := pipeline.Process(context.Background(), job.BatchID)
+	require.NoError(t, err)
+	require.True(t, result.Terminal)
+	require.Equal(t, BatchImageJobStatusCompleted, repo.jobs[job.BatchID].Status)
+	require.Len(t, billing.seen, 1)
+	require.Empty(t, billing.releases)
+}
+
+func TestBatchImageSettlementService_CompletedJobRetriesCacheInvalidation(t *testing.T) {
+	repo := newFakeBatchImageRepository()
+	job := testSettlingBatchImageJob("imgbatch_completed_cache")
+	job.Status = BatchImageJobStatusCompleted
+	repo.jobs[job.BatchID] = job
+	billing := &fakeBatchImageBillingRepo{}
+	cache := &batchImageRateLimitCacheStub{err: errors.New("Redis DEL unavailable")}
+	svc := &BatchImageSettlementService{Repo: repo, BillingRepo: billing, Pricing: &fakeBatchImagePricingResolver{}, RateLimitCache: cache}
+	_, err := svc.Settle(context.Background(), job.BatchID)
+	require.ErrorIs(t, err, ErrBatchImageSettlementBillingFailed)
+	cache.err = nil
+	result, err := svc.Settle(context.Background(), job.BatchID)
+	require.NoError(t, err)
+	require.True(t, result.AlreadySettled)
+	require.Equal(t, []int64{*job.APIKeyID, *job.APIKeyID}, cache.invalidated)
+	require.Empty(t, billing.captures)
 }
 
 func TestBatchImageSettlementService_ValidationErrors(t *testing.T) {

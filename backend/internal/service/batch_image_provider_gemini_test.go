@@ -292,6 +292,7 @@ type fakeGeminiBatchClient struct {
 	deleteErr           error
 	uploadedJSONL       []byte
 	createdFile         string
+	createdModel        string
 	cancelledBatch      string
 	downloadedFile      string
 	downloadBody        string
@@ -314,9 +315,10 @@ func (f *fakeGeminiBatchClient) UploadJSONL(_ context.Context, apiKey string, _ 
 	return &GeminiUploadedFile{Name: "files/input-jsonl"}, nil
 }
 
-func (f *fakeGeminiBatchClient) CreateBatch(_ context.Context, _ string, _ string, fileName string, _ string) (*GeminiBatchJob, error) {
+func (f *fakeGeminiBatchClient) CreateBatch(_ context.Context, _ string, model string, fileName string, _ string) (*GeminiBatchJob, error) {
 	f.calls = append(f.calls, "create")
 	f.createdFile = fileName
+	f.createdModel = model
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
