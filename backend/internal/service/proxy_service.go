@@ -26,6 +26,8 @@ type ProxyRepository interface {
 	GetByID(ctx context.Context, id int64) (*Proxy, error)
 	ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error)
 	Update(ctx context.Context, proxy *Proxy) error
+	// Delete atomically clears primary, fallback-origin and backup bindings
+	// and deletes the proxy. A failure must leave those bindings unchanged.
 	Delete(ctx context.Context, id int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]Proxy, *pagination.PaginationResult, error)

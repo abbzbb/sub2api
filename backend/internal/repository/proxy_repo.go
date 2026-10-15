@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -297,8 +298,35 @@ func enqueueProxyProbeAccountChanges(ctx context.Context, exec sqlExecutor, acco
 }
 
 func (r *proxyRepository) Delete(ctx context.Context, id int64) error {
-	_, err := r.client.Proxy.Delete().Where(proxy.IDEQ(id)).Exec(ctx)
-	return err
+	client := r.client
+	sqlq := r.sql
+	var ownedTx *dbent.Tx
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		client, sqlq = tx.Client(), tx
+	} else {
+		tx, err := r.client.Tx(ctx)
+		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+			return err
+		}
+		if tx != nil {
+			ownedTx = tx
+			defer func() { _ = tx.Rollback() }()
+			client, sqlq = tx.Client(), tx
+		}
+		// An already transactional client belongs to the caller, which must
+		// roll back its transaction if this operation returns an error.
+	}
+	scoped := newProxyRepositoryWithSQL(client, sqlq)
+	if _, err := scoped.ClearAccountProxyBindings(ctx, id); err != nil {
+		return err
+	}
+	if _, err := client.Proxy.Delete().Where(proxy.IDEQ(id)).Exec(ctx); err != nil {
+		return err
+	}
+	if ownedTx != nil {
+		return ownedTx.Commit()
+	}
+	return nil
 }
 
 func (r *proxyRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Proxy, *pagination.PaginationResult, error) {

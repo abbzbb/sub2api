@@ -356,9 +356,6 @@ func (s *adminServiceImpl) deleteProxyWithStaticBinding(ctx context.Context, id 
 	if err != nil && !errors.Is(err, ErrProxyNotFound) {
 		return err
 	}
-	if _, err := s.proxyRepo.ClearAccountProxyBindings(ctx, id); err != nil {
-		return fmt.Errorf("clear account proxy bindings before delete: %w", err)
-	}
 	if proxy != nil && proxy.MihomoNodeID != "" {
 		if err := mihomo.DeactivateStaticNode(ctx, proxy.MihomoNodeID); err != nil {
 			return err
