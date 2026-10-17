@@ -213,7 +213,7 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 		return nil, nil, infraerrors.NotFound("NOT_FOUND", "order not found")
 	}
 	ok := []string{OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed}
-	if !psSliceContains(ok, o.Status) && !(o.Status == OrderStatusRefundPending && isHeldPendingRefund(o)) {
+	if !psSliceContains(ok, o.Status) && (o.Status != OrderStatusRefundPending || !isHeldPendingRefund(o)) {
 		return nil, nil, infraerrors.BadRequest("INVALID_STATUS", "order status does not allow refund")
 	}
 	// Check provider instance allows admin refund
