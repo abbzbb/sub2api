@@ -643,7 +643,7 @@ func TestParseOpenAICodexTicketShape(t *testing.T) {
 // 所有无票账号都会被 fail_closed 误判为不可调度，而这些请求实际不需要票。
 func TestOpenAICodexTicketGate_CompactRequestUsesForwardOutboundModel(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
-		OpenAICompactModel: "gpt-5.5",
+		OpenAICompactModel: "gpt-6.1-sol",
 		OpenAICodexTicket: config.OpenAICodexTicketConfig{
 			Enabled:         true,
 			TargetLength:    292,
@@ -657,7 +657,7 @@ func TestOpenAICodexTicketGate_CompactRequestUsesForwardOutboundModel(t *testing
 
 	// 出站模型预测必须与 Forward 的解析链一致。
 	require.Equal(t, "gpt-6-astra", svc.openAICodexTicketOutboundModel(account, "gpt-6-astra", false))
-	require.Equal(t, "gpt-5.5", svc.openAICodexTicketOutboundModel(account, "gpt-6-astra", true))
+	require.Equal(t, "gpt-6.1-sol", svc.openAICodexTicketOutboundModel(account, "gpt-6-astra", true))
 
 	// 普通请求：出站仍是门控模型且无票 → fail_closed 必须拦号。
 	require.True(t, svc.openAIRequestBlockedByCodexTicket(account, "gpt-6-astra", false))

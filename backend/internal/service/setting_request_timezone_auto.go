@@ -14,7 +14,8 @@ type cachedOpenAIRequestTimezoneAuto struct {
 
 const openAIRequestTimezoneAutoCacheTTL = 5 * time.Second
 
-// GetOpenAIRequestTimezoneAuto reads the request timezone switch (default off).
+// GetOpenAIRequestTimezoneAuto defaults missing/empty settings to true.
+// fallback is used only when settings cannot be read.
 func (s *SettingService) GetOpenAIRequestTimezoneAuto(ctx context.Context, fallback bool) bool {
 	if ctx == nil {
 		ctx = context.Background()
@@ -49,7 +50,7 @@ func (s *SettingService) GetOpenAIRequestTimezoneAuto(ctx context.Context, fallb
 			}
 			return fallback, nil
 		}
-		enabled := fallback
+		enabled := true
 		if err == nil && strings.TrimSpace(value) != "" {
 			enabled = value == "true"
 		}

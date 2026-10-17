@@ -92,6 +92,61 @@ func TestRequestTimezoneEgressModesAndSwitch(t *testing.T) {
 		})
 	}
 }
+func TestRequestTimezoneEgressDefaultSettings(t *testing.T) {
+	original := localeTestBody([]string{"<environment_context><timezone>Asia/Shanghai</timezone></environment_context>"}, nil)
+	for _, tc := range []struct {
+		name          string
+		settings      map[string]string
+		readErr       error
+		enabled, auto bool
+		want          string
+		calls         int
+	}{
+		{name: "missing", enabled: true, auto: true, want: "Asia/Tokyo", calls: 1},
+		{name: "empty", settings: map[string]string{SettingKeyOpenAIRequestTimezoneEnabled: "", SettingKeyOpenAIRequestTimezoneAuto: ""}, enabled: true, auto: true, want: "Asia/Tokyo", calls: 1},
+		{name: "whitespace", settings: map[string]string{SettingKeyOpenAIRequestTimezoneEnabled: " ", SettingKeyOpenAIRequestTimezoneAuto: " "}, enabled: true, auto: true, want: "Asia/Tokyo", calls: 1},
+		{name: "saved disabled", settings: map[string]string{SettingKeyOpenAIRequestTimezoneEnabled: "false"}, auto: true, want: "Asia/Shanghai"},
+		{name: "saved manual", settings: map[string]string{SettingKeyOpenAIRequestTimezoneAuto: "false"}, enabled: true, want: "Asia/Singapore"},
+		{name: "read failure", readErr: errors.New("offline"), want: "Asia/Shanghai"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := &egressTimezoneProber{probe: func(context.Context, string) (*ProxyExitInfo, int64, error) {
+				return &ProxyExitInfo{IP: "203.0.113.10", Timezone: "Asia/Tokyo"}, 0, nil
+			}}
+			settings := NewSettingService(&codexTicketLifecycleSettings{get: func(_ context.Context, key string) (string, error) {
+				if tc.readErr != nil {
+					return "", tc.readErr
+				}
+				if value, ok := tc.settings[key]; ok {
+					return value, nil
+				}
+				return "", ErrSettingNotFound
+			}}, &config.Config{})
+			if tc.readErr == nil {
+				parsed := settings.parseSettings(tc.settings)
+				require.Equal(t, tc.enabled, parsed.OpenAIRequestTimezoneEnabled)
+				require.Equal(t, tc.auto, parsed.OpenAIRequestTimezoneAuto)
+			}
+			svc := &OpenAIGatewayService{settingService: settings, requestTimezoneProber: probe}
+			account := &Account{ID: 1, Platform: PlatformOpenAI}
+			ctx := svc.withRequestTimezoneEgress(context.Background(), account)
+			body := svc.normalizeRequestTimezone(ctx, account, original, "http")
+			req, err := http.NewRequestWithContext(ctx, "POST", "https://example.com/v1/responses", strings.NewReader(string(body)))
+			require.NoError(t, err)
+			req.Header.Set("X-Timezone", "Asia/Shanghai")
+			svc.requestTimezoneHeaders(ctx, account, nil, req.Header)
+			got, err := BindOpenAIRequestTimezone(req, "http://proxy-a:8080")
+			require.NoError(t, err)
+			data, err := io.ReadAll(got.Body)
+			require.NoError(t, err)
+			require.NoError(t, got.Body.Close())
+			require.Contains(t, gjson.GetBytes(data, "input.0.content.0.text").String(), tc.want)
+			require.Equal(t, tc.want, got.Header.Get("X-Timezone"))
+			require.Len(t, probe.calls, tc.calls)
+		})
+	}
+}
+
 func TestRequestTimezoneEgressProxyChangeAndFailure(t *testing.T) {
 	probe := &egressTimezoneProber{probe: func(_ context.Context, proxy string) (*ProxyExitInfo, int64, error) {
 		if proxy == "bad" {

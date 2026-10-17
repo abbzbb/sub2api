@@ -394,6 +394,9 @@ func (s *OpenAIGatewayService) admitOpenAITurnWithGroup(
 	}
 	// Preserve the cause of a model-not-found cooldown before the generic
 	// runtime/rate-limit checks erase it.
+	if latest.qualityModelBlocked(ctx, outboundModel) {
+		return nil, denyOpenAITurn("model_runtime_blocked")
+	}
 	if latest.modelCapabilityRejected(outboundModel) {
 		return nil, denyOpenAITurn("model_not_supported")
 	}

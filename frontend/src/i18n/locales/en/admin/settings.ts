@@ -632,7 +632,7 @@ export default {
         claudeCodeVersionSyncedValue: 'Currently synced: {version}',
         codexHardeningTitle: "Codex Settings",
         requestTimezoneEnabled: 'Bind request timezone',
-        requestTimezoneEnabledDesc: 'Choose a manual account timezone or automatic egress IP detection for existing environment context, web search timezone fields and supported timezone headers. Dates and ordinary text stay unchanged. Disabled means no rewriting. This does not guarantee improved model quality.',
+        requestTimezoneEnabledDesc: 'Enabled with automatic egress IP detection by default. Choose a manual account timezone or automatic egress IP detection for existing environment context, web search timezone fields and supported timezone headers. Dates and ordinary text stay unchanged. Disabled means no rewriting. This does not guarantee improved model quality.',
         requestTimezoneMode: 'Timezone source',
         requestTimezoneManual: 'Manual: account setting',
         requestTimezoneAuto: 'Automatic: egress IP',

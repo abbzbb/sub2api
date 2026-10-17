@@ -297,6 +297,13 @@ func (s *PaymentService) deductAvailableBalance(ctx context.Context, userID int6
 	return repo.DeductAvailableBalance(ctx, userID, amount)
 }
 
+// invalidateRefundBalanceCache refreshes admission balances after committed ledger changes.
+func (s *PaymentService) invalidateRefundBalanceCache(ctx context.Context, userID int64) {
+	if s.redeemService != nil {
+		s.redeemService.invalidateRedeemCaches(ctx, userID, &RedeemCode{Type: RedeemTypeBalance})
+	}
+}
+
 func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*RefundResult, error) {
 	if err := s.prepareLegacyRefundDeduction(ctx, p); err != nil {
 		return nil, err
@@ -588,6 +595,9 @@ func (s *PaymentService) finalizePendingRefundSuccess(ctx context.Context, p *Re
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit refund finalization: %w", err)
+	}
+	if p.DeductionType == payment.DeductionTypeBalance && p.BalanceToDeduct > 0 {
+		s.invalidateRefundBalanceCache(ctx, p.Order.UserID)
 	}
 	return result, nil
 }

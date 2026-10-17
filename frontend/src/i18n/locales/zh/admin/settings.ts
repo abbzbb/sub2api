@@ -625,7 +625,7 @@ export default {
         claudeCodeVersionSyncedValue: '当前同步到：{version}',
         codexHardeningTitle: 'Codex 设置',
         requestTimezoneEnabled: '请求时区绑定',
-        requestTimezoneEnabledDesc: '开启后可选手动账号时区或按请求出口 IP 自动识别，替换已有环境上下文、网页搜索时区及受支持的时区请求头。保留日期和普通对话；关闭后不改写。此功能不保证改善模型表现。',
+        requestTimezoneEnabledDesc: '默认开启并跟随出口 IP；可选手动账号时区或按请求出口 IP 自动识别，替换已有环境上下文、网页搜索时区及受支持的时区请求头。保留日期和普通对话；关闭后不改写。此功能不保证改善模型表现。',
         requestTimezoneMode: '时区来源',
         requestTimezoneManual: '手动：使用账号配置',
         requestTimezoneAuto: '自动：跟随出口 IP',

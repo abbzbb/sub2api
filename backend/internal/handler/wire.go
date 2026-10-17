@@ -16,6 +16,7 @@ func ProvideAdminHandlers(
 	userHandler *admin.UserHandler,
 	groupHandler *admin.GroupHandler,
 	accountHandler *admin.AccountHandler,
+	openaiOAuthReauthService *service.OpenAIOAuthReauthService,
 	announcementHandler *admin.AnnouncementHandler,
 	dataManagementHandler *admin.DataManagementHandler,
 	backupHandler *admin.BackupHandler,
@@ -70,6 +71,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetCodexHarvestService(codexHarvest)
 	accountHandler.SetOpenAIGatewayService(openAIGatewayService)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
+	accountHandler.SetOpenAIOAuthReauthService(openaiOAuthReauthService)
 	return &AdminHandlers{
 		RequestCapture:         requestCaptureHandler,
 		Dashboard:              dashboardHandler,
@@ -308,6 +310,8 @@ var ProviderSet = wire.NewSet(
 	admin.NewCNProviderHandler,
 	admin.NewProxyHandler,
 	admin.NewProxyGroupHandler,
+	admin.NewConnectionRiskHandler,
+	admin.NewWarpHandler,
 	admin.NewRedeemHandler,
 	admin.NewPromoHandler,
 	ProvideAdminSettingHandler,
