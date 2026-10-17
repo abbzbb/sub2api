@@ -36,6 +36,7 @@ func refundRecoveryFromPlan(p *RefundPlan, resp *payment.RefundResponse) *domain
 			state.BalanceHeld = prev.BalanceHeld
 			state.SubscriptionExpiryHeld = prev.SubscriptionExpiryHeld
 			state.SubscriptionStatusBefore = prev.SubscriptionStatusBefore
+			state.SubscriptionReturnNanos = prev.SubscriptionReturnNanos
 		}
 		if strings.TrimSpace(prev.RefundID) != "" && state.RefundID == "" {
 			state.RefundID = prev.RefundID
@@ -92,6 +93,7 @@ func refundRequestStateFromPlan(p *RefundPlan) *domain.PaymentRefundState {
 			state.BalanceHeld = prev.BalanceHeld
 			state.SubscriptionExpiryHeld = prev.SubscriptionExpiryHeld
 			state.SubscriptionStatusBefore = prev.SubscriptionStatusBefore
+			state.SubscriptionReturnNanos = prev.SubscriptionReturnNanos
 			if rid := strings.TrimSpace(prev.RefundID); rid != "" {
 				state.RefundID = rid
 			}
@@ -193,6 +195,14 @@ func (s *PaymentService) persistRefundRequestID(ctx context.Context, p *RefundPl
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockRefundSubscription(ctx, tx, state); err != nil {
+		return err
+	}
+	current, err := tx.PaymentOrder.Get(ctx, p.OrderID)
+	if err != nil {
+		return err
+	}
+	copyRefundHold(state, current.RefundState)
 	updated, err := tx.PaymentOrder.Update().
 		Where(refundInFlightRestorePredicate(p)).
 		SetRefundState(state).SetRefundAmount(p.RefundAmount).
@@ -260,10 +270,14 @@ func (s *PaymentService) persistRefundRecovery(ctx context.Context, p *RefundPla
 	if err := validateRefundRecovery(state); err != nil {
 		return nil, err
 	}
-	updated, err := s.entClient.PaymentOrder.Update().
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	updated, err := tx.PaymentOrder.Update().
 		Where(refundInFlightRestorePredicate(p)).
 		SetStatus(OrderStatusRefundPending).
-		SetRefundState(state).
 		SetRefundAmount(p.RefundAmount).
 		SetRefundReason(p.Reason).
 		SetForceRefund(p.Force).
@@ -274,7 +288,32 @@ func (s *PaymentService) persistRefundRecovery(ctx context.Context, p *RefundPla
 	if updated == 0 {
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
+	current, err := tx.PaymentOrder.Get(ctx, p.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	copyRefundHold(state, current.RefundState)
+	if err := tx.PaymentOrder.UpdateOneID(p.OrderID).SetRefundState(state).Exec(ctx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return state, nil
+}
+
+// Provider calls can overlap renewal. Preserve the latest transactional return
+// amount rather than writing the pre-call snapshot back over it.
+func copyRefundHold(dst, src *domain.PaymentRefundState) {
+	if src == nil || dst.AttemptID != src.AttemptID {
+		return
+	}
+	dst.Version = src.Version
+	dst.DeductionHeld = src.DeductionHeld
+	dst.BalanceHeld = src.BalanceHeld
+	dst.SubscriptionExpiryHeld = src.SubscriptionExpiryHeld
+	dst.SubscriptionStatusBefore = src.SubscriptionStatusBefore
+	dst.SubscriptionReturnNanos = src.SubscriptionReturnNanos
 }
 
 func (s *PaymentService) loadRefundRecovery(ctx context.Context, o *dbent.PaymentOrder) (*domain.PaymentRefundState, error) {
@@ -332,6 +371,13 @@ func validateRefundRecovery(state *domain.PaymentRefundState) error {
 	if state.SubscriptionExpiryHeld != nil {
 		validHold = validHold && state.DeductionHeld && state.DeductionType == payment.DeductionTypeSubscription && state.SubscriptionID > 0 && state.SubDaysToDeduct > 0
 	}
+	if state.SubscriptionReturnNanos != nil {
+		validHold = validHold && state.DeductionHeld && state.SubscriptionExpiryHeld != nil && *state.SubscriptionReturnNanos >= 0
+		if state.SubscriptionExpiryHeld != nil {
+			expiry := *state.SubscriptionExpiryHeld
+			validHold = validHold && time.Duration(*state.SubscriptionReturnNanos) <= expiry.AddDate(0, 0, state.SubDaysToDeduct).Sub(expiry)
+		}
+	}
 	if !validHold {
 		return infraerrors.Conflict("REFUND_STATE_UNKNOWN", "refund reservation state is invalid; reconciliation required")
 	}
@@ -342,16 +388,31 @@ func validateRefundRecovery(state *domain.PaymentRefundState) error {
 }
 
 func (s *PaymentService) persistRefundConfirmation(ctx context.Context, o *dbent.PaymentOrder, state *domain.PaymentRefundState) error {
-	updated, err := s.entClient.PaymentOrder.Update().
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	updated, err := tx.PaymentOrder.Update().
 		Where(paymentorder.IDEQ(o.ID), refundConfirmationStatusPredicate(o), refundQueryStatePredicate(o)).
 		SetStatus(OrderStatusRefundPending).
-		SetRefundState(state).
 		Save(ctx)
 	if err != nil {
 		return fmt.Errorf("persist refund confirmation: %w", err)
 	}
 	if updated == 0 {
 		return infraerrors.Conflict("CONFLICT", "order status changed")
+	}
+	current, err := tx.PaymentOrder.Get(ctx, o.ID)
+	if err != nil {
+		return err
+	}
+	copyRefundHold(state, current.RefundState)
+	if err := tx.PaymentOrder.UpdateOneID(o.ID).SetRefundState(state).Exec(ctx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	o.Status = OrderStatusRefundPending
 	o.RefundState = state

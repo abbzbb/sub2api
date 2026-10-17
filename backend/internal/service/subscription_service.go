@@ -389,6 +389,16 @@ func (s *SubscriptionService) updateExistingSubscriptionTerm(
 		if newExpiresAt.After(MaxExpiresAt) {
 			newExpiresAt = MaxExpiresAt
 		}
+		if isExpired || newExpiresAt.Equal(MaxExpiresAt) {
+			if err := s.adjustRefundSubscriptionReturns(txCtx, existingSub, newExpiresAt, func(expiry time.Time) time.Time {
+				if !expiry.After(now) {
+					expiry = now
+				}
+				return expiry.AddDate(0, 0, validityDays)
+			}); err != nil {
+				return err
+			}
+		}
 		if assignmentSemantics && strings.TrimSpace(existingSub.Notes) == strings.TrimSpace(notes) {
 			notes = ""
 		}
@@ -438,6 +448,11 @@ func (s *SubscriptionService) restartExistingSubscriptionTerm(ctx context.Contex
 		newExpiresAt := now.AddDate(0, 0, validityDays)
 		if newExpiresAt.After(MaxExpiresAt) {
 			newExpiresAt = MaxExpiresAt
+		}
+		if err := s.adjustRefundSubscriptionReturns(txCtx, existingSub, newExpiresAt, func(time.Time) time.Time {
+			return newExpiresAt
+		}); err != nil {
+			return err
 		}
 
 		renewed := renewedSubscriptionTerm(existingSub, notes, now, newExpiresAt)
@@ -791,6 +806,16 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
 		// 检查新的过期时间必须大于当前时间
 		if !newExpiresAt.After(now) {
 			return ErrAdjustWouldExpire
+		}
+		if isExpired || newExpiresAt.Equal(MaxExpiresAt) {
+			if err := s.adjustRefundSubscriptionReturns(txCtx, sub, newExpiresAt, func(expiry time.Time) time.Time {
+				if !expiry.After(now) {
+					expiry = now
+				}
+				return expiry.AddDate(0, 0, days)
+			}); err != nil {
+				return err
+			}
 		}
 
 		if err := s.userSubRepo.ExtendExpiry(txCtx, subscriptionID, newExpiresAt); err != nil {

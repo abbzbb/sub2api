@@ -5,12 +5,14 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"entgo.io/ent"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -24,6 +26,7 @@ type heldRefundProvider struct {
 	queryStatus  string
 	refundError  error
 	onRefund     func()
+	onQuery      func()
 }
 
 func (p *heldRefundProvider) Refund(_ context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
@@ -42,13 +45,21 @@ func (p *heldRefundProvider) Refund(_ context.Context, req payment.RefundRequest
 }
 
 func (p *heldRefundProvider) QueryRefund(context.Context, payment.RefundQueryRequest) (*payment.RefundResponse, error) {
+	if p.onQuery != nil {
+		p.onQuery()
+	}
 	return &payment.RefundResponse{RefundID: "held-refund", Status: p.queryStatus}, nil
 }
 
 func heldRefundFixture(t *testing.T) (*dbent.Client, *PaymentService, *RefundPlan, *heldRefundProvider) {
 	t.Helper()
-	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
+	return heldRefundFixtureWithClient(t, client)
+}
+
+func heldRefundFixtureWithClient(t *testing.T, client *dbent.Client) (*dbent.Client, *PaymentService, *RefundPlan, *heldRefundProvider) {
+	t.Helper()
+	ctx := context.Background()
 	o := createPendingRefundOrderForTest(t, ctx, client, "held-refund")
 	o, err := client.PaymentOrder.UpdateOne(o).SetStatus(OrderStatusCompleted).Save(ctx)
 	require.NoError(t, err)
@@ -57,6 +68,70 @@ func heldRefundFixture(t *testing.T) (*dbent.Client, *PaymentService, *RefundPla
 	t.Cleanup(replacePaymentProviderFactoryForTest(t, p))
 	return client, &PaymentService{entClient: client, loadBalancer: &captureLoadBalancer{}},
 		&RefundPlan{OrderID: o.ID, Order: o, RefundAmount: 100, GatewayAmount: 100, DeductionType: payment.DeductionTypeBalance, BalanceToDeduct: 100}, p
+}
+
+func TestRefundHoldTimeoutFencesLegacyExecutor(t *testing.T) {
+	for _, balance := range []float64{100, 200} {
+		t.Run(fmt.Sprint(balance), func(t *testing.T) {
+			ctx := context.Background()
+			client, svc, plan, prov := heldRefundFixture(t)
+			require.NoError(t, client.User.UpdateOneID(plan.Order.UserID).SetBalance(balance).Exec(ctx))
+			prov.refundError = errors.New("transport timeout")
+			_, err := svc.ExecuteRefund(ctx, plan)
+			require.NoError(t, err)
+			o, err := client.PaymentOrder.Get(ctx, plan.OrderID)
+			require.NoError(t, err)
+			require.Equal(t, OrderStatusRefundPending, o.Status)
+			// Exact status claim used by the pre-reservation ExecuteRefund.
+			n, err := client.PaymentOrder.Update().Where(paymentorder.IDEQ(o.ID),
+				paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)).
+				SetStatus(OrderStatusRefunding).Save(ctx)
+			require.NoError(t, err)
+			require.Zero(t, n)
+			require.True(t, o.RefundState.DeductionHeld)
+			retry, warning, err := svc.PrepareRefund(ctx, o.ID, 100, "retry", false, true)
+			require.NoError(t, err)
+			require.Nil(t, warning)
+			prov.refundError = nil
+			_, err = svc.ExecuteRefund(ctx, retry)
+			require.NoError(t, err)
+			require.Len(t, prov.keys, 2)
+			require.Equal(t, prov.keys[0], prov.keys[1])
+			u, err := client.User.Get(ctx, o.UserID)
+			require.NoError(t, err)
+			require.Equal(t, balance-100, u.Balance)
+			require.Equal(t, 107.0, u.FrozenBalance)
+			prov.queryStatus = payment.ProviderStatusFailed
+			_, err = svc.QueryAndFinalizeRefund(ctx, o.ID)
+			require.NoError(t, err)
+			u, err = client.User.Get(ctx, o.UserID)
+			require.NoError(t, err)
+			require.Equal(t, balance, u.Balance)
+			require.Equal(t, 7.0, u.FrozenBalance)
+		})
+	}
+}
+
+func TestRefundHoldStaleRetryCannotReopenProviderConfirmation(t *testing.T) {
+	ctx := context.Background()
+	client, svc, plan, prov := heldRefundFixture(t)
+	_, err := svc.ExecuteRefund(ctx, plan)
+	require.NoError(t, err)
+	o, err := client.PaymentOrder.Get(ctx, plan.OrderID)
+	require.NoError(t, err)
+	retry, warning, err := svc.PrepareRefund(ctx, o.ID, 100, "retry", false, true)
+	require.NoError(t, err)
+	require.Nil(t, warning)
+	confirmed := *o.RefundState
+	confirmed.ProviderStatus = payment.ProviderStatusSuccess
+	require.NoError(t, svc.persistRefundConfirmation(ctx, o, &confirmed))
+	_, err = svc.ExecuteRefund(ctx, retry)
+	require.Equal(t, "CONFLICT", infraerrors.Reason(err))
+	require.Len(t, prov.keys, 1)
+	o, err = client.PaymentOrder.Get(ctx, o.ID)
+	require.NoError(t, err)
+	require.Equal(t, payment.ProviderStatusSuccess, o.RefundState.ProviderStatus)
+	require.True(t, o.RefundState.DeductionHeld)
 }
 
 func TestRefundHoldBlocksSpendingUntilSettled(t *testing.T) {
@@ -210,7 +285,9 @@ func TestRefundHoldSubscriptionFailurePreservesRenewal(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, SubscriptionStatusExpired, held.Status)
 	require.True(t, held.ExpiresAt.Equal(expiry.AddDate(0, 0, -30)))
-	require.NoError(t, client.UserSubscription.UpdateOneID(sub.ID).SetExpiresAt(held.ExpiresAt.AddDate(0, 0, 40)).SetStatus(SubscriptionStatusActive).Exec(ctx))
+	subSvc := &SubscriptionService{userSubRepo: &refundSubscriptionTestRepo{db: client}, entClient: client}
+	_, err = subSvc.ExtendSubscription(ctx, sub.ID, 40)
+	require.NoError(t, err)
 	prov.queryStatus = payment.ProviderStatusFailed
 	_, err = svc.QueryAndFinalizeRefund(ctx, plan.OrderID)
 	require.NoError(t, err)

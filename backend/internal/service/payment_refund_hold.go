@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"entgo.io/ent/dialect"
+	"entgo.io/ent/dialect/sql"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
@@ -63,7 +66,7 @@ func (s *PaymentService) reserveRefundDeduction(ctx context.Context, tx *dbent.T
 		state.SubscriptionExpiryHeld = &expiry
 		state.SubscriptionStatusBefore = sub.Status
 	}
-	// Older binaries reject v2 instead of treating reserved funds as an unpaid debit.
+	// v2 queries and the database downgrade fence protect reserved deductions.
 	state.Version = 2
 	state.DeductionHeld = true
 	return nil
@@ -89,17 +92,25 @@ func (s *PaymentService) settleRefundDeduction(ctx context.Context, tx *dbent.Tx
 		}
 	}
 	if !success && state.SubscriptionExpiryHeld != nil {
-		sub, err := tx.UserSubscription.Get(ctx, state.SubscriptionID)
+		// Return the held entitlement to the original row, including a revoked
+		// subscription. Never resurrect it or transfer days to its replacement.
+		queryCtx := mixins.SkipSoftDelete(ctx)
+		sub, err := tx.UserSubscription.Get(queryCtx, state.SubscriptionID)
 		if err != nil {
 			return err
 		}
-		// Add back only the held days, preserving any intervening renewal.
 		expiry := sub.ExpiresAt.AddDate(0, 0, state.SubDaysToDeduct)
+		if state.SubscriptionReturnNanos != nil {
+			expiry = sub.ExpiresAt.Add(time.Duration(*state.SubscriptionReturnNanos))
+		}
+		if expiry.After(MaxExpiresAt) {
+			expiry = MaxExpiresAt
+		}
 		status := sub.Status
-		if status == SubscriptionStatusExpired && state.SubscriptionStatusBefore == SubscriptionStatusActive && expiry.After(time.Now()) {
+		if sub.DeletedAt == nil && status == SubscriptionStatusExpired && state.SubscriptionStatusBefore == SubscriptionStatusActive && expiry.After(time.Now()) {
 			status = SubscriptionStatusActive
 		}
-		n, err := tx.UserSubscription.Update().Where(usersubscription.IDEQ(sub.ID), usersubscription.DeletedAtIsNil(),
+		n, err := tx.UserSubscription.Update().Where(usersubscription.IDEQ(sub.ID),
 			usersubscription.ExpiresAtEQ(sub.ExpiresAt), usersubscription.StatusEQ(sub.Status)).
 			SetExpiresAt(expiry).SetStatus(status).Save(ctx)
 		if err != nil {
@@ -112,6 +123,7 @@ func (s *PaymentService) settleRefundDeduction(ctx context.Context, tx *dbent.Tx
 	state.DeductionHeld = false
 	state.BalanceHeld = 0
 	state.SubscriptionExpiryHeld = nil
+	state.SubscriptionReturnNanos = nil
 	return nil
 }
 
@@ -130,6 +142,10 @@ func (s *PaymentService) failRefundWithHold(ctx context.Context, o *dbent.Paymen
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Renewal also locks the subscription before changing refund return amounts.
+	if err := lockRefundSubscription(ctx, tx, state); err != nil {
+		return nil, err
+	}
 	n, err := tx.PaymentOrder.Update().Where(paymentorder.IDEQ(o.ID), claim).
 		SetStatus(OrderStatusRefundFailed).SetFailedAt(time.Now()).SetFailedReason(psErrMsg(cause)).Save(ctx)
 	if err != nil {
@@ -139,7 +155,14 @@ func (s *PaymentService) failRefundWithHold(ctx context.Context, o *dbent.Paymen
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
 	if state != nil {
+		current, err := tx.PaymentOrder.Get(ctx, o.ID)
+		if err != nil {
+			return nil, err
+		}
 		copy := *state
+		if current.RefundState != nil {
+			copy = *current.RefundState
+		}
 		state = &copy
 		if err := s.settleRefundDeduction(ctx, tx, o, state, false); err != nil {
 			return nil, err
@@ -161,4 +184,19 @@ func (s *PaymentService) failRefundWithHold(ctx context.Context, o *dbent.Paymen
 		s.invalidateRefundHoldCaches(ctx, o, state)
 	}
 	return &RefundResult{Success: false, Warning: "gateway refund failed: " + psErrMsg(cause)}, nil
+}
+
+// Keep the subscription -> order lock order shared with renewal. SQLite test
+// transactions serialize writes without SELECT FOR UPDATE.
+func lockRefundSubscription(ctx context.Context, tx *dbent.Tx, state *domain.PaymentRefundState) error {
+	if state == nil || state.DeductionType != payment.DeductionTypeSubscription || state.SubscriptionID <= 0 {
+		return nil
+	}
+	_, err := tx.UserSubscription.Query().Unique(false).Where(usersubscription.IDEQ(state.SubscriptionID)).
+		Where(func(q *sql.Selector) {
+			if q.Dialect() == dialect.Postgres {
+				q.ForUpdate()
+			}
+		}).Only(mixins.SkipSoftDelete(ctx))
+	return err
 }

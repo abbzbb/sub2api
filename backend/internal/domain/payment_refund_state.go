@@ -23,4 +23,8 @@ type PaymentRefundState struct {
 	BalanceToDeduct          float64    `json:"balance_to_deduct"`
 	SubDaysToDeduct          int        `json:"sub_days_to_deduct"`
 	SubscriptionID           int64      `json:"subscription_id"`
+
+	// A renewal can absorb part of a held term when it restarts from now.
+	// nil preserves the full calendar-day return for existing reservations.
+	SubscriptionReturnNanos *int64 `json:"subscription_return_nanos,omitempty"`
 }

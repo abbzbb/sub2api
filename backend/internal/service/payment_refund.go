@@ -213,7 +213,7 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 		return nil, nil, infraerrors.NotFound("NOT_FOUND", "order not found")
 	}
 	ok := []string{OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed}
-	if !psSliceContains(ok, o.Status) {
+	if !psSliceContains(ok, o.Status) && !(o.Status == OrderStatusRefundPending && isHeldPendingRefund(o)) {
 		return nil, nil, infraerrors.BadRequest("INVALID_STATUS", "order status does not allow refund")
 	}
 	// Check provider instance allows admin refund
@@ -324,7 +324,12 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	if p != nil && strings.TrimSpace(p.PriorStatus) == "" && p.Order != nil {
 		p.PriorStatus = p.Order.Status
 	}
-	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)).SetStatus(OrderStatusRefunding).Save(ctx)
+	claim := paymentorder.StatusIn(OrderStatusCompleted, OrderStatusRefundRequested, OrderStatusRefundFailed)
+	if isHeldPendingRefund(p.Order) {
+		claim = paymentorder.Or(claim, paymentorder.And(paymentorder.StatusEQ(OrderStatusRefundPending),
+			refundAttemptIDPredicate(p.Order.RefundState.AttemptID), refundProviderStatusPendingPredicate()))
+	}
+	c, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(p.OrderID), claim).SetStatus(OrderStatusRefunding).Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lock: %w", err)
 	}
@@ -602,7 +607,11 @@ func (s *PaymentService) finalizePendingRefundSuccess(ctx context.Context, p *Re
 	}
 
 	if p.Order.RefundState != nil && p.Order.RefundState.DeductionHeld {
-		state := *p.Order.RefundState
+		current, loadErr := tx.PaymentOrder.Get(txCtx, p.OrderID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		state := *current.RefundState
 		if err := s.settleRefundDeduction(txCtx, tx, p.Order, &state, true); err != nil {
 			return nil, err
 		}
@@ -816,8 +825,19 @@ func (s *PaymentService) restoreStatus(ctx context.Context, p *RefundPlan) {
 	if p == nil {
 		return
 	}
+	status := refundRestoreStatus(p)
+	if isHeldPendingRefund(p.Order) {
+		// Old ExecuteRefund implementations only claim completed/requested/failed
+		// orders. Keep uncertain reserved operations outside that set.
+		status = OrderStatusRefundPending
+	}
 	_, _ = s.entClient.PaymentOrder.Update().
 		Where(refundInFlightRestorePredicate(p)).
-		SetStatus(refundRestoreStatus(p)).
+		SetStatus(status).
 		Save(ctx)
+}
+
+func isHeldPendingRefund(o *dbent.PaymentOrder) bool {
+	return o != nil && o.RefundState != nil && o.RefundState.Version >= 2 &&
+		o.RefundState.DeductionHeld && hasInFlightPendingRefund(o.RefundState)
 }
