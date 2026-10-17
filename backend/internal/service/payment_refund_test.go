@@ -158,13 +158,14 @@ func TestPrepDeductBalanceRequiresForceWhenBalanceIsInsufficient(t *testing.T) {
 	}
 }
 
-func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
+func TestExecuteRefundRejectsBalanceChangedBeforeReservation(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	user, err := client.User.Create().
 		SetEmail("refund-execute-clamp@example.com").
 		SetPasswordHash("hash").
 		SetUsername("refund-execute-clamp").
+		SetBalance(25).
 		Save(ctx)
 	require.NoError(t, err)
 
@@ -218,14 +219,14 @@ func TestExecuteRefundUsesActualAvailableBalanceDeduction(t *testing.T) {
 
 	result, err := (&PaymentService{entClient: client, userRepo: repo, loadBalancer: &captureLoadBalancer{}}).ExecuteRefund(ctx, plan)
 	require.NoError(t, err)
-	require.True(t, result.Success)
-	require.Equal(t, 25.0, plan.BalanceToDeduct)
-	require.Equal(t, 25.0, result.BalanceDeducted)
-	audit, err := client.PaymentAuditLog.Query().
-		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_SUCCESS")).
-		Only(ctx)
+	require.False(t, result.Success)
+	require.False(t, gatewayCalled, "a stale plan must not issue a provider refund")
+	require.Contains(t, result.Warning, "balance changed")
+	current, err := client.User.Get(ctx, user.ID)
 	require.NoError(t, err)
-	require.Contains(t, audit.Detail, `"balanceDeducted":25`)
+	require.Equal(t, 25.0, current.Balance)
+	require.Zero(t, current.FrozenBalance)
+
 }
 
 func TestGwRefundRejectsMissingPaymentTradeNo(t *testing.T) {
@@ -328,7 +329,7 @@ func TestValidateRefundProviderResponseAcceptsPending(t *testing.T) {
 	require.Error(t, validateRefundProviderResponse(nil))
 }
 
-func TestFinishRefundPendingMarksOrderPendingWithoutInventingRollback(t *testing.T) {
+func TestFinishRefundLegacyPendingDoesNotInventReservation(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 
@@ -400,7 +401,7 @@ func TestFinishRefundPendingMarksOrderPendingWithoutInventingRollback(t *testing
 		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_PENDING")).
 		Only(ctx)
 	require.NoError(t, err)
-	require.Contains(t, pendingAudits.Detail, `"deductionRollbackOK":true`)
+	require.Contains(t, pendingAudits.Detail, `"deductionHeld":false`)
 	successAudits, err := client.PaymentAuditLog.Query().
 		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_SUCCESS")).
 		Count(ctx)
@@ -495,7 +496,7 @@ func TestQueryAndFinalizeRefundFinalizesProviderStatuses(t *testing.T) {
 		available  float64
 	}{
 		{name: "success", status: payment.ProviderStatusSuccess, wantStatus: OrderStatusRefunded, wantDeduct: 100, available: 100},
-		{name: "success clamps current balance", status: payment.ProviderStatusSuccess, wantStatus: OrderStatusRefunded, wantDeduct: 35, available: 35},
+		{name: "shortfall remains recoverable", status: payment.ProviderStatusSuccess, wantStatus: OrderStatusRefundPending, wantDeduct: 35, available: 35},
 		{name: "failed", status: payment.ProviderStatusFailed, wantStatus: OrderStatusRefundFailed},
 		{name: "pending", status: payment.ProviderStatusPending, wantStatus: OrderStatusRefundPending},
 	} {
@@ -519,6 +520,15 @@ func TestQueryAndFinalizeRefundFinalizesProviderStatuses(t *testing.T) {
 			defer restore()
 
 			result, err := svc.QueryAndFinalizeRefund(ctx, order.ID)
+			if tc.status == payment.ProviderStatusSuccess && tc.available < 100 {
+				require.Nil(t, result)
+				require.Equal(t, "REFUND_BALANCE_SHORTFALL", infraerrors.Reason(err))
+				current, loadErr := client.PaymentOrder.Get(ctx, order.ID)
+				require.NoError(t, loadErr)
+				require.Equal(t, OrderStatusRefundPending, current.Status)
+				return
+			}
+
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, tc.status == payment.ProviderStatusSuccess, result.Success)

@@ -31,6 +31,11 @@ func refundRecoveryFromPlan(p *RefundPlan, resp *payment.RefundResponse) *domain
 		}
 		if strings.TrimSpace(prev.AttemptID) != "" && strings.TrimSpace(prev.OutRequestNo) == state.OutRequestNo {
 			state.AttemptID = prev.AttemptID
+			state.Version = prev.Version
+			state.DeductionHeld = prev.DeductionHeld
+			state.BalanceHeld = prev.BalanceHeld
+			state.SubscriptionExpiryHeld = prev.SubscriptionExpiryHeld
+			state.SubscriptionStatusBefore = prev.SubscriptionStatusBefore
 		}
 		if strings.TrimSpace(prev.RefundID) != "" && state.RefundID == "" {
 			state.RefundID = prev.RefundID
@@ -82,6 +87,11 @@ func refundRequestStateFromPlan(p *RefundPlan) *domain.PaymentRefundState {
 		prev := p.Order.RefundState
 		if strings.TrimSpace(prev.OutRequestNo) == state.OutRequestNo && strings.TrimSpace(prev.AttemptID) != "" {
 			state.AttemptID = prev.AttemptID
+			state.Version = prev.Version
+			state.DeductionHeld = prev.DeductionHeld
+			state.BalanceHeld = prev.BalanceHeld
+			state.SubscriptionExpiryHeld = prev.SubscriptionExpiryHeld
+			state.SubscriptionStatusBefore = prev.SubscriptionStatusBefore
 			if rid := strings.TrimSpace(prev.RefundID); rid != "" {
 				state.RefundID = rid
 			}
@@ -178,20 +188,32 @@ func (s *PaymentService) persistRefundRequestID(ctx context.Context, p *RefundPl
 	if err := validateRefundRecovery(state); err != nil {
 		return err
 	}
-	updated, err := s.entClient.PaymentOrder.Update().
-		Where(paymentorder.IDEQ(p.OrderID), paymentorder.StatusEQ(OrderStatusRefunding)).
-		SetRefundState(state).
-		SetRefundAmount(p.RefundAmount).
-		SetRefundReason(p.Reason).
-		SetForceRefund(p.Force).
-		Save(ctx)
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	updated, err := tx.PaymentOrder.Update().
+		Where(refundInFlightRestorePredicate(p)).
+		SetRefundState(state).SetRefundAmount(p.RefundAmount).
+		SetRefundReason(p.Reason).SetForceRefund(p.Force).Save(ctx)
 	if err != nil {
 		return fmt.Errorf("persist refund request id: %w", err)
 	}
 	if updated == 0 {
 		return infraerrors.Conflict("CONFLICT", "order status changed")
 	}
+	if err := s.reserveRefundDeduction(ctx, tx, p, state); err != nil {
+		return err
+	}
+	if err := tx.PaymentOrder.UpdateOneID(p.OrderID).SetRefundState(state).Exec(ctx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	p.Order.RefundState = state
+	s.invalidateRefundHoldCaches(ctx, p.Order, state)
 	return nil
 }
 
@@ -300,7 +322,20 @@ func validateRefundRecovery(state *domain.PaymentRefundState) error {
 	status := strings.TrimSpace(state.ProviderStatus)
 	validStatus := status == payment.ProviderStatusPending || status == payment.ProviderStatusSuccess || status == payment.ProviderStatusRefunded || status == payment.ProviderStatusFailed
 	validDeduction := state.DeductionType == payment.DeductionTypeNone || state.DeductionType == payment.DeductionTypeBalance || state.DeductionType == payment.DeductionTypeSubscription
-	if state.Version != 1 || strings.TrimSpace(state.AttemptID) == "" || !validStatus || !validDeduction || state.BalanceToDeduct < 0 || math.IsNaN(state.BalanceToDeduct) || math.IsInf(state.BalanceToDeduct, 0) || state.SubDaysToDeduct < 0 || state.SubscriptionID < 0 {
+	validHold := state.BalanceHeld >= 0 && !math.IsNaN(state.BalanceHeld) && !math.IsInf(state.BalanceHeld, 0)
+	if state.BalanceHeld > 0 {
+		validHold = validHold && state.DeductionHeld && state.DeductionType == payment.DeductionTypeBalance && math.Abs(state.BalanceHeld-state.BalanceToDeduct) < 1e-9
+	}
+	if state.DeductionHeld && state.DeductionType == payment.DeductionTypeBalance && state.BalanceToDeduct > 0 {
+		validHold = validHold && math.Abs(state.BalanceHeld-state.BalanceToDeduct) < 1e-9
+	}
+	if state.SubscriptionExpiryHeld != nil {
+		validHold = validHold && state.DeductionHeld && state.DeductionType == payment.DeductionTypeSubscription && state.SubscriptionID > 0 && state.SubDaysToDeduct > 0
+	}
+	if !validHold {
+		return infraerrors.Conflict("REFUND_STATE_UNKNOWN", "refund reservation state is invalid; reconciliation required")
+	}
+	if (state.Version != 1 && state.Version != 2) || strings.TrimSpace(state.AttemptID) == "" || !validStatus || !validDeduction || state.BalanceToDeduct < 0 || math.IsNaN(state.BalanceToDeduct) || math.IsInf(state.BalanceToDeduct, 0) || state.SubDaysToDeduct < 0 || state.SubscriptionID < 0 {
 		return infraerrors.Conflict("REFUND_STATE_UNKNOWN", "refund recovery state is invalid; manual reconciliation required")
 	}
 	return nil
@@ -338,20 +373,9 @@ func (s *PaymentService) persistRefundTerminalFailure(ctx context.Context, p *Re
 	if err := validateRefundRecovery(state); err != nil {
 		return err
 	}
-	now := time.Now()
-	updated, err := s.entClient.PaymentOrder.Update().
-		Where(refundInFlightRestorePredicate(p)).
-		SetStatus(OrderStatusRefundFailed).
-		SetRefundState(state).
-		SetFailedAt(now).
-		SetFailedReason(psErrMsg(gErr)).
-		Save(ctx)
-	if err != nil {
-		return fmt.Errorf("persist refund terminal failure: %w", err)
-	}
-	if updated == 0 {
+	_, err := s.failRefundWithHold(ctx, p.Order, state, gErr, refundInFlightRestorePredicate(p))
+	if infraerrors.Reason(err) == "CONFLICT" {
 		return nil
 	}
-	p.Order.RefundState = state
-	return nil
+	return err
 }

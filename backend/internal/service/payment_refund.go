@@ -248,6 +248,19 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 		rr = fmt.Sprintf("refund order:%d", o.ID)
 	}
 	p := &RefundPlan{OrderID: oid, Order: o, RefundAmount: amt, GatewayAmount: ga, Reason: rr, Force: force, DeductBalance: deduct, DeductionType: payment.DeductionTypeNone}
+	if hasInFlightPendingRefund(o.RefundState) && o.RefundState.DeductionHeld {
+		// A response-loss retry sees a balance already reduced by this operation.
+		// Recover its exact plan instead of treating the held amount as new spending.
+		state := o.RefundState
+		if err := validateRefundRecovery(state); err != nil {
+			return nil, nil, err
+		}
+		if math.Abs(amt-state.RefundAmount) > paymentAmountToleranceForCurrency(orderCurrency) || deduct != (state.DeductionType != payment.DeductionTypeNone) {
+			return nil, nil, infraerrors.Conflict("REFUND_IN_FLIGHT", "refund parameters differ from the reserved operation")
+		}
+		applyRefundRecoveryPlan(p, state)
+		return p, nil, nil
+	}
 	if deduct {
 		if er := s.prepDeduct(ctx, o, p, force); er != nil {
 			return nil, er, nil
@@ -318,8 +331,8 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 	if c == 0 {
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
-	// Fail-closed: call the payment gateway before any ledger mutation so a
-	// provider failure cannot leave balance/subscription already deducted.
+	// Persist the operation and reserve its deduction before contacting the provider.
+	// Uncertain outcomes retain the reservation for idempotent reconciliation.
 	resp, err := s.gwRefund(ctx, p)
 	if err != nil {
 		if infraerrors.Reason(err) == "REFUND_IN_FLIGHT" {
@@ -408,13 +421,15 @@ func (s *PaymentService) finishRefund(ctx context.Context, p *RefundPlan, resp *
 	if err != nil {
 		return nil, err
 	}
+	p.Order.RefundState = state
+	p.Order.Status = OrderStatusRefundPending
 	applyRefundRecoveryPlan(p, state)
 	if state.ProviderStatus == payment.ProviderStatusPending {
 		s.writeAuditLog(ctx, p.OrderID, "REFUND_PENDING", "admin", map[string]any{
 			"refundID": state.RefundID, "refundAmount": p.RefundAmount,
 			"reason": p.Reason, "force": p.Force,
 			"plannedBalanceDeduct": state.BalanceToDeduct, "plannedSubDaysDeduct": state.SubDaysToDeduct,
-			"balanceDeducted": 0, "subDaysDeducted": 0, "deductionRollbackOK": true,
+			"balanceDeducted": state.BalanceHeld, "subDaysDeducted": state.SubDaysToDeduct, "deductionHeld": state.DeductionHeld,
 		})
 		p.BalanceToDeduct = 0
 		p.SubDaysToDeduct = 0
@@ -586,7 +601,15 @@ func (s *PaymentService) finalizePendingRefundSuccess(ctx context.Context, p *Re
 		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
 	}
 
-	if err := s.applyRefundFinalDeduction(txCtx, p); err != nil {
+	if p.Order.RefundState != nil && p.Order.RefundState.DeductionHeld {
+		state := *p.Order.RefundState
+		if err := s.settleRefundDeduction(txCtx, tx, p.Order, &state, true); err != nil {
+			return nil, err
+		}
+		if err := tx.PaymentOrder.UpdateOneID(p.OrderID).SetRefundState(&state).Exec(txCtx); err != nil {
+			return nil, err
+		}
+	} else if err := s.applyRefundFinalDeduction(txCtx, p); err != nil {
 		return nil, err
 	}
 	result, err := s.markRefundOkTx(txCtx, tx.Client(), p)
@@ -632,6 +655,9 @@ func (s *PaymentService) applyRefundFinalDeduction(ctx context.Context, p *Refun
 		if err != nil {
 			return fmt.Errorf("deduction: %w", err)
 		}
+		if deducted+1e-9 < p.BalanceToDeduct {
+			return infraerrors.Conflict("REFUND_BALANCE_SHORTFALL", "refund deduction is incomplete; reconciliation required")
+		}
 		p.BalanceToDeduct = deducted
 	}
 	if p.DeductionType == payment.DeductionTypeSubscription && p.SubDaysToDeduct > 0 && p.SubscriptionID > 0 {
@@ -649,24 +675,8 @@ func (s *PaymentService) applyRefundFinalDeduction(ctx context.Context, p *Refun
 }
 
 func (s *PaymentService) finalizeRefundFailed(ctx context.Context, o *dbent.PaymentOrder, gErr error) (*RefundResult, error) {
-	now := time.Now()
-	upd := s.entClient.PaymentOrder.Update().
-		Where(paymentorder.IDEQ(o.ID), refundConfirmationStatusPredicate(o), refundQueryStatePredicate(o)).
-		SetStatus(OrderStatusRefundFailed).SetFailedAt(now).SetFailedReason(psErrMsg(gErr))
-	if o.RefundState != nil {
-		st := *o.RefundState
-		st.ProviderStatus = payment.ProviderStatusFailed
-		upd = upd.SetRefundState(&st)
-	}
-	updated, err := upd.Save(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("persist refund failure: %w", err)
-	}
-	if updated == 0 {
-		return nil, infraerrors.Conflict("CONFLICT", "order status changed")
-	}
-	s.writeAuditLog(ctx, o.ID, "REFUND_FAILED", "admin", map[string]any{"detail": psErrMsg(gErr)})
-	return &RefundResult{Success: false, Warning: "gateway refund failed: " + psErrMsg(gErr)}, nil
+	return s.failRefundWithHold(ctx, o, o.RefundState, gErr,
+		paymentorder.And(refundConfirmationStatusPredicate(o), refundQueryStatePredicate(o)))
 }
 
 type refundPendingAuditDetail struct {
@@ -714,8 +724,8 @@ func (s *PaymentService) getRefundProvider(ctx context.Context, o *dbent.Payment
 }
 
 func (s *PaymentService) handleGwFail(ctx context.Context, p *RefundPlan, gErr error) (*RefundResult, error) {
-	// Gateway-first: ledger is not mutated before the provider call, so there is
-	// nothing to roll back — clear planned amounts to avoid inventing a credit.
+	// Reservations are released only on a definite provider failure. Transport
+	// errors retain them because the provider may already have accepted the refund.
 	p.BalanceToDeduct = 0
 	p.SubDaysToDeduct = 0
 	persistedKey := ""
@@ -724,7 +734,7 @@ func (s *PaymentService) handleGwFail(ctx context.Context, p *RefundPlan, gErr e
 	}
 	if errors.Is(gErr, errRefundProviderFailed) && persistedKey != "" {
 		if err := s.persistRefundTerminalFailure(ctx, p, gErr); err != nil {
-			slog.Error("persist refund terminal failure", "orderID", p.OrderID, "error", err)
+			return nil, err
 		}
 	} else {
 		s.restoreStatus(ctx, p)

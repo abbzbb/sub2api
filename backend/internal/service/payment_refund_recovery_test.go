@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"entgo.io/ent"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
@@ -30,24 +31,18 @@ func TestRefundRecoveryRetriesLedgerWithoutProviderQuery(t *testing.T) {
 	})
 	defer restore()
 	failDeduction := true
-	svc := &PaymentService{
-		entClient:    client,
-		loadBalancer: &captureLoadBalancer{},
-		userRepo: &mockUserRepo{deductAvailableBalanceFn: func(ctx context.Context, id int64, amount float64) (float64, error) {
-			tx := dbent.TxFromContext(ctx)
-			if tx == nil {
-				return 0, errors.New("deduction requires order transaction")
+	client.User.Use(func(next ent.Mutator) ent.Mutator {
+		return ent.MutateFunc(func(ctx context.Context, mutation ent.Mutation) (ent.Value, error) {
+			result, err := next.Mutate(ctx, mutation)
+			if m, ok := mutation.(*dbent.UserMutation); ok {
+				if delta, set := m.AddedFrozenBalance(); set && delta < 0 && failDeduction {
+					return nil, errors.New("injected capture failure after balance update")
+				}
 			}
-			_, err := tx.Client().User.UpdateOneID(id).AddBalance(-amount).Save(ctx)
-			if err != nil {
-				return 0, err
-			}
-			if failDeduction {
-				return 0, errors.New("injected failure after balance update")
-			}
-			return amount, nil
-		}},
-	}
+			return result, err
+		})
+	})
+	svc := &PaymentService{entClient: client, loadBalancer: &captureLoadBalancer{}}
 	plan := &RefundPlan{
 		OrderID: order.ID, Order: order, RefundAmount: 100, GatewayAmount: 100,
 		Reason: "recovery", DeductBalance: true, DeductionType: payment.DeductionTypeBalance,
@@ -59,7 +54,8 @@ func TestRefundRecoveryRetriesLedgerWithoutProviderQuery(t *testing.T) {
 	require.Equal(t, 1, providerCalls)
 	user, err := client.User.Get(ctx, order.UserID)
 	require.NoError(t, err)
-	require.Equal(t, 100.0, user.Balance, "failed finalization must roll back the debit")
+	require.Zero(t, user.Balance, "confirmed refund must retain its reservation until capture completes")
+	require.Equal(t, 100.0, user.FrozenBalance)
 
 	// Recovery must not depend on the best-effort audit log surviving.
 	_, err = client.PaymentAuditLog.Delete().
