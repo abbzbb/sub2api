@@ -2884,6 +2884,38 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 	return nil
 }
 
+func (r *accountRepository) ClearModelRateLimitIfUnchanged(ctx context.Context, id int64, model string, expected map[string]any) (bool, error) {
+	if model == "" || expected == nil {
+		return false, nil
+	}
+	raw, err := json.Marshal(expected)
+	if err != nil {
+		return false, err
+	}
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts
+			SET extra = extra #- ARRAY['model_rate_limits', $2]::text[],
+				updated_at = NOW()
+			WHERE id = $1 AND deleted_at IS NULL
+				AND extra #> ARRAY['model_rate_limits', $2]::text[] = $3::jsonb
+			RETURNING id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $4, updated.id, NULL, NULL FROM updated
+	`, id, model, string(raw), service.SchedulerOutboxEventAccountChanged)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return false, err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
 func (r *accountRepository) SetOverloaded(ctx context.Context, id int64, until time.Time) error {
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).

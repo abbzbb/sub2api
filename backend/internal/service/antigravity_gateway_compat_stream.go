@@ -354,6 +354,14 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 			}
 			resetAntigravityCompatTimer(timeoutTimer, timeout)
 			s.observeAntigravityGeminiSSELine(c, event.line)
+			if upstreamErr := detectAntigravityStreamError(event.line); upstreamErr != nil {
+				if !writer.w.Written() && !writer.Disconnected() {
+					return nil, upstreamErr.failover()
+				}
+				upstreamErr.markFailed(c)
+				writeAntigravityCompatStreamError(c, adapter, writer, "Upstream generation failed")
+				return session.collectResult(writer.Disconnected()), upstreamErr
+			}
 			session.consume(event.line)
 
 		case <-timeoutCh:

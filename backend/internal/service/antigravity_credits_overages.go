@@ -81,16 +81,29 @@ func (s *AntigravityGatewayService) clearCreditsExhausted(ctx context.Context, a
 	if !ok {
 		return
 	}
-	if _, exists := rawLimits[creditsExhaustedKey]; !exists {
+	expected, ok := rawLimits[creditsExhaustedKey].(map[string]any)
+	if !ok {
 		return
 	}
-	delete(rawLimits, creditsExhaustedKey)
-	account.Extra[modelRateLimitsKey] = rawLimits
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
-		modelRateLimitsKey: rawLimits,
-	}); err != nil {
-		logger.LegacyPrintf("service.antigravity_gateway", "clear credits exhausted failed: account=%d err=%v", account.ID, err)
+	repo, ok := s.accountRepo.(AccountModelRateLimitClearer)
+	if !ok {
+		return
 	}
+	cleared, err := repo.ClearModelRateLimitIfUnchanged(ctx, account.ID, creditsExhaustedKey, expected)
+	if err != nil {
+		logger.LegacyPrintf("service.antigravity_gateway", "clear credits exhausted failed: account=%d err=%v", account.ID, err)
+		return
+	}
+	if !cleared {
+		return
+	}
+	// The repository publishes its freshly read scheduler snapshot. Do not
+	// overwrite that snapshot with this request's stale account object.
+	limits := shallowCopyMap(rawLimits)
+	delete(limits, creditsExhaustedKey)
+	extra := shallowCopyMap(account.Extra)
+	extra[modelRateLimitsKey] = limits
+	account.Extra = extra
 }
 
 // classifyAntigravity429 将 Antigravity 的 429 响应归类为配额耗尽、限流或未知。

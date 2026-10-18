@@ -513,8 +513,8 @@ func TestClearCreditsExhausted(t *testing.T) {
 		require.Empty(t, repo.extraUpdateCalls)
 	})
 
-	t.Run("有 AICredits key 时删除并调用 UpdateExtra", func(t *testing.T) {
-		repo := &stubAntigravityAccountRepo{}
+	t.Run("有 AICredits key 时按代际删除", func(t *testing.T) {
+		repo := &atomicCreditsClearRepo{}
 		svc := &AntigravityGatewayService{accountRepo: repo}
 		account := &Account{
 			ID: 1,
@@ -531,8 +531,9 @@ func TestClearCreditsExhausted(t *testing.T) {
 				},
 			},
 		}
+		repo.limits = shallowCopyMap(account.Extra[modelRateLimitsKey].(map[string]any))
 		svc.clearCreditsExhausted(context.Background(), account)
-		require.Len(t, repo.extraUpdateCalls, 1)
+		require.Equal(t, 1, repo.clearCalls)
 		// AICredits key 应被删除
 		rawLimits := account.Extra[modelRateLimitsKey].(map[string]any)
 		_, exists := rawLimits[creditsExhaustedKey]

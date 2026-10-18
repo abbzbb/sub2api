@@ -162,7 +162,7 @@ func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requ
 	}
 	// thinking 会影响 Antigravity 最终模型名（例如 claude-sonnet-4-5 -> claude-sonnet-4-5-thinking）
 	if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
-		modelKey = applyThinkingModelSuffix(modelKey, enabled)
+		modelKey = applyAntigravityThinkingMappedModel(account, modelKey, enabled)
 	}
 	return modelKey
 }

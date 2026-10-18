@@ -288,7 +288,8 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
 		Platform: PlatformAntigravity,
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
-				"claude-sonnet-4-5-thinking": map[string]any{
+				// The thinking alias is remapped to this actual upstream model.
+				"claude-sonnet-4-6": map[string]any{
 					"rate_limit_reset_at": future,
 				},
 			},

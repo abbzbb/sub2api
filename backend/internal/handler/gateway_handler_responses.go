@@ -339,9 +339,13 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
 				zap.Error(err),
 			)
-			return
+			if result == nil {
+				return
+			}
 		}
 
+		// An accepted stream can return both observed usage and a terminal error.
+		// Record that usage without treating the client response as successful.
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)

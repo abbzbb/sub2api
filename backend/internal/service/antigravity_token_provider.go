@@ -116,7 +116,9 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 			}
 			// default policy: continue with existing token.
 		} else {
-			account = result.Account
+			// Callers resolve project_id and routing metadata from this same
+			// request-local account after GetAccessToken returns.
+			account.Credentials = shallowCopyMap(result.Account.Credentials)
 			expiresAt = account.GetCredentialAsTime("expires_at")
 		}
 	} else if needsRefresh && p.tokenCache != nil {
@@ -153,6 +155,7 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		latestAccount, isStale := CheckTokenVersion(ctx, account, p.accountRepo)
 		if isStale && latestAccount != nil {
 			slog.Debug("antigravity_token_version_stale_use_latest", "account_id", account.ID)
+			account.Credentials = shallowCopyMap(latestAccount.Credentials)
 			accessToken = latestAccount.GetCredential("access_token")
 			if strings.TrimSpace(accessToken) == "" {
 				return "", errors.New("access_token not found after version check")

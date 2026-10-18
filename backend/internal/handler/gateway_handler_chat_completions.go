@@ -356,9 +356,13 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
 				zap.Error(err),
 			)
-			return
+			if result == nil {
+				return
+			}
 		}
 
+		// Preserve observed usage when an accepted stream ends with an error,
+		// matching the Messages path. Failover attempts have no partial result.
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)

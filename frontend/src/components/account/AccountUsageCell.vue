@@ -342,6 +342,15 @@
           color="amber"
         />
 
+        <UsageProgressBar
+          v-for="quota in antigravityOtherUsageFromAPI"
+          :key="quota.model"
+          :label="quota.model"
+          :utilization="quota.utilization"
+          :resets-at="quota.resetTime"
+          color="indigo"
+        />
+
         <div v-if="aiCreditsDisplay" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
           💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
         </div>
@@ -906,17 +915,18 @@ const hasAntigravityQuotaFromAPI = computed(() => {
 
 // 从 API 配额数据中获取使用率（多模型取最高使用率）
 const getAntigravityUsageFromAPI = (
-  modelNames: string[]
+  matchesModel: (model: string) => boolean
 ): AntigravityUsageResult | null => {
   const quota = usageInfo.value?.antigravity_quota
   if (!quota) return null
 
   let maxUtilization = 0
   let earliestReset: string | null = null
+  let matched = false
 
-  for (const model of modelNames) {
-    const modelQuota = quota[model]
-    if (!modelQuota) continue
+  for (const [model, modelQuota] of Object.entries(quota)) {
+    if (!modelQuota || !matchesModel(model)) continue
+    matched = true
 
     if (modelQuota.utilization > maxUtilization) {
       maxUtilization = modelQuota.utilization
@@ -928,11 +938,7 @@ const getAntigravityUsageFromAPI = (
     }
   }
 
-  // 如果没有找到任何匹配的模型
-  if (maxUtilization === 0 && earliestReset === null) {
-    const hasAnyData = modelNames.some((m) => quota[m])
-    if (!hasAnyData) return null
-  }
+  if (!matched) return null
 
   return {
     utilization: maxUtilization,
@@ -940,29 +946,47 @@ const getAntigravityUsageFromAPI = (
   }
 }
 
-// Gemini 3 Pro from API
+// Match quota families instead of a fixed list of model versions. Unknown
+// families remain visible below under their actual upstream model names.
+const antigravityQuotaFamily = (model: string): string | null => {
+  if (model.startsWith('claude-')) return 'claude'
+  if (!model.startsWith('gemini-')) return null
+  if (model.includes('-image')) return 'image'
+  if (model === 'gemini-pro-agent' || /^gemini-\d+(?:\.\d+)?-pro(?:-|$)/.test(model)) return 'pro'
+  if (/^gemini-\d+(?:\.\d+)?-flash(?:-|$)/.test(model)) return 'flash'
+  return null
+}
+
 const antigravity3ProUsageFromAPI = computed(() =>
-  getAntigravityUsageFromAPI(['gemini-3-pro-low', 'gemini-3-pro-high', 'gemini-3-pro-preview'])
+  getAntigravityUsageFromAPI((model) => antigravityQuotaFamily(model) === 'pro')
 )
 
-// Gemini 3 Flash from API
-const antigravity3FlashUsageFromAPI = computed(() => getAntigravityUsageFromAPI(['gemini-3-flash']))
+const antigravity3FlashUsageFromAPI = computed(() =>
+  getAntigravityUsageFromAPI((model) => antigravityQuotaFamily(model) === 'flash')
+)
 
-// Gemini Image from API
 const antigravity3ImageUsageFromAPI = computed(() =>
-  getAntigravityUsageFromAPI(['gemini-2.5-flash-image', 'gemini-3.1-flash-image', 'gemini-3-pro-image'])
+  getAntigravityUsageFromAPI((model) => antigravityQuotaFamily(model) === 'image')
 )
 
-// Claude from API (all Claude model variants)
 const antigravityClaudeUsageFromAPI = computed(() =>
-  getAntigravityUsageFromAPI([
-    'claude-fable-5-1',
-    'claude-fable-5',
-    'claude-sonnet-4-5', 'claude-opus-4-5-thinking',
-    'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-6-thinking',
-    'claude-opus-4-7', 'claude-opus-4-8',
-  ])
+  getAntigravityUsageFromAPI((model) => antigravityQuotaFamily(model) === 'claude')
 )
+
+const antigravityOtherUsageFromAPI = computed(() => {
+  const models = Object.keys(usageInfo.value?.antigravity_quota ?? {})
+  const groups = new Map<string, Set<string>>()
+  for (const model of models) {
+    if (antigravityQuotaFamily(model)) continue
+    const family = model.replace(/-(?:extra-low|low|medium|high|tiered|preview|thinking)$/, '')
+    if (!groups.has(family)) groups.set(family, new Set())
+    groups.get(family)!.add(model)
+  }
+  return [...groups].flatMap(([model, variants]) => {
+    const usage = getAntigravityUsageFromAPI((name) => variants.has(name))
+    return usage ? [{ model, ...usage }] : []
+  })
+})
 
 const aiCreditsDisplay = computed(() => {
   const credits = usageInfo.value?.ai_credits

@@ -15,6 +15,13 @@ type AntigravityOAuthService struct {
 	proxyRepo    ProxyRepository
 }
 
+const (
+	// Optional metadata must leave time for OAuthRefreshAPI to persist a newly
+	// issued token while the parent refresh context is still valid.
+	antigravityRefreshMetadataTimeout = 2 * time.Second
+	antigravityRefreshPersistBudget   = time.Second
+)
+
 func NewAntigravityOAuthService(proxyRepo ProxyRepository) *AntigravityOAuthService {
 	return &AntigravityOAuthService{
 		sessionStore: antigravity.NewSessionStore(),
@@ -171,12 +178,17 @@ func (s *AntigravityOAuthService) RefreshToken(ctx context.Context, refreshToken
 	var lastErr error
 
 	for attempt := 0; attempt <= 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
 			}
-			time.Sleep(backoff)
+			if err := sleepWithContext(ctx, backoff); err != nil {
+				return nil, err
+			}
 		}
 
 		client, err := antigravity.NewClient(proxyURL)
@@ -301,9 +313,23 @@ func (s *AntigravityOAuthService) RefreshAccountToken(ctx context.Context, accou
 		tokenInfo.Email = existingEmail
 	}
 
-	// 每次刷新都调用 LoadCodeAssist 获取 project_id + plan_type，失败时重试
+	// Keep the existing routing metadata on failure. The lookup is best effort:
+	// it must not consume the refresh deadline after Google has issued a token.
 	existingProjectID := strings.TrimSpace(account.GetCredential("project_id"))
-	loadResult, loadErr := s.loadProjectIDWithRetry(ctx, tokenInfo.AccessToken, proxyURL, 3)
+	tokenInfo.ProjectID = existingProjectID
+	tokenInfo.PlanType = strings.TrimSpace(account.GetCredential("plan_type"))
+	metadataTimeout := antigravityRefreshMetadataTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline) - antigravityRefreshPersistBudget
+		if remaining <= 0 {
+			tokenInfo.ProjectIDMissing = existingProjectID == ""
+			return tokenInfo, nil
+		}
+		metadataTimeout = min(metadataTimeout, remaining)
+	}
+	metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	loadResult, loadErr := s.loadProjectIDWithRetry(metadataCtx, tokenInfo.AccessToken, proxyURL, 3)
 
 	if loadErr != nil {
 		tokenInfo.ProjectID = existingProjectID
@@ -336,12 +362,19 @@ func (s *AntigravityOAuthService) loadProjectIDWithRetry(ctx context.Context, ac
 	var lastSubscription *AntigravitySubscriptionResult
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			lastErr = err
+			break
+		}
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			if backoff > 8*time.Second {
 				backoff = 8 * time.Second
 			}
-			time.Sleep(backoff)
+			if err := sleepWithContext(ctx, backoff); err != nil {
+				lastErr = err
+				break
+			}
 		}
 
 		client, err := antigravity.NewClient(proxyURL)

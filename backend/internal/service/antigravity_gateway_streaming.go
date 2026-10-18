@@ -351,7 +351,6 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
 	var last map[string]any
-	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（text、thinking、functionCall、inlineData 等）
 
 	type scanEvent struct {
@@ -420,6 +419,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 			line := ev.line
 			s.observeAntigravityGeminiSSELine(c, line)
 			trimmed := strings.TrimRight(line, "\r\n")
+			if upstreamErr := detectAntigravityStreamError(line); upstreamErr != nil {
+				return nil, upstreamErr.failover()
+			}
 
 			if !strings.HasPrefix(trimmed, "data:") {
 				continue
@@ -447,7 +449,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 				firstTokenMs = &ms
 			}
 
-			last = parsed
+			last = mergeAntigravityResponseChunk(last, parsed)
 
 			// 提取 usage
 			if u := extractGeminiUsage(inner); u != nil {
@@ -470,7 +472,6 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 
 			// 保留最后一个有 parts 的响应，并收集所有 parts
 			if parts := extractGeminiParts(parsed); len(parts) > 0 {
-				lastWithParts = parsed
 				collectedParts = append(collectedParts, parts...)
 			}
 
@@ -486,10 +487,10 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 
 returnResponse:
 	// 选择最后一个有效响应
-	finalResponse := pickGeminiCollectResult(last, lastWithParts)
+	finalResponse := last
 
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
-	if last == nil && lastWithParts == nil {
+	if last == nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (gemini non-stream), triggering failover")
 		return nil, &UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
@@ -761,7 +762,6 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 
 	var firstTokenMs *int
 	var last map[string]any
-	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（包括 text、thinking、functionCall、inlineData 等）
 	var meaningfulResponse bool
 
@@ -830,6 +830,9 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 
 			line := ev.line
 			trimmed := strings.TrimRight(line, "\r\n")
+			if upstreamErr := detectAntigravityStreamError(line); upstreamErr != nil {
+				return nil, nil, upstreamErr.failover()
+			}
 
 			if !strings.HasPrefix(trimmed, "data:") {
 				continue
@@ -852,13 +855,11 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				continue
 			}
 
-			last = parsed
+			last = mergeAntigravityResponseChunk(last, parsed)
 
 			// 保留最后一个有 parts 的响应，并收集所有 parts
 			parts := extractGeminiParts(parsed)
 			if len(parts) > 0 {
-				lastWithParts = parsed
-
 				// 收集所有 parts（text、thinking、functionCall、inlineData 等）
 				collectedParts = append(collectedParts, parts...)
 			}
@@ -892,7 +893,7 @@ returnResponse:
 	}
 
 	// 选择最后一个有效响应
-	finalResponse := pickGeminiCollectResult(last, lastWithParts)
+	finalResponse := last
 
 	// 将收集的所有 parts 合并到最终响应中
 	if len(collectedParts) > 0 {
@@ -1107,6 +1108,15 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 
 			lastDataAt = time.Now()
 			s.observeAntigravityGeminiSSELine(c, ev.line)
+			if upstreamErr := detectAntigravityStreamError(ev.line); upstreamErr != nil {
+				if !c.Writer.Written() && !cw.Disconnected() {
+					return nil, upstreamErr.failover()
+				}
+				upstreamErr.markFailed(c)
+				cw.Fprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Upstream generation failed\"}}\n\n")
+				MarkResponseCommitted(c)
+				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, upstreamErr
+			}
 
 			// 处理 SSE 行，转换为 Claude 格式
 			claudeEvents := processor.ProcessLine(strings.TrimRight(ev.line, "\r\n"))

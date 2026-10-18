@@ -131,6 +131,12 @@ type AccountRepository interface {
 	ListShadowsByParent(ctx context.Context, parentID int64) ([]*Account, error)
 }
 
+// AccountModelRateLimitClearer removes one observed cooldown without replacing
+// other models or clearing a newer generation of the same cooldown.
+type AccountModelRateLimitClearer interface {
+	ClearModelRateLimitIfUnchanged(ctx context.Context, id int64, model string, expected map[string]any) (bool, error)
+}
+
 // AccountExcelBPSRepository disables only BPS, provided the account credentials
 // and both opt-in switches still match at the time of the write.
 type AccountExcelBPSRepository interface {
