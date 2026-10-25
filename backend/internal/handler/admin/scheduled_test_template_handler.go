@@ -136,7 +136,7 @@ func (h *ScheduledTestHandler) DeleteQualityTemplate(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.ErrorFrom(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted})

@@ -137,19 +137,22 @@ func (r *fakeTemplateRepo) Update(ctx context.Context, t *QualityRuleTemplate) (
 	return r.Get(ctx, t.ID)
 }
 
-func (r *fakeTemplateRepo) Delete(_ context.Context, id int64) ([]int64, error) {
+func (r *fakeTemplateRepo) Delete(_ context.Context, id int64, deletePlans bool) (int, error) {
 	if _, ok := r.templates[id]; !ok {
-		return nil, ErrQualityTemplateNotFound
+		return 0, ErrQualityTemplateNotFound
 	}
-	ids := []int64{}
-	for _, planID := range r.links[id] {
-		if planID != 0 {
-			ids = append(ids, planID)
+	deleted := 0
+	if deletePlans {
+		for _, planID := range r.links[id] {
+			if _, ok := r.plans.plans[planID]; ok {
+				delete(r.plans.plans, planID)
+				deleted++
+			}
 		}
 	}
 	delete(r.templates, id)
 	delete(r.links, id)
-	return ids, nil
+	return deleted, nil
 }
 
 func (r *fakeTemplateRepo) MatchingAccounts(_ context.Context, filter QualityRuleAccountFilter) ([]QualityTemplateAccount, error) {

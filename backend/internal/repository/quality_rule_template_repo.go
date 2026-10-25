@@ -130,55 +130,64 @@ func (r *qualityRuleTemplateRepository) Update(ctx context.Context, t *service.Q
 	return r.Get(ctx, t.ID)
 }
 
-// Delete locks the template first so a sync in flight either finishes its plan (and it is
-// returned here) or sees the template gone and skips.
-func (r *qualityRuleTemplateRepository) Delete(ctx context.Context, id int64) (planIDs []int64, err error) {
+// Delete locks the template before its children, matching CreateLinkedPlan's
+// lock order. A sync either finishes before this transaction or sees no template.
+func (r *qualityRuleTemplateRepository) Delete(ctx context.Context, id int64, deletePlans bool) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	defer func() { _ = tx.Rollback() }()
 	var locked int64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM quality_rule_templates WHERE id = $1 FOR UPDATE`, id).Scan(&locked)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = service.ErrQualityTemplateNotFound
 	}
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `
+	deleted := 0
+	if deletePlans {
+		rows, err := tx.QueryContext(ctx, `
 		SELECT plan_id FROM quality_rule_template_accounts
 		WHERE template_id = $1 AND plan_id IS NOT NULL
 		ORDER BY plan_id
 	`, id)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var planID int64
-		if err = rows.Scan(&planID); err != nil {
-			_ = rows.Close()
-			return nil, err
+		if err != nil {
+			return 0, err
 		}
-		planIDs = append(planIDs, planID)
-	}
-	if err = rows.Close(); err != nil {
-		return nil, err
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
+		var planIDs []int64
+		for rows.Next() {
+			var planID int64
+			if err = rows.Scan(&planID); err != nil {
+				_ = rows.Close()
+				return 0, err
+			}
+			planIDs = append(planIDs, planID)
+		}
+		if err = rows.Close(); err != nil {
+			return 0, err
+		}
+		if err = rows.Err(); err != nil {
+			return 0, err
+		}
+		for _, planID := range planIDs {
+			removed, err := deleteScheduledTestPlan(ctx, tx, planID)
+			if err != nil {
+				return 0, err
+			}
+			if removed {
+				deleted++
+			}
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM quality_rule_templates WHERE id = $1`, id); err != nil {
-		return nil, err
+		return 0, err
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, err
+		return 0, err
 	}
-	return planIDs, nil
+	return deleted, nil
 }
 
 // MatchingAccounts reuses the admin account list predicates so the selector's count and the

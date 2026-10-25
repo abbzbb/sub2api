@@ -124,23 +124,32 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var locked int64
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, id).Scan(&locked); err == sql.ErrNoRows {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	state, err := readQualityState(ctx, tx, id)
-	if err != nil {
-		return err
-	}
-	if state.Action == service.QualityActionIsolateModels {
-		return service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
-	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
+	if _, err = deleteScheduledTestPlan(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// deleteScheduledTestPlan keeps single-rule and template deletion under the
+// same plan lock and isolation guard, within the caller's transaction.
+func deleteScheduledTestPlan(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+	var locked int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM scheduled_test_plans WHERE id=$1 FOR UPDATE`, id).Scan(&locked); err == sql.ErrNoRows {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	state, err := readQualityState(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if state.Action == service.QualityActionIsolateModels {
+		return false, service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {

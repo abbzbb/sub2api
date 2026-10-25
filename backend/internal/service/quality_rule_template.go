@@ -73,8 +73,9 @@ type QualityRuleTemplateRepository interface {
 	Get(ctx context.Context, id int64) (*QualityRuleTemplate, error)
 	Create(ctx context.Context, template *QualityRuleTemplate) (*QualityRuleTemplate, error)
 	Update(ctx context.Context, template *QualityRuleTemplate) (*QualityRuleTemplate, error)
-	// Delete removes the template and returns the rules it had created that still exist.
-	Delete(ctx context.Context, id int64) ([]int64, error)
+	// Delete atomically removes the template and, when requested, its child rules.
+	// It returns the number of deleted rules; errors leave all rows unchanged.
+	Delete(ctx context.Context, id int64, deletePlans bool) (int, error)
 	// MatchingAccounts uses the same predicates as the admin account list.
 	MatchingAccounts(ctx context.Context, filter QualityRuleAccountFilter) ([]QualityTemplateAccount, error)
 	LinkedAccountIDs(ctx context.Context, id int64) (map[int64]struct{}, error)
@@ -302,18 +303,7 @@ func (s *ScheduledTestService) DeleteQualityTemplate(ctx context.Context, id int
 	if s.templateRepo == nil {
 		return 0, errQualityTemplatesUnavailable
 	}
-	planIDs, err := s.templateRepo.Delete(ctx, id)
-	if err != nil || !deletePlans {
-		return 0, err
-	}
-	deleted := 0
-	for _, planID := range planIDs {
-		if err := s.planRepo.Delete(ctx, planID); err != nil {
-			return deleted, err
-		}
-		deleted++
-	}
-	return deleted, nil
+	return s.templateRepo.Delete(ctx, id, deletePlans)
 }
 
 // SyncQualityTemplates gives every enabled group rule to accounts that newly match it.
