@@ -113,6 +113,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // warpSyncWorker
 		nil, // proxyHealthWorker
 		nil, // pluginManager
+		nil, // cyberModeration
 	)
 
 	require.NotPanics(t, func() {

@@ -1,6 +1,24 @@
 .PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical test-frontend-all
 
 FRONTEND_CRITICAL_VITEST := \
+	src/views/admin/__tests__/RiskControlView.spec.ts \
+	src/i18n/__tests__/riskControlLocales.spec.ts \
+	src/components/common/__tests__/PlatformTypeBadge.openaiPlans.spec.ts \
+	src/components/common/__tests__/PlatformTypeBadge.grok.spec.ts \
+	src/views/admin/__tests__/AutoConfigView.spec.ts \
+	src/utils/__tests__/openaiTwoFAAdmission.spec.ts \
+	src/components/admin/account/__tests__/BulkExport2FADialog.spec.ts \
+	src/components/admin/account/__tests__/AccountBulkActionsBar.spec.ts \
+	src/features/security-penalties/__tests__/SecurityRecords.spec.ts \
+	src/views/user/__tests__/ProfileView.spec.ts \
+	src/components/account/__tests__/SIWCAccountSettings.spec.ts \
+	src/api/admin/__tests__/modelTrace.spec.ts \
+	src/components/admin/account/__tests__/ModelTracePanel.spec.ts \
+	src/components/admin/account/__tests__/IQTestModal.modelTrace.spec.ts \
+	src/components/admin/account/__tests__/IQTestModal.spec.ts \
+	src/components/admin/account/__tests__/PelicanRecordsDashboard.spec.ts \
+	src/api/admin/__tests__/scheduledTests.spec.ts \
+	src/features/ip-risk/__tests__/IPRiskSettings.spec.ts \
 	src/components/admin/account/__tests__/OpenAISessionExportDialog.spec.ts \
 	src/components/admin/account/__tests__/AccountActionMenu.spark_shadow.spec.ts \
 	src/api/__tests__/groupCacheTest.spec.ts \
@@ -54,6 +72,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/api/__tests__/tokenRefresh.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \
 	src/composables/__tests__/useModelWhitelist.spec.ts \
+	src/components/account/__tests__/UpstreamBillingRateCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
 	src/components/account/__tests__/OpenAIQuotaResetCell.spark_shadow.spec.ts \
@@ -68,6 +87,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/keys/__tests__/BulkEditKeysModal.spec.ts \
 	src/components/admin/user/__tests__/UserPlatformQuotaModal.spec.ts \
 	src/components/admin/user/__tests__/UserEditModal.spec.ts \
+	src/components/admin/moderation/__tests__/ModerationUsers.spec.ts \
 	src/views/user/__tests__/KeysView.spec.ts \
 	src/api/__tests__/channelMonitorV2.spec.ts \
 	src/utils/__tests__/embedded-url.spec.ts \
@@ -112,7 +132,7 @@ test-frontend:
 
 # 本地快速路径：lint + typecheck + 16 个关键 vitest
 test-frontend-critical:
-	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
+	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST) src/components/admin/usage/__tests__/UsageConnections.spec.ts
 
 # 全量 vitest（CI 使用）；不含 lint/typecheck
 test-frontend-all:

@@ -1,3 +1,4 @@
+import moderationUsers from './moderationUsers'
 import groupCacheTest from './groupCacheTest'
 import requestCapture from './requestCapture'
 import astraGateway from './astraGateway'
@@ -12,10 +13,12 @@ import promptAudit from './promptAudit'
 import connectionRisk from './connectionRisk'
 import warp from './warp'
 import proxyHealth from './proxyHealth'
+import safetyPromptAudit from './safetyPromptAudit'
 import plugins from './plugins'
 import harvestFlow from './harvestFlow'
 
 export default {
+  ...moderationUsers,
   ...groupCacheTest,
   ...requestCapture,
   ...astraGateway,
@@ -30,6 +33,7 @@ export default {
   ...connectionRisk,
   ...warp,
   ...proxyHealth,
+  ...safetyPromptAudit,
   ...plugins,
   ...harvestFlow,
 }

@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -41,12 +43,6 @@ type ImageResultUploader struct {
 	maxDownloadBytes int64
 }
 
-type imageIPResolver interface {
-	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
-}
-
-type imageDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
-
 // NewImageResultUploader 构造一个 uploader；storage 为 nil 时 Rewrite 直接透传。
 func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadBytes int64, httpClient *http.Client) *ImageResultUploader {
 	if httpClient == nil {
@@ -63,134 +59,144 @@ func NewImageResultUploader(storage ImageStorage, prefix string, maxDownloadByte
 	}
 }
 
-func defaultImageDownloadHTTPClient() *http.Client {
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	return newImageDownloadHTTPClient(net.DefaultResolver, dialer.DialContext)
-}
+// defaultImageDownloadHTTPClient 是进程内共享的图片下载客户端，复用连接池。
+var defaultImageDownloadHTTPClient = sync.OnceValue(func() *http.Client {
+	return newImageDownloadHTTPClient(http.ProxyFromEnvironment)
+})
 
-func newImageDownloadHTTPClient(resolver imageIPResolver, dialContext imageDialContextFunc) *http.Client {
-	var transport *http.Transport
-	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
-		transport = defaultTransport.Clone()
-	} else {
-		transport = &http.Transport{
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: time.Second,
-		}
-	}
-	transport.Proxy = nil
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dialPublicImageAddress(ctx, resolver, dialContext, network, address)
-	}
-
+// newImageDownloadHTTPClient 返回只允许下载公网目的地的客户端。
+// 图片 url 来自上游响应，是不可信输入：目的地为 localhost、回环、私网、链路本地、
+// 云元数据等地址时一律拒绝，重定向的每一跳都经同一 RoundTrip 校验。
+// 不经代理时在 socket 层校验真实连接 IP（防 DNS rebinding）；经环境代理时由代理解析目标，
+// 只能在发出前校验本地解析结果。
+func newImageDownloadHTTPClient(proxy func(*http.Request) (*url.URL, error)) *http.Client {
+	direct := newImageDownloadBaseTransport(imageDownloadDialControl)
+	proxied := newImageDownloadBaseTransport(nil)
+	proxied.Proxy = proxy
 	return &http.Client{
-		Transport: transport,
 		Timeout:   60 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			if req == nil || req.URL == nil {
-				return errors.New("invalid redirect")
-			}
-			if _, err := normalizeImageDownloadURL(req.URL.String()); err != nil {
-				return err
-			}
-			return nil
-		},
+		Transport: &imageDownloadTransport{direct: direct, proxied: proxied, proxy: proxy, resolvesPrivate: imageDownloadHostResolvesNonPublic},
 	}
 }
 
-func dialPublicImageAddress(
-	ctx context.Context,
-	resolver imageIPResolver,
-	dialContext imageDialContextFunc,
-	network string,
-	address string,
-) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
+// newImageDownloadBaseTransport 返回与 http.DefaultTransport 参数一致、但不带代理的 Transport。
+// control 非空时在每个 socket 连接前校验目标地址。
+func newImageDownloadBaseTransport(control func(network, address string, c syscall.RawConn) error) *http.Transport {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Control: control}
+	return &http.Transport{
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// imageDownloadDialControl 拒绝连接到非公网 IP。address 是 DNS 解析后的真实连接地址，
+// 多个解析结果时 Dialer 会跳过被拒地址继续尝试下一个。
+func imageDownloadDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
 	if err != nil {
+		return err
+	}
+	if ip := net.ParseIP(stripIPv6Zone(host)); ip == nil || !ip.IsGlobalUnicast() || isPrivateIP(ip) {
+		return &net.AddrError{Err: "address not allowed for image download", Addr: address}
+	}
+	return nil
+}
+
+// imageDownloadTransport 按请求是否走环境代理分派到对应 Transport，并在发出前拒绝非公网目的地。
+type imageDownloadTransport struct {
+	direct  http.RoundTripper
+	proxied http.RoundTripper
+	proxy   func(*http.Request) (*url.URL, error)
+	// resolvesPrivate 报告 host 的本地解析结果是否含非公网地址，仅用于经代理的请求。
+	resolvesPrivate func(ctx context.Context, host string) (bool, error)
+}
+
+func (t *imageDownloadTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	next, err := t.route(req)
+	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
-
-	var addrs []net.IPAddr
-	if ip := parseImageLiteralIP(host); ip != nil {
-		addrs = []net.IPAddr{{IP: ip}}
-	} else {
-		if resolver == nil {
-			return nil, errors.New("image download resolver is not configured")
-		}
-		addrs, err = resolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("resolve image download host: %w", err)
-		}
-	}
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("image download host %q has no addresses", host)
-	}
-
-	for _, addr := range addrs {
-		if !isPublicImageAddress(addr.IP) {
-			return nil, fmt.Errorf("image download address %q is not allowed", addr.IP.String())
-		}
-	}
-
-	if dialContext == nil {
-		return nil, errors.New("image download dialer is not configured")
-	}
-	var lastErr error
-	for _, addr := range addrs {
-		pinnedAddress := net.JoinHostPort(addr.IP.String(), port)
-		conn, err := dialContext(ctx, network, pinnedAddress)
-		if err == nil {
-			return conn, nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		lastErr = err
-	}
-	return nil, lastErr
+	return next.RoundTrip(req)
 }
 
-func parseImageLiteralIP(host string) net.IP {
-	if zoneIndex := strings.LastIndexByte(host, '%'); zoneIndex >= 0 {
-		host = host[:zoneIndex]
+func (t *imageDownloadTransport) route(req *http.Request) (http.RoundTripper, error) {
+	if req.URL == nil {
+		return nil, errors.New("image url is empty")
 	}
-	return net.ParseIP(host)
-}
-
-func isPublicImageAddress(ip net.IP) bool {
-	return ip != nil && ip.IsGlobalUnicast() && !isPrivateIP(ip)
-}
-
-// normalizeImageDownloadURL 按 openai_images_b64_backfill 的同等策略校验出站图片 URL：
-// 仅允许 http(s)，并无条件拒绝私网/回环等字面量主机。域名解析结果由
-// defaultImageDownloadHTTPClient 在实际建连时校验并绑定，避免 DNS rebinding。
-// 不受 security.url_allowlist 配置影响；注入的自定义 client 仅作为 trusted test transport/client。
-func normalizeImageDownloadURL(raw string) (string, error) {
-	normalized, err := urlvalidator.ValidateURLFormat(raw, true)
+	host := req.URL.Hostname()
+	if isBlockedImageDownloadHost(host) {
+		return nil, fmt.Errorf("image url host is not allowed: %s", host)
+	}
+	var proxyURL *url.URL
+	if t.proxy != nil {
+		var err error
+		if proxyURL, err = t.proxy(req); err != nil {
+			return nil, err
+		}
+	}
+	if proxyURL == nil {
+		return t.direct, nil
+	}
+	if t.resolvesPrivate == nil {
+		return nil, errors.New("image download proxy host check is not configured")
+	}
+	blocked, err := t.resolvesPrivate(req.Context(), host)
 	if err != nil {
-		return "", fmt.Errorf("invalid image url: %w", err)
+		return nil, fmt.Errorf("resolve image url host: %w", err)
 	}
-	if err := rejectPrivateImageHost(normalized); err != nil {
-		return "", err
+	if blocked {
+		return nil, fmt.Errorf("image url host is not allowed: %s", host)
 	}
-	parsed, err := url.Parse(normalized)
+	return t.proxied, nil
+}
+
+// Proxy transports cannot inspect the proxy's remote resolution; fail closed
+// on every non-public address returned by the local resolver before each hop.
+func imageDownloadHostResolvesNonPublic(ctx context.Context, host string) (bool, error) {
+	if isBlockedImageDownloadHost(host) {
+		return true, nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("invalid image url: %w", err)
+		return false, err
 	}
-	host := strings.TrimSpace(parsed.Hostname())
-	if host == "" {
-		return "", errors.New("invalid host")
+	if len(addresses) == 0 {
+		return true, nil
 	}
-	return normalized, nil
+	for _, address := range addresses {
+		if !address.IP.IsGlobalUnicast() || isPrivateIP(address.IP) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isBlockedImageDownloadHost 报告 host 是否为空、被拒绝的主机名，或非公网 IP 字面量。
+// 域名的解析结果由 socket 层或代理分支再校验。
+func isBlockedImageDownloadHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if urlvalidator.IsBlockedHost(host) || isBlockedHostname(host) {
+		return true
+	}
+	if ip := net.ParseIP(stripIPv6Zone(host)); ip != nil {
+		return !ip.IsGlobalUnicast() || isPrivateIP(ip)
+	}
+	return false
+}
+
+// stripIPv6Zone 去掉 IPv6 字面量的 zone（如 fe80::1%eth0），使其可被 net.ParseIP 解析。
+func stripIPv6Zone(host string) string {
+	if i := strings.LastIndexByte(host, '%'); i >= 0 {
+		return host[:i]
+	}
+	return host
 }
 
 // Rewrite 将 result（上游生图响应 JSON）里的每张图片转存到对象存储，
@@ -328,11 +334,7 @@ func (u *ImageResultUploader) decodeImageDataURL(rawURL string) ([]byte, string,
 }
 
 func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]byte, string, error) {
-	downloadURL, err := normalizeImageDownloadURL(rawURL)
-	if err != nil {
-		return nil, "", fmt.Errorf("image url not allowed: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("build download request: %w", err)
 	}
@@ -355,9 +357,16 @@ func (u *ImageResultUploader) download(ctx context.Context, rawURL string) ([]by
 	if int64(len(data)) > limit {
 		return nil, "", fmt.Errorf("downloaded image exceeds %d bytes", limit)
 	}
-	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = detectImageContentType(data)
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	// Trust detected image bytes over an upstream header: a JSON/HTML response
+	// labelled image/png must not be uploaded. AVIF has an ISO BMFF signature
+	// that net/http does not currently recognize as an image.
+	if detected := detectedImageContentType(data); detected != "" {
+		contentType = detected
+	} else if contentType == "image/avif" && len(data) >= 12 && string(data[4:8]) == "ftyp" && (string(data[8:12]) == "avif" || string(data[8:12]) == "avis") {
+		// Keep the declared AVIF media type after validating its container signature.
+	} else {
+		return nil, "", errors.New("download image: content is not an image")
 	}
 	return data, contentType, nil
 }

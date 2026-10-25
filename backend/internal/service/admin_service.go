@@ -271,7 +271,9 @@ type CreateGroupInput struct {
 	LongContextPricingEnabled bool
 	ModelPricing              []ChannelModelPricing
 	// 图片生成计费配置（仅 antigravity 平台使用）
-	AllowImageGeneration         bool
+	AllowImageGeneration bool
+	// Explicit API choice wins over platform defaults, including false.
+	AllowImageGenerationExplicit *bool
 	AllowBatchImageGeneration    bool
 	ImageRateIndependent         bool
 	ImageRateMultiplier          *float64
@@ -305,6 +307,8 @@ type CreateGroupInput struct {
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
 	StreamOnly                      bool // 仅允许流式请求
+	CodexCLIOnly                    bool // 仅允许 Codex 客户端
+	BlockSubagents                  bool // 禁止子代理请求
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool // 是否启用模型路由
@@ -388,6 +392,8 @@ type UpdateGroupInput struct {
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
 	StreamOnly                      *bool // 仅允许流式请求
+	CodexCLIOnly                    *bool // 仅允许 Codex 客户端
+	BlockSubagents                  *bool // 禁止子代理请求
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled *bool // 是否启用模型路由
@@ -423,24 +429,26 @@ type UpdateGroupInput struct {
 }
 
 type CreateAccountInput struct {
-	InitialQualityPlan  *ScheduledTestPlan `json:"-"`
-	Name                string
-	Notes               *string
-	Platform            string
-	Type                string
-	Credentials         map[string]any
-	Extra               map[string]any
-	ProxyID             *int64
-	ProxyGroupID        *int64
-	Concurrency         int
-	Priority            int
-	RateMultiplier      *float64 // 账号计费倍率（>=0，允许 0）
-	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
-	LoadFactor          *int
-	GroupIDs            []int64
-	ExpiresAt           *int64
-	AutoPauseOnExpired  *bool
-	ProbeEnabled        *bool
+	InitialOpenAITwoFA   bool               `json:"-"`
+	InitialAdmissionPlan *ScheduledTestPlan `json:"-"`
+	InitialQualityPlan   *ScheduledTestPlan `json:"-"`
+	Name                 string
+	Notes                *string
+	Platform             string
+	Type                 string
+	Credentials          map[string]any
+	Extra                map[string]any
+	ProxyID              *int64
+	ProxyGroupID         *int64
+	Concurrency          int
+	Priority             int
+	RateMultiplier       *float64 // 账号计费倍率（>=0，允许 0）
+	GroupRateMultiplier  *float64 // 账号级分组计费倍率（>=0，默认 1）
+	LoadFactor           *int
+	GroupIDs             []int64
+	ExpiresAt            *int64
+	AutoPauseOnExpired   *bool
+	ProbeEnabled         *bool
 	// SkipDefaultGroupBind prevents auto-binding to platform default group when GroupIDs is empty.
 	SkipDefaultGroupBind bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.

@@ -137,7 +137,7 @@ func (p *postUsageBillingParams) shouldUpdateRateLimits() bool {
 }
 
 func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
-	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
+	return p.Cost.TotalCost > 0 && p.Account.SupportsAccountQuota() && p.Account.HasAnyQuotaLimit()
 }
 
 // postUsageBilling is the legacy fallback billing path used when the unified
@@ -299,6 +299,8 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
 	}
+	quoted := p.Cost.ActualCost
+	cmd.QuotedActualCost = &quoted
 	if usageLog != nil {
 		cmd.Model = usageLog.Model
 		cmd.BillingType = usageLog.BillingType
@@ -345,6 +347,16 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	}
 	if p.shouldUpdateAccountQuota() {
 		cmd.AccountQuotaCost = p.Cost.TotalCost * p.AccountRateMultiplier
+		cmd.AccountQuotaHasDailyLimit = p.Account.GetQuotaDailyLimit() > 0
+		cmd.AccountQuotaHasWeeklyLimit = p.Account.GetQuotaWeeklyLimit() > 0
+	}
+	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 {
+		cmd.PlatformQuotaPlatform = p.Platform
+		cmd.PlatformQuotaCost = p.Cost.ActualCost
+		cmd.PlatformUsageAt = time.Now().UTC()
+		if usageLog != nil && !usageLog.CreatedAt.IsZero() {
+			cmd.PlatformUsageAt = usageLog.CreatedAt
+		}
 	}
 
 	cmd.Normalize()
@@ -357,6 +369,19 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
+	// The fingerprint above retains the original monetary inputs. From here on,
+	// every customer-facing amount uses the exact same quantum as the SQL charge.
+	// Keep TotalCost and the independent account-cost multiplier untouched.
+	if p.Cost != nil {
+		canonicalParams := *p
+		canonicalCost := *p.Cost
+		canonicalCost.ActualCost = QuantizeUsageBillingAmount(p.Cost.ActualCost)
+		canonicalParams.Cost = &canonicalCost
+		p = &canonicalParams
+		if usageLog != nil {
+			usageLog.ActualCost = canonicalCost.ActualCost
+		}
+	}
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
 		if p.SimpleModeKeyRateLimitOnly {
 			return false, ErrSimpleModeKeyRateLimitBillingUnavailable
@@ -370,6 +395,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
+	if durable, ok := repo.(DurableUsageBillingRepository); ok && usageLog != nil {
+		return applyDurableUsageBilling(billingCtx, durable, cmd, usageLog, p, deps)
+	}
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
 		return false, err
@@ -431,7 +459,11 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 	//   - DB 异步(flusher_enabled=false):在独立 goroutine 中走 detached+timeout context
 	//     （与 postUsageBillingTimeout 对齐，避免客户端断开后异步配额写无限挂起）,失败用 ALERT log 触发 oncall 对账
 	//   - flusher_enabled=true:不直写 DB,由 flusher 异步批量刷（markDirty 已在 IncrementUserPlatformQuotaUsage 内部完成）
-	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
+	if result != nil && result.PlatformQuotaApplied && deps.billingCacheService != nil && p.User != nil {
+		if err := deps.billingCacheService.InvalidateDurablePlatformQuota(ctx, p.User.ID, p.Platform); err != nil {
+			logger.LegacyPrintf("service.gateway", "durable platform quota cache invalidation failed: %v", err)
+		}
+	} else if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
 		if deps.billingCacheService.HasUserPlatformQuotaLimit(ctx, p.User.ID, p.Platform) {
 			deps.billingCacheService.IncrementUserPlatformQuotaUsage(p.User.ID, p.Platform, p.Cost.ActualCost)
 			if deps.cfg == nil || !deps.cfg.Database.UserPlatformQuotaFlusherEnabled {
@@ -542,11 +574,12 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
 			slog.Error("panic in notifyAccountQuota", "recover", r)
 		}
 	}()
-	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
+	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.SupportsAccountQuota() || !p.Account.HasAnyQuotaLimit() || deps.balanceNotifyService == nil {
 		slog.Debug("notifyAccountQuota: skipped",
 			"total_cost", p.Cost.TotalCost,
 			"account_nil", p.Account == nil,
-			"is_apikey_or_bedrock", p.Account != nil && p.Account.IsAPIKeyOrBedrock(),
+			"supports_account_quota", p.Account != nil && p.Account.SupportsAccountQuota(),
+			"has_quota_limit", p.Account != nil && p.Account.HasAnyQuotaLimit(),
 			"service_nil", deps.balanceNotifyService == nil,
 		)
 		return
@@ -555,6 +588,10 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
 	var quotaState *AccountQuotaState
 	if result != nil {
 		quotaState = result.QuotaState
+		// 本应累加却无递增后状态（账号已删除，计数被跳过）：没有新用量，不做阈值判定。
+		if quotaState == nil && p.shouldUpdateAccountQuota() {
+			return
+		}
 	}
 	slog.Debug("notifyAccountQuota: calling CheckAccountQuotaAfterIncrement",
 		"account_id", p.Account.ID,
@@ -650,6 +687,14 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 
 	if _, err := repo.Create(usageCtx, usageLog); err != nil {
 		logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+	}
+}
+
+func recordDurableUsageTiming(ctx context.Context, repo UsageLogRepository, usage *UsageLog) {
+	if recorder, ok := repo.(interface {
+		RecordRequestTiming(context.Context, string, int64)
+	}); ok && usage != nil {
+		recorder.RecordRequestTiming(ctx, usage.RequestID, usage.APIKeyID)
 	}
 }
 
@@ -935,11 +980,13 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
-		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
 	}
-	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	if !s.DurableUsageBillingEnabled() {
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+	} else {
+		recordDurableUsageTiming(ctx, s.usageLogRepo, usageLog)
+	}
 
 	return nil
 }

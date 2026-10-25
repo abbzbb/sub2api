@@ -89,6 +89,22 @@ describe('embedded-url', () => {
     expect(buildEmbeddedUrl('not a url', 1)).toBe('not a url')
   })
 
+  it('removes duplicate and encoded legacy JWT parameters while preserving target business parameters', () => {
+    const result = buildEmbeddedUrl('https://docs.example.com/guide?token=old-jwt&%74oken=another-jwt&plan=pro#section', 42)
+    const url = new URL(result)
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(result).not.toMatch(/old-jwt|another-jwt/)
+    expect(url.searchParams.get('plan')).toBe('pro')
+    expect(url.hash).toBe('#section')
+  })
+
+  it('never copies source query or fragment credentials into the embedded URL', () => {
+    window.location.href = 'https://app.example.com/custom/docs?access_token=query-jwt&code=oauth-code#token=fragment-jwt'
+    const result = buildEmbeddedUrl('https://docs.example.com/guide', 42, 'dark', 'en')
+    expect(new URL(result).searchParams.get('src_url')).toBe('https://app.example.com/custom/docs')
+    expect(result).not.toMatch(/query-jwt|oauth-code|fragment-jwt/)
+  })
+
   it('detects dark mode from document root class', () => {
     document.documentElement.classList.add('dark')
     expect(detectTheme()).toBe('dark')

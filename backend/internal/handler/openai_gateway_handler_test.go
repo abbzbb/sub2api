@@ -1760,6 +1760,10 @@ func TestOpenAIChannelForwardModelForScheduler(t *testing.T) {
 }
 
 func TestShouldReportOpenAIWSProxyAccountFailure(t *testing.T) {
+	t.Run("node owner refusal does not penalize account", func(t *testing.T) {
+		err := service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "owner unavailable", service.ErrOpenAIWSNodeOwner)
+		require.False(t, shouldReportOpenAIWSProxyAccountFailure(err))
+	})
 	t.Run("unsupported client model switch does not penalize account", func(t *testing.T) {
 		err := fmt.Errorf("wrapped ingress turn: %w", newOpenAIWSUnsupportedModelSwitchError("gpt-unsupported"))
 		require.False(t, shouldReportOpenAIWSProxyAccountFailure(err))
@@ -3145,6 +3149,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			c.Next()
 		})
 	}
+	router.Use(middleware.GroupBlockSubagents())
 	handlerDone := make(chan struct{})
 	router.GET("/v1/responses", func(c *gin.Context) {
 		defer close(handlerDone)

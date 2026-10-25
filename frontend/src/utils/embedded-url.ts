@@ -1,10 +1,6 @@
 /**
  * Shared URL builder for iframe-embedded pages.
- * Used by CustomPageView to build consistent credential-free URLs
- * with user_id, theme, lang, ui_mode, src_host, and src parameters.
- *
- * Intentionally does NOT append auth JWT as `token=` — query tokens leak
- * via Referer, browser history, and server/access logs.
+ * Keeps presentation and source context without disclosing login credentials.
  */
 
 const EMBEDDED_USER_ID_QUERY_KEY = 'user_id'
@@ -27,6 +23,9 @@ export function buildEmbeddedUrl(
     if (userId) {
       url.searchParams.set(EMBEDDED_USER_ID_QUERY_KEY, String(userId))
     }
+    // This key was previously reserved for the main application's bearer JWT.
+    // Remove stale copies as well as stopping automatic credential injection.
+    url.searchParams.delete('token')
     url.searchParams.set(EMBEDDED_THEME_QUERY_KEY, theme)
     if (lang) {
       url.searchParams.set(EMBEDDED_LANG_QUERY_KEY, lang)
@@ -35,7 +34,10 @@ export function buildEmbeddedUrl(
     // Source tracking: let the embedded page know where it's being loaded from
     if (typeof window !== 'undefined') {
       url.searchParams.set(EMBEDDED_SRC_HOST_QUERY_KEY, window.location.origin)
-      url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, window.location.href)
+      const sourceUrl = new URL(window.location.href)
+      sourceUrl.search = ''
+      sourceUrl.hash = ''
+      url.searchParams.set(EMBEDDED_SRC_QUERY_KEY, sourceUrl.toString())
     }
     return url.toString()
   } catch {

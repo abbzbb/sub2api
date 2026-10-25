@@ -88,6 +88,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		UserID:             k.UserID,
 		Key:                k.Key,
 		Name:               k.Name,
+		GroupIDs:           k.ConfiguredGroupIDs(),
 		GroupID:            k.GroupID,
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
@@ -154,6 +155,8 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		ForceOpenAIFast:             g.ForceOpenAIFast,
 		FreeOpenAIFast:              g.FreeOpenAIFast,
 		StreamOnly:                  g.StreamOnly,
+		CodexCLIOnly:                g.CodexCLIOnly,
+		BlockSubagents:              g.BlockSubagents,
 		ProfitControlEnabled:        g.ProfitControlEnabled,
 		ProfitMinMargin:             g.ProfitMinMargin,
 		ProfitSafetyBuffer:          g.ProfitSafetyBuffer,
@@ -362,8 +365,8 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		}
 	}
 
-	// 提取账号配额限制（apikey / bedrock 类型有效）
-	if a.IsAPIKeyOrBedrock() {
+	// 提取账号配额限制（apikey / bedrock / service_account 类型有效）
+	if a.SupportsAccountQuota() {
 		if limit := a.GetQuotaLimit(); limit > 0 {
 			out.QuotaLimit = &limit
 			used := a.GetQuotaUsed()
@@ -859,11 +862,29 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 // UsageLogFromService converts a service UsageLog to DTO for regular users.
 // It excludes admin-only account/upstream internals while keeping user billing and request metadata.
 func UsageLogFromService(l *service.UsageLog) *UsageLog {
+	return UsageLogFromServiceForUser(l, false)
+}
+
+// UsageLogFromServiceForUser converts a usage log for an end user.
+// showUpstreamResponseModel reveals only the model declared by the upstream
+// response. Mapped request models, mismatch flags, and account internals stay hidden.
+func UsageLogFromServiceForUser(l *service.UsageLog, showUpstreamResponseModel bool) *UsageLog {
 	if l == nil {
 		return nil
 	}
 	u := usageLogFromServiceUser(l)
+	if showUpstreamResponseModel {
+		u.UpstreamResponseModel = visibleUpstreamResponseModel(l.UpstreamResponseModel)
+	}
 	return &u
+}
+
+func visibleUpstreamResponseModel(value *string) *string {
+	trimmed := strings.TrimSpace(derefString(value))
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 // UsageLogFromServiceAdmin converts a service UsageLog to DTO for admin users.

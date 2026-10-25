@@ -93,6 +93,9 @@ describe('custom page open button', () => {
     expect(button.href).not.toContain('token=')
     expect(button.href).not.toContain('token=test-token')
     expect(wrapper.get('iframe').attributes('src')).not.toMatch(/[?&]token=/)
+    expect(new URL(button.href).searchParams.has('token')).toBe(false)
+    expect(button.href).not.toContain('test-token')
+    expect(wrapper.get('iframe').attributes('referrerpolicy')).toBe('no-referrer')
     expect(button.target).toBe('_blank')
     expect(button.rel).toBe('noopener noreferrer')
     await pointer(button, 'pointerdown', 700, 24)
@@ -118,6 +121,15 @@ describe('custom page open button', () => {
     await pointer(button, 'pointermove', 220, 124)
     await pointer(button, 'pointerup', 220, 124)
     expect(click(button, 0).defaultPrevented).toBe(false)
+  })
+
+  it('keeps stale bearer credentials out of both iframe and new-window URLs', () => {
+    appStore.cachedPublicSettings.custom_menu_items[0].url = 'https://example.com/docs?%74oken=stale-jwt&token=duplicate-jwt&section=help'
+    const { wrapper, button } = mountEmbed()
+    const frameUrl = wrapper.get('iframe').attributes('src')
+    expect(button.href).toBe(frameUrl)
+    expect(frameUrl).not.toMatch(/stale-jwt|duplicate-jwt|test-token/)
+    expect(new URL(frameUrl).searchParams.get('section')).toBe('help')
   })
 
   it('keeps the button inside each boundary and reachable when the container shrinks', async () => {

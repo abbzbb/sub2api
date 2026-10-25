@@ -93,6 +93,18 @@ func isOpenAIAccount(account *Account) bool {
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) bool {
+	if isOpenAIUpstreamSessionBlocked(responseBody) {
+		return false
+	}
+	// Apply the same exemption before access-state and custom cooldown fast
+	// paths, which can otherwise block the credential before the shared handler.
+	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+		return false
+	}
+	// SIWC has independent credentials and limits. Never revoke or relogin the primary Codex grant on its errors.
+	if account.IsSIWCEnabled() {
+		return false
+	}
 	// Observe other HTTP responses before request/model-scoped policies return.
 	// The shared handler below skips this reset to keep one observation per response.
 	if s != nil && s.rateLimitService != nil && !isOpenAIIPUnauthorizedResponse(statusCode, responseBody) {
@@ -145,7 +157,9 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// "tool choice not found in 'tools'" 400 means upstream revoked this account's
 	// image capability. Gated on the self-built marker: passthrough clients control
 	// their own tools/tool_choice and could otherwise poison a healthy account.
-	if isOpenAIImagesSelfBuiltRequest(ctx) && isOpenAIImageCapabilityLossError(statusCode, responseBody) {
+	// A structured 403 image-permission denial is authoritative for passthrough too.
+	if isOpenAIImagePermissionError(statusCode, responseBody) ||
+		(isOpenAIImagesSelfBuiltRequest(ctx) && isOpenAIImageCapabilityLossError(statusCode, responseBody)) {
 		if s != nil && s.rateLimitService != nil {
 			_ = s.rateLimitService.HandleOpenAIImageCapabilityLoss(stateCtx, account, statusCode, responseBody)
 		}

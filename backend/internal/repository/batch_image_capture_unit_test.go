@@ -47,6 +47,9 @@ func TestCaptureBatchImageBalance_KeySpendingIsAtomicAndIdempotent(t *testing.T)
 			mock.ExpectQuery(`SELECT request_fingerprint\s+FROM usage_billing_dedup_archive`).
 				WithArgs(cmd.RequestID, cmd.APIKeyID).
 				WillReturnRows(sqlmock.NewRows([]string{"request_fingerprint"}))
+			mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM batch_image_money_holds WHERE batch_id=\$1 AND api_key_id=\$2\)`).
+				WithArgs(cmd.BatchID, cmd.APIKeyID).
+				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 			mock.ExpectQuery(captureBatchImageHoldSQL).
 				WithArgs(cmd.HoldAmount, cmd.ActualAmount, cmd.UserID).
 				WillReturnRows(sqlmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(9.75, 0))
