@@ -82,8 +82,9 @@ type issue600SwitchRepo struct {
 func (r *issue600SwitchRepo) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
 
 type issue600FixtureOptions struct {
-	switchAccount bool
-	disableCyber  bool
+	switchAccount    bool
+	switchAfterTurns int
+	disableCyber     bool
 }
 
 type issue600Upstream struct {
@@ -137,9 +138,12 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	if len(options) > 0 {
 		opts = options[0]
 	}
-	failover := opts.switchAccount
+	failover := opts.switchAccount || opts.switchAfterTurns > 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if failover && r.Header.Get("Authorization") == "Bearer fixture-account-a" {
+		observed.mu.Lock()
+		completedGenerations := len(observed.frames)
+		observed.mu.Unlock()
+		if failover && completedGenerations >= opts.switchAfterTurns && r.Header.Get("Authorization") == "Bearer fixture-account-a" {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Error(err)

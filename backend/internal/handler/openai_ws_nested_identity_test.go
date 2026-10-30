@@ -290,3 +290,55 @@ func httptestIssue600Request(body string, headers http.Header) *http.Request {
 	req.Header = headers.Clone()
 	return req
 }
+
+// This exercises the bridge's accountIdentitySourceRaw path after completed
+// turns. The third turn is refused before generation, then the replacement must
+// derive B(original) rather than B(A(original)). No completed turn is replayed.
+func TestIssue600NestedBridgeLaterAccountSwitch(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run("strict="+strconv.FormatBool(strict), func(t *testing.T) {
+			payload := issue600NestedPayload(t, issue600NestedMetadata(), issue600NestedMetadata())
+			headers := http.Header{"Thread-Id": []string{"fixture-client-thread"}}
+			var expectedThread, expectedSession string
+			t.Run("replacement_reference", func(t *testing.T) {
+				h, up := newIssue600NetworkHarness(t, service.OpenAIWSIngressModeHTTPBridge, "oauth", strict, headers)
+				issue600Send(t, h, payload, 1, false)
+				issue600Send(t, h, payload, 2, false)
+				issue600Finish(t, h, headers)
+				frames, _ := up.snapshot()
+				require.Len(t, frames, 2)
+				expectedThread = issue600Thread(frames[0])
+				expectedSession = gjson.GetBytes(frames[0], "response.client_metadata.session_id").String()
+			})
+			require.NotEmpty(t, expectedThread)
+			require.NotEmpty(t, expectedSession)
+			t.Run("later_turn_replacement", func(t *testing.T) {
+				h, up := newIssue600NetworkHarness(t, service.OpenAIWSIngressModeHTTPBridge, "oauth", strict, headers, issue600FixtureOptions{switchAfterTurns: 2})
+				for turn := 1; turn <= 4; turn++ {
+					issue600Send(t, h, payload, turn, false)
+				}
+				issue600Finish(t, h, headers)
+				frames, outHeaders := up.snapshot()
+				require.Len(t, frames, 4, "two original and two replacement turns must generate exactly once each")
+				refusals, refusedBodies := up.rejectedSnapshot()
+				require.Len(t, refusals, 1, "only the current third turn is refused, with no generation")
+				require.Len(t, refusedBodies, 1)
+				originalAccountThread := issue600Thread(frames[0])
+				require.Equal(t, originalAccountThread, issue600Thread(frames[1]))
+				require.Equal(t, originalAccountThread, issue600Thread(refusedBodies[0]))
+				require.NotEqual(t, originalAccountThread, expectedThread)
+				for i, frame := range frames {
+					issue600AssertNestedProjection(t, "oauth", []byte(payload), frame)
+					issue600ProjectedHeader(t, service.OpenAIWSIngressModeHTTPBridge, outHeaders[i], issue600Thread(frame))
+					if i < 2 {
+						require.Equal(t, "Bearer fixture-account-a", outHeaders[i].Get("Authorization"))
+					} else {
+						require.Equal(t, "Bearer fixture-account-b", outHeaders[i].Get("Authorization"))
+						require.Equal(t, expectedThread, issue600Thread(frame), "replacement thread must be B(original), never B(A(original))")
+						require.Equal(t, expectedSession, gjson.GetBytes(frame, "response.client_metadata.session_id").String(), "replacement nested session must derive from original accountIdentitySourceRaw")
+					}
+				}
+			})
+		})
+	}
+}
