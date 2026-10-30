@@ -57,7 +57,7 @@ export default {
   "duration": "总耗时 P90 (ms)",
   "samples": "TTFT 有效样本",
   "unknown": "未知",
-  "latencyNote": "延迟使用持久化首 token 时间（新记录包含请求到达网关后、开始转发前的排队等待；旧记录为转发口径），仅统计有用量证据且首 token 时间为正的流式记录；不是纯上游语义延迟。总耗时来自 duration_ms，新记录同样包含排队。没有完整失败请求分母，不计算请求错误率。",
+  "latencyNote": "延迟使用持久化首 token 时间（新记录包含请求到达网关后、开始转发前的排队等待；旧记录为转发口径），仅统计有用量证据且首 token 时间为正的流式记录；不是纯上游语义延迟。总耗时使用 duration_ms + queue_wait_ms（新记录；旧记录为 duration_ms）。没有完整失败请求分母，不计算请求错误率。",
   "previous": "上一页",
   "next": "下一页",
   "accountBasis": "逐账号估算基准",

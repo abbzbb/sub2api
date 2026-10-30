@@ -259,7 +259,10 @@
             </span>
             <span v-else class="col-start-3 row-start-1 text-gray-400 dark:text-gray-500">-</span>
             <span class="col-start-2 row-start-2 text-gray-400 dark:text-gray-500">{{ t('usage.latencyDuration') }}</span>
-            <span class="col-start-3 row-start-2 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
+            <span class="col-start-3 row-start-2 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(durationQueueInclusive(row) ?? 0)]" :title="row.queue_wait_ms != null ? t('usage.latencyDurationHint', { forward: formatDuration(row.duration_ms), queue: formatDuration(row.queue_wait_ms ?? 0) }) : undefined">
+              {{ formatDuration(durationQueueInclusive(row)) }}
+              <span v-if="row.queue_wait_ms" class="ml-1 text-[10px] font-normal text-amber-600 dark:text-amber-400">+{{ formatDuration(row.queue_wait_ms) }}</span>
+            </span>
             <span class="col-start-2 row-start-3 text-gray-400 dark:text-gray-500">{{ t('usage.latencyTps') }}</span>
             <span
               v-if="formatUsageOutputTps(row)"
@@ -810,9 +813,11 @@ const firstTokenQueueTitle = (row: AdminUsageLog): string =>
     first: formatDuration(row.first_token_ms),
     queue: formatDuration(row.queue_wait_ms ?? 0),
   })
+const durationQueueInclusive = (row: AdminUsageLog): number | null =>
+  row.duration_ms == null ? null : row.duration_ms + (row.queue_wait_ms ?? 0)
 
 const latencySeverities = (row: AdminUsageLog) => {
-  const duration = durationSeverity(row.duration_ms ?? 0)
+  const duration = durationSeverity(durationQueueInclusive(row) ?? 0)
   const tps = usageOutputTps(row)
   const firstToken = firstTokenQueueInclusive(row)
   return {

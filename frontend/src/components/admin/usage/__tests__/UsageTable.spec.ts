@@ -187,6 +187,7 @@ describe('admin UsageTable tooltip', () => {
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
     })
     expect(wrapper.text()).toContain('32.00s')
+    expect(wrapper.text()).toContain('50.00s')
     expect(wrapper.text()).toContain('+30.00s')
   })
 
