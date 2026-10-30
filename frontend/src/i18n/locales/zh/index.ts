@@ -1,3 +1,4 @@
+import accountTestTiming from './accountTestTiming'
 import openaiAuth from './openaiAuth'
 import upstreamEntities from './upstreamEntities'
 import profitOps from './profitOps'
@@ -33,6 +34,7 @@ import latencyObservability from './latencyObservability'
 import autoConfig from './autoConfig'
 
 export default {
+  accountTestTiming,
   openaiAuth,
   upstreamEntities,
   traffic,

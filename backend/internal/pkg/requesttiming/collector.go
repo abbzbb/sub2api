@@ -70,13 +70,18 @@ type Snapshot struct {
 type Collector struct {
 	mu        sync.Mutex
 	start     time.Time
+	now       func() time.Time
 	data      Snapshot
 	finished  bool
 	callbacks []func(Snapshot)
 }
 
 func New(start time.Time, expected int64) *Collector {
-	return &Collector{start: start, data: Snapshot{Version: 1, TraceID: uuid.NewString(), StartedAt: start, BodyExpected: expected, Events: map[string]float64{}, Spans: []Span{}, Attempts: []Attempt{}}}
+	return newCollector(start, expected, time.Now)
+}
+
+func newCollector(start time.Time, expected int64, now func() time.Time) *Collector {
+	return &Collector{start: start, now: now, data: Snapshot{Version: 1, TraceID: uuid.NewString(), StartedAt: start, BodyExpected: expected, Events: map[string]float64{}, Spans: []Span{}, Attempts: []Attempt{}}}
 }
 func With(ctx context.Context, c *Collector) context.Context {
 	if c == nil {
@@ -107,7 +112,7 @@ func Mark(ctx context.Context, name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.finished {
-		c.event(name, time.Now())
+		c.event(name, c.now())
 	}
 }
 func Observe(ctx context.Context, name string) func() {
@@ -115,7 +120,7 @@ func Observe(ctx context.Context, name string) func() {
 	if c == nil {
 		return func() {}
 	}
-	start := time.Now()
+	start := c.now()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -128,7 +133,7 @@ func Observe(ctx context.Context, name string) func() {
 				c.data.Truncated = true
 				return
 			}
-			c.data.Spans = append(c.data.Spans, Span{Name: name, StartMS: c.offset(start), EndMS: c.offset(time.Now())})
+			c.data.Spans = append(c.data.Spans, Span{Name: name, StartMS: c.offset(start), EndMS: c.offset(c.now())})
 		})
 	}
 }
@@ -142,7 +147,7 @@ func Output(ctx context.Context, semantic, visible bool, terminal string) {
 	if c.finished {
 		return
 	}
-	now := time.Now()
+	now := c.now()
 	if tr, ok := ctx.Value(attemptKey{}).(*Trace); ok && tr.c == c {
 		for index := tr.index; index >= 0; {
 			a := &c.data.Attempts[index]
@@ -233,7 +238,7 @@ func (c *Collector) Finish(status int, canceled bool) {
 		return
 	}
 	c.finished = true
-	c.data.TotalMS = c.offset(time.Now())
+	c.data.TotalMS = c.offset(c.now())
 	c.data.Status = status
 	c.data.Canceled = canceled
 	callbacks := c.callbacks
