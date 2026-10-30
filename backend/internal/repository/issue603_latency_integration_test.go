@@ -101,11 +101,14 @@ func TestIssue603NetworkMinuteStorageAndBodySQL(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute).Add(-2 * time.Minute)
 	instance := uuid.NewString()
 	zero := 0.0
+	drops := int64(3)
 	for i := range 2 {
 		p := service.OpsNetworkPoint{At: now.Add(time.Duration(i) * time.Minute), Instance: instance, EgressStatus: "unavailable", TCPStatus: "no_segments", QdiscStatus: "unsupported_unprivileged_collector", WindowSeconds: 60}
 		if i == 1 {
 			p.EgressMbps = &zero
 			p.EgressStatus = "measured"
+			p.QdiscDrops = &drops
+			p.QdiscStatus = "measured_root_egress_qdisc"
 		}
 		require.NoError(t, insertNetworkSample(ctx, tx, p))
 	}
@@ -123,8 +126,11 @@ func TestIssue603NetworkMinuteStorageAndBodySQL(t *testing.T) {
 	require.Nil(t, selected[0].EgressMbps)
 	require.NotNil(t, selected[1].EgressMbps)
 	require.Equal(t, 0.0, *selected[1].EgressMbps)
-	require.Nil(t, selected[1].QdiscDrops)
-	require.Contains(t, selected[1].QdiscStatus, "unsupported")
+	require.Nil(t, selected[0].QdiscDrops)
+	require.Contains(t, selected[0].QdiscStatus, "unsupported")
+	require.NotNil(t, selected[1].QdiscDrops)
+	require.EqualValues(t, 3, *selected[1].QdiscDrops, "measured root qdisc drop delta must survive minute storage and aggregation")
+	require.Equal(t, "measured_root_egress_qdisc", selected[1].QdiscStatus)
 	var found bool
 	for _, p := range series.BodyPoints {
 		if p.At.Equal(now) {

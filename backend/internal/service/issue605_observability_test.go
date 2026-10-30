@@ -171,12 +171,18 @@ func TestIssue605QdiscRootFixturesAndCollectorDelta(t *testing.T) {
 	next := sampler.sample(now.Add(time.Minute), "fixture")
 	require.Equal(t, "measured_root_egress_qdisc", next.QdiscStatus)
 	require.EqualValues(t, 3, *next.QdiscDrops)
+	store := &issue603NetworkStore{}
+	collector := &OpsMetricsCollector{opsRepo: store, networkSampler: sampler, instanceID: "fixture"}
+	current = 17
+	require.NoError(t, collector.collectNetwork(context.Background(), now.Add(2*time.Minute)))
+	require.Len(t, store.points, 1)
+	require.EqualValues(t, 4, *store.points[0].QdiscDrops, "parsed qdisc delta must reach the existing collector persistence adapter")
 	current = 1
-	next = sampler.sample(now.Add(2*time.Minute), "fixture")
+	next = sampler.sample(now.Add(3*time.Minute), "fixture")
 	require.Nil(t, next.QdiscDrops)
 	require.Equal(t, "counter_reset_or_topology_change", next.QdiscStatus)
 	sampler.readQdisc = func() qdiscSnapshot { return qdiscSnapshot{status: "permission_denied"} }
-	next = sampler.sample(now.Add(3*time.Minute), "fixture")
+	next = sampler.sample(now.Add(4*time.Minute), "fixture")
 	require.Equal(t, "permission_denied", next.QdiscStatus)
 	require.Nil(t, next.QdiscDrops)
 }
