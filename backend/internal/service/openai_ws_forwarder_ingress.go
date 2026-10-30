@@ -765,6 +765,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 
 	type openAIWSClientPayload struct {
+		clientPayloadRaw         []byte
 		payloadRaw               []byte
 		accountIdentitySourceRaw []byte
 		rawForHash               []byte
@@ -807,6 +808,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	parseClientPayload := func(turn int, raw []byte) (openAIWSClientPayload, error) {
+		clientPayloadRaw := append([]byte(nil), raw...)
 		trimmed := bytes.TrimSpace(raw)
 		if len(trimmed) == 0 {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "empty websocket request payload", nil)
@@ -1058,6 +1060,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		ingressSessionOriginalModel = originalModel
 
 		return openAIWSClientPayload{
+			clientPayloadRaw:         clientPayloadRaw,
 			payloadRaw:               normalized,
 			accountIdentitySourceRaw: accountIdentitySourceRaw,
 			rawForHash:               trimmed,
@@ -1224,8 +1227,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		var bridgeAccountFailoverInput []json.RawMessage
 		bridgeAccountFailoverInputExists := false
 		for turn := 1; ; turn++ {
-			if turn > 1 && hooks != nil && hooks.BeforeRequest != nil {
-				if err := hooks.BeforeRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel); err != nil {
+			if turn > 1 && hooks != nil {
+				if err := hooks.beforeRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.clientPayloadRaw, currentBridgePayload.originalModel); err != nil {
 					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
 						ctx,
 						c,
@@ -2054,6 +2057,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
+	currentClientPayload := firstPayload.clientPayloadRaw
 	currentPayload := firstPayload.payloadRaw
 	currentClientWindowID := firstPayload.clientWindowID
 	currentOriginalModel := firstPayload.originalModel
@@ -2264,8 +2268,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 			return err
 		}
-		if turn > 1 && !skipBeforeTurn && hooks != nil && hooks.BeforeRequest != nil {
-			if err := hooks.BeforeRequest(turn, currentPayload, currentOriginalModel); err != nil {
+		if turn > 1 && !skipBeforeTurn && hooks != nil {
+			if err := hooks.beforeRequest(turn, currentPayload, currentClientPayload, currentOriginalModel); err != nil {
 				s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(
 					ctx,
 					c,
@@ -2881,6 +2885,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 		}
+		currentClientPayload = nextPayload.clientPayloadRaw
 		currentPayload = nextPayload.payloadRaw
 		currentClientWindowID = nextPayload.clientWindowID
 		currentOriginalModel = nextPayload.originalModel
