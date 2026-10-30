@@ -37,6 +37,9 @@ type pr610TimingScenario struct {
 	base          time.Time
 	offset        atomic.Int64
 	turn          atomic.Int32
+	keyQueue      bool
+	failover      bool
+	failedSwitch  atomic.Bool
 	poolHolder    bool
 	holderHandled atomic.Bool
 	holderArrived chan struct{}
@@ -56,7 +59,10 @@ type pr610TimingScenario struct {
 func newPR610Scenario(t *testing.T, mode string) *pr610TimingScenario {
 	t.Helper()
 	s := &pr610TimingScenario{t: t, mode: mode, base: time.Now(), barriers: make(chan pr610Barrier), deltaRead: make(chan struct{}), gated: map[string]bool{}}
-	s.cache = &pr610SlotCache{ConcurrencyCache: testutil.NewRedisConcurrencyCache(t), s: s}
+	raw := testutil.NewRedisConcurrencyCache(t)
+	q, ok := raw.(service.APIKeySlotQueueCache)
+	require.True(t, ok)
+	s.cache = &pr610SlotCache{ConcurrencyCache: raw, APIKeySlotQueueCache: q, s: s}
 	return s
 }
 func (s *pr610TimingScenario) now() time.Time {
@@ -113,14 +119,30 @@ func (s *pr610TimingScenario) block(phase string) {
 }
 func (s *pr610TimingScenario) prepareTurn() {
 	turn := s.turn.Add(1)
+	if s.keyQueue {
+		q := s.cache.(service.APIKeySlotQueueCache)
+		require.NoError(s.t, q.TrackAPIKeySlot(context.Background(), 1801, "pr610-key-holder"))
+	}
 	s.mu.Lock()
 	s.gated = map[string]bool{}
 	s.mu.Unlock()
 	phases := []string{"user", "account"}
+	if s.failover && turn == 2 {
+		phases = append(phases, "switch_account")
+	}
 	if turn == 1 && s.mode == service.OpenAIWSIngressModeCtxPool && !s.poolHolder {
 		phases = append(phases, "pool")
 	}
 	go func() {
+		if s.keyQueue {
+			q := s.cache.(service.APIKeySlotQueueCache)
+			require.Eventually(s.t, func() bool {
+				_, waiting, err := q.GetAPIKeyQueueStats(context.Background(), 1801)
+				return err == nil && waiting == 1
+			}, 3*time.Second, time.Millisecond, "actual Redis key ticket must wait before user slot")
+			s.advance(5 * time.Second)
+			require.NoError(s.t, q.ReleaseAPIKeySlot(context.Background(), 1801, "pr610-key-holder"))
+		}
 		for _, phase := range phases {
 			select {
 			case b := <-s.barriers:
@@ -130,6 +152,9 @@ func (s *pr610TimingScenario) prepareTurn() {
 				d := 10 * time.Second
 				if phase == "account" {
 					d = 20 * time.Second
+				}
+				if phase == "switch_account" {
+					d = 5 * time.Second
 				}
 				s.advance(d)
 				close(b.release)
@@ -177,6 +202,14 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	}
 	payload, err := io.ReadAll(r.Body)
 	require.NoError(s.t, err)
+	if s.failover && s.turn.Load() == 2 && r.Header.Get("Authorization") == "Bearer fixture-account-a" && s.failedSwitch.CompareAndSwap(false, true) {
+		s.advance(7 * time.Second)
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"synthetic pre-generation account refusal"}}`)
+		return true
+	}
 	if s.retry && s.attempts.Add(1) == 1 {
 		s.advance(7 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
@@ -188,7 +221,9 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	s.advance(2 * time.Second)
 	w.Header().Set("Content-Type", "text/event-stream")
 	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_usage_e2e_%d\",\"delta\":\"x\"}\n\n", s.turn.Load())
-	w.(http.Flusher).Flush()
+	flusher, ok := w.(http.Flusher)
+	require.True(s.t, ok)
+	flusher.Flush()
 	s.afterDelta()
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", s.terminal(payload, int(s.turn.Load())))
 	return true
@@ -210,6 +245,7 @@ func (s *pr610TimingScenario) assertReleased() {
 }
 
 type pr610SlotCache struct {
+	service.APIKeySlotQueueCache
 	service.ConcurrencyCache
 	s *pr610TimingScenario
 }
@@ -221,6 +257,9 @@ func (c *pr610SlotCache) AcquireUserSlot(ctx context.Context, id int64, limit in
 	return c.ConcurrencyCache.AcquireUserSlot(ctx, id, limit, member)
 }
 func (c *pr610SlotCache) AcquireAccountSlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
+	if c.s.failover && id == 9902 {
+		c.s.block("switch_account")
+	}
 	if ctx.Value(pr610HolderKey{}) != true {
 		c.s.block("account")
 	}
@@ -398,4 +437,106 @@ func TestPR610AuthenticatedBusyPoolLeaseCountsOnce(t *testing.T) {
 	require.EqualValues(t, 40000, *got.log.QueueWaitMs, "actual busy lease wait and both slot calls count once")
 	require.EqualValues(t, 42000, *got.log.QueueTiming.ServerFirstTokenMs)
 	require.EqualValues(t, 2000, *got.log.FirstTokenMs)
+}
+
+// Each account's snapshot is stable; only the synthetic runtime cooldown mutates.
+type pr610SwitchRepo struct {
+	service.AccountRepository
+	mu       sync.Mutex
+	accounts []service.Account
+}
+
+func (r *pr610SwitchRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]service.Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []service.Account
+	for _, a := range r.accounts {
+		if a.Platform == platform && a.IsSchedulable() {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+func (r *pr610SwitchRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, _ int64, platform string) ([]service.Account, error) {
+	return r.ListSchedulableByPlatform(ctx, platform)
+}
+func (r *pr610SwitchRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range r.accounts {
+		if a.ID == id {
+			copy := a
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+func (r *pr610SwitchRepo) GetOpenAITurnAdmission(ctx context.Context, id int64) (*service.Account, *service.Account, error) {
+	a, err := r.GetByID(ctx, id)
+	return a, nil, err
+}
+func (r *pr610SwitchRepo) SetRateLimited(_ context.Context, id int64, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			r.accounts[i].RateLimitResetAt = &at
+		}
+	}
+	return nil
+}
+func (*pr610SwitchRepo) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
+func (s *pr610TimingScenario) accountRepository(a service.Account) service.AccountRepository {
+	if !s.failover {
+		return &openAIWSUsageHandlerAccountRepoStub{account: a}
+	}
+	a.Priority = 1
+	a.Credentials = map[string]any{"base_url": a.Credentials["base_url"], "api_key": "fixture-account-a"}
+	b := a
+	b.ID = 9902
+	b.Priority = 2
+	b.Credentials = map[string]any{"base_url": a.Credentials["base_url"], "api_key": "fixture-account-b"}
+	return &pr610SwitchRepo{accounts: []service.Account{a, b}}
+}
+func TestPR610AuthenticatedFollowupAccountSwitchKeepsFrameStart(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModeHTTPBridge)
+	s.failover = true
+	s.longFirst = true
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode, authSetup: pr610Auth,
+		firstPayload:  `{"type":"response.create","model":"gpt-5.4","stream":true}`,
+		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`})
+	require.Len(t, got.logs, 2)
+	require.True(t, s.failedSwitch.Load(), "real synthetic 429 must switch the current turn's account")
+	require.EqualValues(t, 9901, got.logs[0].AccountID)
+	require.EqualValues(t, 9902, got.logs[1].AccountID)
+	require.NotNil(t, got.logs[1].QueueTiming)
+	require.EqualValues(t, 42000, *got.logs[1].QueueWaitMs, "retain current frame start over failed 7s attempt and 5s account switch, excluding prior turn")
+	require.EqualValues(t, 44000, *got.logs[1].QueueTiming.ServerFirstTokenMs)
+	require.EqualValues(t, 2000, *got.logs[1].FirstTokenMs)
+}
+
+func TestPR610AuthenticatedRedisKeyQueueAcrossModes(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough} {
+		t.Run(mode, func(t *testing.T) {
+			s := newPR610Scenario(t, mode)
+			s.keyQueue = true
+			got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: mode,
+				authSetup: func(key *service.APIKey, cfg *config.Config) *service.APIKeyService {
+					key.ConcurrencyLimit = 1
+					return pr610Auth(key, cfg)
+				},
+				firstPayload:  `{"type":"response.create","model":"gpt-5.4","stream":true}`,
+				secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`})
+			for i, row := range got.logs {
+				q := 35000
+				if i == 0 && mode == service.OpenAIWSIngressModeCtxPool {
+					q += 10000
+				}
+				require.NotNil(t, row.QueueWaitMs)
+				require.EqualValues(t, q, *row.QueueWaitMs, "actual queued Redis key ticket must count once before slot/pool acquisition")
+				require.NotNil(t, row.QueueTiming)
+				require.EqualValues(t, q+2000, *row.QueueTiming.ServerFirstTokenMs)
+			}
+		})
+	}
 }

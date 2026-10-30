@@ -3059,7 +3059,10 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	if tc.timing != nil {
 		tc.timing.configure(&account, cfg)
 	}
-	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
+	var accountRepo service.AccountRepository = &openAIWSUsageHandlerAccountRepoStub{account: account}
+	if tc.timing != nil {
+		accountRepo = tc.timing.accountRepository(account)
+	}
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, turnCount+1)}
 
 	if len(tc.channelMapping) > 0 {
@@ -3118,7 +3121,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		gatewayConcurrency,
 		service.NewBillingService(cfg, nil),
-		nil,
+		service.NewRateLimitService(accountRepo, nil, cfg, nil, nil),
 		billingCacheSvc,
 		&compositeWSHTTPUpstream{},
 		&service.DeferredService{},
@@ -3133,12 +3136,17 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
 
 	h := &OpenAIGatewayHandler{
+		maxAccountSwitches:  2,
 		cfg:                 cfg,
 		compositeResolver:   tc.compositeResolver,
 		gatewayService:      gatewaySvc,
 		billingCacheService: billingCacheSvc,
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(concurrencyCache), SSEPingFormatNone, time.Second),
+	}
+
+	if tc.timing != nil && tc.timing.keyQueue {
+		h.concurrencyHelper.concurrencyService.SetAPIKeyQueuePolicy(service.APIKeyQueuePolicy{MaxWaiting: 4, Timeout: 10 * time.Second})
 	}
 
 	apiKey := &service.APIKey{

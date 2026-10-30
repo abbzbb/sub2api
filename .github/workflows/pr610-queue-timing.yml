@@ -112,3 +112,57 @@ jobs:
         with:
           name: pr610-behavior-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/pr610-*.log
+
+  ui:
+    if: github.head_ref == 'fix/queue-wait-ttft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
+      BASELINE: 705550f610f1f12666b8efd351a13e612b3956bf
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: Actual timing components and production typecheck/build
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          (cd frontend && pnpm test:run src/components/admin/usage/__tests__/UsageTable.spec.ts src/components/admin/usage/__tests__/UsageTimingDialog.spec.ts && pnpm build) 2>&1 | tee "$RUNNER_TEMP/pr610-ui.log"
+      - name: Isolated synthetic browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pr610-browser" --no-save --ignore-scripts playwright@1.56.1
+          "$RUNNER_TEMP/pr610-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Bilingual before/after table and dialog, desktop/mobile interactions
+        env:
+          PLAYWRIGHT_ROOT: ${{ runner.temp }}/pr610-browser/node_modules/playwright
+          SCREENSHOT_DIR: ${{ runner.temp }}/pr610-screenshots
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/pr610-before-browser"
+          git worktree add --detach "$old" "$BASELINE"
+          trap 'git worktree remove --force "$old"' EXIT
+          ln -s "$GITHUB_WORKSPACE/frontend/node_modules" "$old/frontend/node_modules"
+          VIEW_ROOT="$old" SCREENSHOT_MODE=before node .github/scripts/pr610-screenshots.mjs
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          git diff --exit-code
+          SCREENSHOT_MODE=after node .github/scripts/pr610-screenshots.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr610-ui-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/pr610-ui.log
+            ${{ runner.temp }}/pr610-screenshots
