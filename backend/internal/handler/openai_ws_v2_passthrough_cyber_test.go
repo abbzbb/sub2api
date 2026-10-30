@@ -116,6 +116,7 @@ func newOpenAIWSPassthroughHandlerHarnessWithOptions(t *testing.T, upstreamURL s
 		billingCacheService:      billingCacheSvc,
 		apiKeyService:            &service.APIKeyService{},
 		contentModerationService: moderationSvc,
+		maxAccountSwitches:       cfg.Gateway.MaxAccountSwitches,
 		concurrencyHelper:        NewConcurrencyHelper(service.NewConcurrencyService(concurrencyCache), SSEPingFormatNone, time.Second),
 	}
 

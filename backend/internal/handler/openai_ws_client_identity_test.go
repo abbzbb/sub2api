@@ -72,6 +72,14 @@ func (u issue600LocalHTTPUpstream) DoWithTLS(req *http.Request, proxy string, id
 	return u.Do(req, proxy, id, concurrency)
 }
 
+type issue600SwitchRepo struct {
+	*openAIWSFailoverHandlerAccountRepoStub
+}
+
+// Snapshot writes are irrelevant to the fixed account fixture. Quota cooldown
+// still uses the existing SetRateLimited stub and production runtime blocker.
+func (r *issue600SwitchRepo) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
+
 type issue600FixtureOptions struct {
 	switchAccount bool
 	disableCyber  bool
@@ -124,6 +132,9 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 			observed.mu.Unlock()
 			// A pre-generation refusal is safe for the existing account failover.
 			w.Header().Set("Retry-After", "60")
+			w.Header().Set("x-codex-primary-used-percent", "100")
+			w.Header().Set("x-codex-primary-reset-after-seconds", "60")
+			w.Header().Set("x-codex-primary-window-minutes", "300")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"fixture pre-generation refusal"}}`)
@@ -206,7 +217,7 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 			if a.AuthConnectionID != "" {
 				first.AuthConnectionID = "fixture-other-connection"
 			}
-			*repo = &openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{first, *a}}
+			*repo = &issue600SwitchRepo{&openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{first, *a}}}
 		}
 	})
 	return h, observed
