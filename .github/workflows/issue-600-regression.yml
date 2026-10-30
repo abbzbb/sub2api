@@ -74,7 +74,7 @@ jobs:
             for mode in ctx_pool http_bridge passthrough legacy; do
               for strict in false true; do
                 for namespace in none oauth; do
-                  for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
+                  for scenario in stable_header_body body_only nested_identity omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
                     grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
                   done
                 done
@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git diff --exit-code HEAD
-          go test -race -tags=unit ./internal/handler ./internal/service -run '^(TestIssue600|TestOpenAIWSRevalidation|TestOpenAIWS.*Pricing|TestOpenAIWS.*Key|TestOpenAIWSNextAttempt|TestWSAPIKeySlot|TestWSUserSlot|TestWSHTTPBridge|TestPassthroughIngress|TestOpenAIRPMPassthrough|TestOpenAIResponsesWebSocketV2|TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient|TestProxyOpenAIWSHTTPBridge|TestOpenAIWSHTTPBridge|TestCodexRequestBodyIdentity|TestBuildOpenAIWSHeadersNamespaces|Test.*Codex.*Tool)' -count=1 -v -timeout=20m | tee "$RUNNER_TEMP/issue600-contracts.log"
+          go test -race -tags=unit ./internal/handler ./internal/service -run '^(TestIssue600|TestOpenAIWSRevalidation|TestOpenAIWS.*Pricing|TestOpenAIWS.*Key|TestOpenAIResponsesWebSocket_|TestRefreshOpenAIWSTurnBilling|TestBuildCyberSessionBlockedOpsEntry|TestOpenAIWSRateLimit|TestOpenAIAuth|TestIssue594|TestOpenAIWSNextAttempt|TestWSAPIKeySlot|TestWSUserSlot|TestWSHTTPBridge|TestPassthroughIngress|TestOpenAIRPMPassthrough|TestOpenAIResponsesWebSocketV2|TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient|TestProxyOpenAIWSHTTPBridge|TestOpenAIWSHTTPBridge|TestCodexRequestBodyIdentity|TestBuildOpenAIWSHeadersNamespaces|Test.*Codex.*Tool)' -count=1 -v -timeout=20m | tee "$RUNNER_TEMP/issue600-contracts.log"
           ! grep -E -- '--- SKIP:|no tests to run' "$RUNNER_TEMP/issue600-contracts.log"
           git diff --exit-code HEAD
       - name: PostgreSQL and Redis persistence, queue and session fixtures

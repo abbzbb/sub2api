@@ -65,6 +65,11 @@ func (u issue600LocalHTTPUpstream) DoWithTLS(req *http.Request, proxy string, id
 	return u.Do(req, proxy, id, concurrency)
 }
 
+type issue600FixtureOptions struct {
+	switchAccount bool
+	disableCyber  bool
+}
+
 type issue600Upstream struct {
 	mu              sync.Mutex
 	frames          [][]byte
@@ -91,10 +96,14 @@ func issue600Thread(body []byte) string {
 	}
 	return gjson.GetBytes(body, "response.client_metadata.thread_id").String()
 }
-func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool, headers http.Header, switchAccount ...bool) (*openAIWSPassthroughHandlerHarness, *issue600Upstream) {
+func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool, headers http.Header, options ...issue600FixtureOptions) (*openAIWSPassthroughHandlerHarness, *issue600Upstream) {
 	t.Helper()
 	observed := &issue600Upstream{}
-	failover := len(switchAccount) > 0 && switchAccount[0]
+	opts := issue600FixtureOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	failover := opts.switchAccount
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if failover && r.Header.Get("Authorization") == "Bearer fixture-account-a" {
 			body, err := io.ReadAll(r.Body)
@@ -158,7 +167,11 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: route}
 	t.Cleanup(func() { http.DefaultClient = oldClient })
-	h := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstream.URL, headers, map[string]string{service.SettingKeyCyberSessionIdentityStrictEnabled: strconv.FormatBool(strict)}, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
+	settings := map[string]string{service.SettingKeyCyberSessionIdentityStrictEnabled: strconv.FormatBool(strict)}
+	if opts.disableCyber {
+		settings[service.SettingKeyCyberSessionBlockEnabled] = "false"
+	}
+	h := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstream.URL, headers, settings, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
 		a.Extra["codex_fingerprint_mode"] = "off"
 		a.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 		if namespace != "none" {
@@ -204,7 +217,7 @@ func issue600Send(t *testing.T, h *openAIWSPassthroughHandlerHarness, payload st
 				return
 			}
 			require.Equal(t, "error", gjson.GetBytes(event, "type").String(), "rejected turn must have no response generation: %s", event)
-			require.Contains(t, []string{"cyber_session_identity_conflict", "cyber_session_identity_required"}, gjson.GetBytes(event, "error.code").String())
+			require.Contains(t, []string{"cyber_session_identity_conflict", "cyber_session_identity_invalid", "cyber_session_identity_required"}, gjson.GetBytes(event, "error.code").String())
 			_, _, err = h.clientConn.Read(ctx)
 			require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(err))
 			return
@@ -257,6 +270,7 @@ func TestIssue600ClientIdentityNetwork(t *testing.T) {
 							}{
 								{"stable_header_body", http.Header{"Thread-Id": []string{"fixture-client-thread"}}, stable, stable, false},
 								{"body_only", nil, stable, stable, false},
+								{"nested_identity", nil, `{"type":"response.create","model":"gpt-5.1","response":{"client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}}`, `{"type":"response.create","model":"gpt-5.1","response":{"client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}}`, false},
 								{"omitted_identity", nil, stable, omitted, false},
 								{"static_session_inheritance", http.Header{"Session_id": []string{"fixture-static-session"}}, stable, omitted, false},
 								{"genuine_header_body_conflict", http.Header{"Thread-Id": []string{"fixture-client-thread"}}, stable, changed, true},
@@ -350,7 +364,7 @@ func TestIssue600AccountSwitchBeforeGeneration(t *testing.T) {
 			for _, namespace := range []string{"oauth"} {
 				t.Run(namespace, func(t *testing.T) {
 					headers := http.Header{"Thread-Id": []string{"fixture-client-thread"}}
-					h, up := newIssue600NetworkHarness(t, mode, namespace, true, headers, true)
+					h, up := newIssue600NetworkHarness(t, mode, namespace, true, headers, issue600FixtureOptions{switchAccount: true})
 					issue600Send(t, h, payload, 1, false)
 					issue600Send(t, h, payload, 2, false)
 					issue600Finish(t, h, headers)
@@ -397,6 +411,57 @@ func TestIssue600ManagedConnectionWSBoundary(t *testing.T) {
 					require.Empty(t, frames, "unauthorized WS transport must cause zero upstream generation")
 				})
 			}
+		})
+	}
+}
+
+func TestIssue600InitialIdentityPolicy(t *testing.T) {
+	stable := `{"type":"response.create","model":"gpt-5.1","client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}`
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, strict := range []bool{false, true} {
+				t.Run(strconv.FormatBool(strict), func(t *testing.T) {
+					for _, tc := range []struct{ name, first string }{
+						{"missing", `{"type":"response.create","model":"gpt-5.1","input":"fixture"}`},
+						{"invalid", strings.ReplaceAll(stable, "fixture-client-thread", `fixture\ninvalid`)},
+						{"header_body_conflict", strings.ReplaceAll(stable, "fixture-client-thread", "fixture-conflicting-thread")},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							headers := http.Header{}
+							if tc.name == "header_body_conflict" {
+								headers.Set("thread-id", "fixture-client-thread")
+							}
+							h, up := newIssue600NetworkHarness(t, mode, "oauth", strict, headers)
+							issue600Send(t, h, tc.first, 1, strict)
+							if !strict {
+								issue600Send(t, h, tc.first, 2, false)
+							}
+							issue600Finish(t, h, headers)
+							frames, _ := up.snapshot()
+							want := 2
+							if strict {
+								want = 0
+							}
+							require.Len(t, frames, want, "strict policy must remain unchanged at first-frame admission")
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestIssue600DisabledSessionBlockKeepsIdentityPolicy(t *testing.T) {
+	stable := `{"type":"response.create","model":"gpt-5.1","client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}`
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			headers := http.Header{"Thread-Id": []string{"fixture-client-thread"}}
+			h, up := newIssue600NetworkHarness(t, mode, "oauth", true, headers, issue600FixtureOptions{disableCyber: true})
+			issue600Send(t, h, stable, 1, false)
+			issue600Send(t, h, strings.ReplaceAll(stable, "fixture-client-thread", "fixture-changed-thread"), 2, false)
+			issue600Finish(t, h, headers)
+			frames, _ := up.snapshot()
+			require.Len(t, frames, 2, "disabled session blocking must not acquire a new identity gate")
 		})
 	}
 }
