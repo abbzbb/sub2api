@@ -24,6 +24,7 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
+      ACCOUNT_TIMING_FIXTURES_DIR: ${{ runner.temp }}/timing-proof/fixtures
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
       BASELINE: 77455cf755fa0f119367b911704f11df88e7917e
     steps:
@@ -68,10 +69,57 @@ jobs:
         run: |
           set -euo pipefail
           go test -race -tags=unit ./internal/pkg/requesttiming ./internal/service ./internal/handler/admin -run 'TestAccountConnectionTiming|TestAccountTestService_|TestProcessGeminiStream|TestOpenAIConnectionManagementRejectsAPIKey|TestOpenAIConnectionCreationRejectsMixedCredentials|TestOpenAIConnectionHandlerAccountType' -count=1 -v -timeout=20m 2>&1 | tee "$RUNNER_TEMP/timing-proof/green.log"
+          test -f "$ACCOUNT_TIMING_FIXTURES_DIR/apikey-responses.sse"
+          test -f "$ACCOUNT_TIMING_FIXTURES_DIR/oauth-responses.sse"
           git diff --exit-code HEAD
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: account-timing-backend-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/timing-proof
+          if-no-files-found: error
+
+  frontend:
+    needs: backend
+    if: github.head_ref == 'feat/account-connection-timing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+      ACCOUNT_TIMING_FIXTURES_DIR: ${{ runner.temp }}/handler-proof/fixtures
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: account-timing-backend-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/handler-proof
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - name: Exact source, real components and captured handler events
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p "$RUNNER_TEMP/ui-proof"
+          printf 'exact_head=%s\n' "$EXPECTED_HEAD" | tee "$RUNNER_TEMP/ui-proof/source.txt"
+          test -f "$ACCOUNT_TIMING_FIXTURES_DIR/apikey-responses.sse"
+          pnpm --dir frontend exec vitest run src/components/account/__tests__/AccountConnectionTiming.spec.ts src/components/account/__tests__/AccountTestModal.spec.ts src/components/admin/account/__tests__/AccountTestModal.spec.ts --maxWorkers=1 --minWorkers=1 --reporter=verbose 2>&1 | tee "$RUNNER_TEMP/ui-proof/tests.log"
+          pnpm --dir frontend exec vue-tsc --noEmit 2>&1 | tee "$RUNNER_TEMP/ui-proof/types.log"
+          pnpm --dir frontend exec eslint src/components/account/AccountTestModal.vue src/components/admin/account/AccountTestModal.vue src/components/account/AccountTestTiming.vue src/composables/useAccountTestTiming.ts src/utils/accountTestStream.ts src/components/account/__tests__/AccountConnectionTiming.spec.ts 2>&1 | tee "$RUNNER_TEMP/ui-proof/lint.log"
+          git diff --exit-code HEAD
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: account-timing-ui-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/ui-proof
           if-no-files-found: error

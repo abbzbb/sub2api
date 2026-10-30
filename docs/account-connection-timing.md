@@ -26,6 +26,12 @@
 ## 8. 交付与披露
 尽早发布包含 reviewable 增量的 Draft PR，8 节正文按模板列出完成/未完成与真实验证。Codex 请求模型 gpt-6.1-sol / xhigh，必须由实际 session metadata 核实后披露；Hermes 协调模型 gpt-6.1-sol，推理强度工具未提供。此文件为早期设计而非通过证明。
 
-实现进度：首个增量增加可选 timing SSE 事件与严格白名单投影。新回归先于实现写入，当前未在本机执行；专用 CI 将在隔离基线目录验证 RED，再验证真实 packages 的 GREEN。HTTP 阶段、两处 UI 与扩展回归仍在进行，不能视为已验收。
+实现进度：已提前发布 Draft #602。共用 timing SSE 开始/最终事件；HTTPUpstream 仅测试分支的适配器复用 StartAttempt/StartTransport；四种流解析器在非空白可见文本处调用已有 Output/Stage 与首内容 Mark。Gemini/Claude 的无终止标志 EOF 现在明确报错。两处真实弹窗复用摘要/折叠面板和共享 reader，支持浏览器本地 IANA 时区与 UTC 偏移，取消/换账号/重试/卸载时隔离旧事件并清理 reader。新回归先于相应实现写入；本机未运行任何动态命令。远端已完成首轮隔离基线 RED，GREEN 尚未完成。
 
 实际 session 核实：session 01a18d6e-f0f1-72c1-8e3e-84c145366772 的 turn_context.model=gpt-6.1-sol、effort=xhigh，cwd 匹配本隔离树；未公开原始 session 内容。Hermes 协调 gpt-6.1-sol，推理强度不适用（工具未提供）。Codex 为唯一实现者，未使用子 Agent。
+
+网络阶段只在单次 egress 上呈现；如真实 repository 提供单次物理 HTTP trace，则优先使用该 trace 的连接与响应头边界。多次请求/物理重试显示不可测，collector 达到上限不呈现不完整指标。首内容起点仍是单次上游调用开始，与连接/头等待重叠。非流响应的首内容和流输出不适用。未提供实时解析边界的 gateway/插件/媒体/Realtime 分支不从诊断 content 事件伪造首 token；仅呈现实际观测的网络与生命周期数据。
+
+本地处理严格限定为测试 SSE 事件 JSON 编码，写出前逐段 Observe；时长为不连续片段之和，偏移是外包区间，不含写出/背压/上游等待/最终 timing 事件或未采集处理。它不是整体 CPU 或模型计算时间。
+
+synthetic 验收链：专用 workflow 在 baseline archive 运行原 API 回归核实 RED；精确 head 使用真实 requesttiming/service/admin handler packages 与 repository HTTP transport，通道控制 headers/content/terminal 门；捕获 .sse artifact 后由两处真实 Vue 组件消费，覆盖英文/中文。单独可控 clock 验证具体毫秒与范围，不靠窄 sleep。取消/超时通过可控 context 与真实 HTTP 验证上游和 handler 清理。当前远端结果仍待核查，尚非通过证明。
