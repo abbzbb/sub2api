@@ -15,6 +15,9 @@ func readHostQdisc() qdiscSnapshot {
 		if err == syscall.EAGAIN || err == syscall.ETIMEDOUT {
 			return qdiscSnapshot{status: "timeout"}
 		}
+		if err == syscall.EAFNOSUPPORT || err == syscall.EPROTONOSUPPORT || err == syscall.ENOPROTOOPT || err == syscall.EOPNOTSUPP {
+			return qdiscSnapshot{status: "unsupported"}
+		}
 		return qdiscSnapshot{status: networkReadStatus(err)}
 	}
 	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, syscall.NETLINK_ROUTE)

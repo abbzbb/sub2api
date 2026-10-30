@@ -131,7 +131,7 @@ func (s *hostNetworkSampler) sample(now time.Time, instance string) OpsNetworkPo
 		read = os.ReadFile
 	}
 	c := parseNetworkCounters(read, now)
-	p := OpsNetworkPoint{At: now, Instance: instance, EgressStatus: c.netStatus, TCPStatus: c.tcpStatus, QdiscStatus: "unsupported_unprivileged_collector"}
+	p := OpsNetworkPoint{At: now, Instance: instance, EgressStatus: c.netStatus, TCPStatus: c.tcpStatus, QdiscStatus: "not_collected"}
 	var q qdiscSnapshot
 	if s.readQdisc != nil {
 		q = s.readQdisc()

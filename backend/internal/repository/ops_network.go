@@ -20,7 +20,7 @@ func (r *opsRepository) ReadNetworkSeries(ctx context.Context, start, end time.T
 	return readNetworkSeries(ctx, r.db, start, end)
 }
 func readNetworkSeries(ctx context.Context, db sqlExecutor, start, end time.Time) (*service.OpsNetworkSeries, error) {
-	out := &service.OpsNetworkSeries{Points: []service.OpsNetworkPoint{}, BodyPoints: []service.OpsBodyBytesPoint{}, Scope: "per_process_network_namespace; body_bytes=global_application_observed; no_client_upload_or_qdisc_capability"}
+	out := &service.OpsNetworkSeries{Points: []service.OpsNetworkPoint{}, BodyPoints: []service.OpsBodyBytesPoint{}, Scope: "per_process_network_namespace; qdisc=root_egress_read_only_rtnetlink_deltas; body_bytes=global_application_observed; client_socket_and_upload_not_collected"}
 	rows, err := db.QueryContext(ctx, `SELECT date_trunc('minute',sampled_at),instance_id::text,AVG(egress_mbps),AVG(tcp_retrans_percent),SUM(qdisc_drops),
  CASE WHEN bool_and(egress_status='measured') THEN 'measured' ELSE string_agg(DISTINCT egress_status,',') END,
  CASE WHEN bool_and(tcp_status='measured') THEN 'measured' ELSE string_agg(DISTINCT tcp_status,',') END,

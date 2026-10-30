@@ -37,17 +37,17 @@ Issue 研究是作者单实例的观察，不是普遍因果，也不用于自�
 
 - [670f2b7bb 的完整验收与浏览器证据](https://github.com/ranxi2001/sub2api/actions/runs/41093395359)：UI 命名 RED → GREEN、production build、基线/当前中英桌面移动 usage 页和 network 图截图通过；验证 JSON 的 browserErrors/externalRequests 为空。该候选 lint 定位到测试中未检查的 Flusher 类型断言，后续改为检查 ResponseController.Flush 的返回错误；未将 lint 失败当作行为 RED。
 
-## 追加 #605 的真实链路矩阵（已 ACK，尚未验收）
+## 追加 #605 的真实链路矩阵（实现与远端验收入口）
 
 最新 live #605 已完整读取，包括原交接之后新增的 4 条评论。评论提出区域/协议、排队和智能路由研究；本次遵循追加 brief 的五项验收，不把研究建议当成授权修改生产、启动 probes 或自动协议路由。typed reasoning 仅表示观察到推理协议事件，不证明排队/计算被拆分。
 
 | 项 | 等价覆盖 / 缺口 | 设计 / 实现路径 | 验收与状态 |
 | --- | --- | --- | --- |
-| 605-1/5 typed 三边界 | 已有 first_semantic / first_visible / first_byte，但 semantic 不是 reasoning，visible 含工具和推理摘要 | 在真实 SSE 解析边界区分 item.type=reasoning、reasoning delta 与 output_text；新增 first_reasoning、first_visible_text，不重定义原事件。按物理 attempt JSON → usage/admin/ops SQL/API/真实表格和双语 UI，历史无字段显示 — | mixed message/function_call/reasoning SSE、summary delta、原始 first-byte、真实 repo/handler/UI RED → GREEN；待实现 |
-| 605-2 effort/model | 报表已有 effective effort 但默认反馈 key 只有 account/model/endpoint/group；高级 legacy EWMA 跨模型/effort | 增加精确 observation effort 维度，捕获策略后的实际 effort；默认和高级普通反馈只用相同 model/effort 证据，未知保持中性；报告 account×model×effort 边界 | xhigh/medium/max/unknown 与不同模型隔离、冷启动/权限/重试保持；待实现 |
-| 605-3 capability | 缺少 reasoning streaming 能力来源 | 默认 unknown + source none，不由样本推断，不改变 WS/HTTP、previous_response_id、工具/缓存路由；可仅提供明确未知的只读能力状态 | 未设置能力历史/API/UI unknown，路由不变回归；待实现 |
-| 605-4 socket | 当前只有 host 聚合，不能推断逐请求 socket | client↔server 与 server↔upstream 分开返回 null/source=none；反代/代理的实际 hop 不明时显式 obscured/not_collected。不执行 ss/MTR，不拿 host重传代替 socket证据 | 真实 handler/UI 显式 scope/source/unknown，合成代理场景；待实现 |
-| 603-6 qdisc 补强 | 当前固定 unsupported，父审要求研究安全读取 | 依据 Linux UAPI 的只读 RTM_GETQDISC dump，限定无特权、超时和payload上限，解析 root egress qdisc queue drops；无权限/不支持/截断/reset 显式状态，不调用 tc 或修改配置 | 注入 netlink fixture + collector→storage→handler→UI；远端合成隔离CI，待实现 |
+| 605-1/5 typed 三边界 | 已有 first_semantic / first_visible / first_byte，但 semantic 不是 reasoning，visible 含工具和推理摘要 | 在真实 SSE 解析边界区分 item.type=reasoning、reasoning delta 与 output_text；新增 first_reasoning、first_visible_text，不重定义原事件。按物理 attempt JSON → usage/admin/ops SQL/API/真实表格和双语 UI，历史无字段显示 — | `TestIssue605MixedSSERecordsTypedBoundaries`、native loopback mixed SSE、typed negative/summary delta/first-byte、batch repo/handler/UI RED → GREEN；实现已推送，当前 head CI 见 PR |
+| 605-2 effort/model | 报表已有 effective effort 但默认反馈 key 只有 account/model/endpoint/group；高级 legacy EWMA 跨模型/effort | 增加精确 observation effort 维度，捕获策略后的实际 effort；默认和高级普通反馈只用相同 model/effort 证据，未知保持中性；报告 account×model×effort 边界 | `TestIssue605DefaultAndAdvancedFeedbackEffortIsolation` 与 priority SQL/cache key、xhigh/medium/max/unknown 隔离；实现已推送，当前 head CI 见 PR |
+| 605-3 capability | 缺少 reasoning streaming 能力来源 | 默认 unknown + source none，不由样本推断，不改变 WS/HTTP、previous_response_id、工具/缓存路由；可仅提供明确未知的只读能力状态 | unknown/source none 由 ContentObservation/report/API/真实双语 UI 返回；无推断/路由变更，实现已推送，当前 head CI 见 PR |
+| 605-4 socket | 当前只有 host 聚合，不能推断逐请求 socket | client↔server 与 server↔upstream 分开返回 null/source=none；反代/代理的实际 hop 不明时显式 obscured/not_collected。不执行 ss/MTR，不拿 host重传代替 socket证据 | 真实 usage list/DTO/report、历史/代理 socket evidence 和双语 UI 明确 null/source/scope；实现已推送，当前 head CI 见 PR |
+| 603-6 qdisc 补强 | 原先固定 unsupported，父审要求研究安全读取，现已实现 best effort | 依据 Linux UAPI 的只读 RTM_GETQDISC dump，限定无特权、超时和payload上限，解析 root egress qdisc queue drops；无权限/不支持/截断/reset 显式状态，不调用 tc 或修改配置 | `TestIssue605QdiscRootFixturesAndCollectorDelta` 与 collector→storage→handler→UI；实现已推送，当前 head CI 见 PR |
 
 追加生产增量：typed Content 识别已接真实 SSE scanner/native/passthrough，usage page 批量 repository 读取与 DTO 三边界；分组 SQL 增加 account/public model 与 typed 样本/可见文本分位数；默认/高级普通/priority history 的真实观测链增加 effort（公开模型与策略后请求 effort，max/xhigh 保留独立）key。默认未知 capability/source 与分 hop socket 未采集 envelope 已实现。qdisc root dump 与 fixture/collector delta 测试已实现。上述 #605 与 qdisc 增量等待远端完整 RED/GREEN，不使用前一 SHA 绿灯代替。
 
