@@ -79,16 +79,18 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if result != nil {
 		// openAIQueueWait covers arrival -> wrapper entry; the remainder covers
 		// the inner admission/setup before its forward attempt actually starts.
-		queueWait := openAIQueueWait(meterCtx, forwardStart)
+		queueWait, measured := openAIQueueWait(meterCtx, forwardStart)
 		if result.Duration > 0 {
 			if innerWait := time.Since(forwardStart) - result.Duration; innerWait > 0 {
 				queueWait += innerWait
+				measured = true
 			}
 		}
 		if queueWait > maxOpenAIQueueWait {
 			queueWait = maxOpenAIQueueWait
 		}
 		result.QueueWait = queueWait
+		result.QueueWaitMeasured = measured
 	}
 	if result != nil && c != nil {
 		result.AuthConnectionID = c.GetString("openai_auth_connection_id")

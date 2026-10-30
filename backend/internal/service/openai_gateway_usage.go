@@ -484,7 +484,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
-	if queueWaitMs > 0 {
+	if result.QueueWaitMeasured {
 		usageLog.QueueWaitMs = &queueWaitMs
 	}
 	usageLog.CreatedAt = time.Now()
