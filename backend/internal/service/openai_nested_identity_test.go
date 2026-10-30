@@ -2,8 +2,11 @@ package service
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -71,7 +74,9 @@ func TestIssue600NestedIdentityResolutionPrecedence(t *testing.T) {
 		{"non_response_keeps_existing_view", `{"client_metadata":{"session_id":"root"},"response":{"client_metadata":{"thread_id":"not-an-envelope"}}}`, OpenAIClientSessionIdentityResolved, "session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := InspectOpenAIClientSessionIdentity(newSessionHeaderContext(t, nil), []byte(tc.body))
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			got := InspectOpenAIClientSessionIdentity(c, []byte(tc.body))
 			require.Equal(t, tc.status, got.Status)
 			require.Equal(t, tc.kind, got.Kind)
 			require.Equal(t, OpenAIClientSessionIdentitySourceBody, got.Source)
