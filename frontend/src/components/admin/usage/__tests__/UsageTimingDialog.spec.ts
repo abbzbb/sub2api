@@ -126,3 +126,13 @@ it('PR610 shows separately sampled server totals when legacy passthrough already
   expect(wrapper.text()).not.toContain('62.00s')
   wrapper.unmount()
 })
+
+it('PR610 leaves old queue values without sampled provenance unknown in details', async () => {
+  mocks.get.mockResolvedValue({ traces: [], retention_days: 30 })
+  const wrapper = mount(UsageTimingDialog, { props: { record: { ...row(610), queue_wait_ms: 5_000 } }, ...options })
+  await flushPromises()
+  const queue = wrapper.findAll('div').find(n => n.element.children.length === 2 && n.element.children[0]?.textContent === 'requestTiming.queueWait')
+  expect(queue?.text()).toContain('requestTiming.missing')
+  expect(queue?.text()).not.toContain('5.00s')
+  wrapper.unmount()
+})

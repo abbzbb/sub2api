@@ -36,9 +36,9 @@ try {
   await page.getByText('synthetic-pass',{exact:true}).first().waitFor()
   const pass=page.locator('tbody tr').nth(1)
   const text=await pass.innerText()
-  if(!text.includes(before?'62.00s':'32.00s'))throw new Error('passthrough overlap assertion: '+text)
+  if(!text.includes(before?'1m 2s':'32.00s'))throw new Error('passthrough overlap assertion: '+text)
   if(!before){
-   if(text.includes('62.00s'))throw new Error('queue added twice')
+   if(text.includes('1m 2s'))throw new Error('queue added twice')
    if(await page.getByTestId('typed-content-timing').count()!==2)throw new Error('typed content columns lost')
    if(!(await page.getByTestId('latency-e2e-uncollected').first().getAttribute('title'))?.includes(lang==='en'?'none':'无'))throw new Error('client E2E source must remain none')
   }
@@ -46,7 +46,7 @@ try {
   await pass.getByRole('button',{name:lang==='en'?'Request timing details':'请求耗时详情'}).click()
   const dialog=page.getByRole('dialog');await dialog.waitFor()
   const body=await dialog.innerText()
-  if(!before && (body.includes('62.00s')||!body.includes(lang==='en'?'Server TTFT (including queue)':'服务端首字（含排队）')))throw new Error('dialog server timing label/value lost')
+  if(!before && ((body.includes('62.00s')||body.includes('1m 2s'))||!body.includes(lang==='en'?'Server TTFT (including queue)':'服务端首字（含排队）')))throw new Error('dialog server timing label/value lost')
   await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-desktop.png`),fullPage:true})
   await page.setViewportSize({width:390,height:844})
   await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-mobile.png`),fullPage:true})
