@@ -35,7 +35,16 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git diff --exit-code HEAD
+          for mode in ctx_pool http_bridge passthrough legacy; do
+              for strict in false true; do
+                for namespace in none oauth connection; do
+                  for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
+                    grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
+                  done
+                done
+              done
+            done
+            git diff --exit-code HEAD
           files=(backend/internal/handler/openai_gateway_handler.go backend/internal/service/openai_ws_forwarder.go backend/internal/service/openai_ws_forwarder_ingress.go backend/internal/service/openai_ws_v2_passthrough_adapter.go)
           if [ "$PHASE" = RED ]; then
             for file in "${files[@]}"; do
@@ -45,11 +54,16 @@ jobs:
           {
             echo "candidate=$EXPECTED_HEAD phase=$PHASE baseline=77455cf755fa0f119367b911704f11df88e7917e"
             for file in "${files[@]}"; do
+              if [ "$PHASE" = RED ]; then
+                test "$(git hash-object "$file")" = "$(git rev-parse "77455cf755fa0f119367b911704f11df88e7917e:$file")"
+              else
+                test "$(git hash-object "$file")" = "$(git rev-parse "$EXPECTED_HEAD:$file")"
+              fi
               echo "$file blob=$(git hash-object "$file") candidate=$(git rev-parse "$EXPECTED_HEAD:$file") baseline=$(git rev-parse "77455cf755fa0f119367b911704f11df88e7917e:$file")"
             done
           } | tee "$RUNNER_TEMP/issue600-source-$PHASE.log"
           set +e
-          (cd backend && go test -tags=unit ./internal/handler -run '^TestIssue600ClientIdentityNetwork$' -count=1 -v -timeout=8m) > "$RUNNER_TEMP/issue600-$PHASE.log" 2>&1
+          (cd backend && go test -tags=unit ./internal/handler -run '^TestIssue600' -count=1 -v -timeout=8m) > "$RUNNER_TEMP/issue600-$PHASE.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/issue600-$PHASE.log"
@@ -58,13 +72,64 @@ jobs:
             test "$result" -ne 0
             grep -q -- '--- FAIL: TestIssue600ClientIdentityNetwork/' "$RUNNER_TEMP/issue600-$PHASE.log"
             grep -q 'stable original client identity must admit turn 2' "$RUNNER_TEMP/issue600-$PHASE.log"
+            grep -q 'cyber_session_identity_conflict' "$RUNNER_TEMP/issue600-$PHASE.log"
+            for mode in ctx_pool http_bridge passthrough legacy; do
+              grep -q -- "--- FAIL: TestIssue600ClientIdentityNetwork/$mode/strict=false/oauth/stable_header_body" "$RUNNER_TEMP/issue600-$PHASE.log"
+              grep -q -- "--- FAIL: TestIssue600ClientIdentityNetwork/$mode/strict=true/oauth/body_only" "$RUNNER_TEMP/issue600-$PHASE.log"
+            done
           else
             test "$result" -eq 0
             grep -q -- '--- PASS: TestIssue600ClientIdentityNetwork ' "$RUNNER_TEMP/issue600-$PHASE.log"
+            for mode in ctx_pool http_bridge passthrough legacy; do
+              for strict in false true; do
+                for namespace in none oauth connection; do
+                  for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
+                    grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
+                  done
+                done
+              done
+            done
             git diff --exit-code HEAD
           fi
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: issue600-${{ matrix.phase }}-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/issue600-*.log
+
+  preserved-contracts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Exact-head race checked admission, billing, resources, tools and continuation
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --exit-code HEAD
+          go test -race -tags=unit ./internal/handler ./internal/service -run '^(TestIssue600|TestOpenAIWSRevalidation|TestOpenAIWS.*Pricing|TestOpenAIWS.*Key|TestOpenAIWSNextAttempt|TestWSAPIKeySlot|TestWSUserSlot|TestWSHTTPBridge|TestPassthroughIngress|TestOpenAIRPMPassthrough|TestOpenAIResponsesWebSocketV2|TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient|TestProxyOpenAIWSHTTPBridge|TestOpenAIWSHTTPBridge|TestCodexRequestBodyIdentity|TestBuildOpenAIWSHeadersNamespaces|Test.*Codex.*Tool)' -count=1 -v -timeout=20m | tee "$RUNNER_TEMP/issue600-contracts.log"
+          ! grep -E -- '--- SKIP:|no tests to run' "$RUNNER_TEMP/issue600-contracts.log"
+          git diff --exit-code HEAD
+      - name: PostgreSQL and Redis persistence, queue and session fixtures
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          go test -tags=integration ./internal/repository -run '^(TestUsageLog_SessionIDPersistence|TestUserMsgQueueCacheSuite|TestConcurrencyCacheSuite|TestSessionLimitCache)' -count=1 -v -timeout=15m | tee "$RUNNER_TEMP/issue600-pg-redis.log"
+          grep -q -- '--- PASS: TestUsageLog_SessionIDPersistence ' "$RUNNER_TEMP/issue600-pg-redis.log"
+          ! grep -E -- '--- SKIP:|no tests to run' "$RUNNER_TEMP/issue600-pg-redis.log"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: issue600-contracts-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/issue600-*.log

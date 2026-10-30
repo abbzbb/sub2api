@@ -808,6 +808,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	parseClientPayload := func(turn int, raw []byte) (openAIWSClientPayload, error) {
+		clientPayloadRaw := append([]byte(nil), raw...)
 		trimmed := bytes.TrimSpace(raw)
 		if len(trimmed) == 0 {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "empty websocket request payload", nil)
@@ -1059,7 +1060,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		ingressSessionOriginalModel = originalModel
 
 		return openAIWSClientPayload{
-			clientPayloadRaw:         append([]byte(nil), raw...),
+			clientPayloadRaw:         clientPayloadRaw,
 			payloadRaw:               normalized,
 			accountIdentitySourceRaw: accountIdentitySourceRaw,
 			rawForHash:               trimmed,
