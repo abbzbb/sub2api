@@ -51,7 +51,7 @@ try {
   const bounds=await dialog.boundingBox()
   if(!bounds||bounds.x<0||bounds.x+bounds.width>1441)throw new Error('dialog did not settle inside desktop viewport')
   const body=await dialog.innerText()
-  if(!before && ((body.includes('62.00s')||body.includes('1m 2s'))||!body.includes(lang==='en'?'Server TTFT (including queue)':'服务端首字（含排队）')))throw new Error('dialog server timing label/value lost')
+  if(!before && ((body.includes('62.00s')||body.includes('1m 2s'))||!body.includes(lang==='en'?'Server TTFT (including pre-forward wait)':'服务端首字（含转发前等待）')))throw new Error('dialog server timing label/value lost')
   await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-desktop.png`),fullPage:true,animations:'disabled'})
   await page.setViewportSize({width:390,height:844})
   await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-mobile.png`),fullPage:true,animations:'disabled'})

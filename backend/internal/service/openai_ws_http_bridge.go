@@ -698,6 +698,17 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			mappedModelBytes = []byte(mappedModel)
 		}
 	}
+	forwardStartedAt := forwardStart
+	if forwardStartedAt.IsZero() {
+		forwardStartedAt = turnStart
+	}
+	queueWait := forwardStartedAt.Sub(turnStart)
+	if queueWait < 0 {
+		queueWait = 0
+	}
+	if queueWait > maxOpenAIQueueWait {
+		queueWait = maxOpenAIQueueWait
+	}
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
@@ -718,6 +729,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			ResponseHeaders:               cloneHeader(resp.Header),
 			Duration:                      requesttiming.Now(ctx).Sub(turnStart),
 			FirstTokenMs:                  firstTokenMs,
+			QueueWait:                     queueWait,
+			QueueWaitMeasured:             true,
 		}
 		applyOpenAIQueueTiming(result, openAIWSQueueArrival(ctx), forwardStart, turnStart, "ws_frame_http_bridge", "first_forward_including_internal_retries")
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {

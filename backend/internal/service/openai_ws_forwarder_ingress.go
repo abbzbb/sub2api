@@ -1731,6 +1731,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
+		// Capture the turn before account admission so the usage row can keep
+		// the admission wait separate from the forward-scope first token.
+		turnArrivedAt := time.Now()
 		latest, admissionErr := s.admitOpenAITurn(ctx, c, account, extractOpenAICodexTicketModel(payload), payload)
 		if admissionErr == nil {
 			admissionErr = s.checkOpenAIWSBinding(latest, extractOpenAICodexTicketModel(payload), lease.conn.turnBinding)
@@ -2049,6 +2052,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					)
 				}
 				imageCount := imageCounter.Count()
+				queueWait := turnStart.Sub(turnArrivedAt)
+				if queueWait < 0 {
+					queueWait = 0
+				}
+				if queueWait > maxOpenAIQueueWait {
+					queueWait = maxOpenAIQueueWait
+				}
 				result := &OpenAIForwardResult{
 					RequestID:                     responseID,
 					Usage:                         usage,
@@ -2066,6 +2076,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					ResponseHeaders:               lease.HandshakeHeaders(),
 					Duration:                      requesttiming.Now(ctx).Sub(turnStart),
 					FirstTokenMs:                  firstTokenMs,
+					QueueWait:                     queueWait,
+					QueueWaitMeasured:             true,
 				}
 				applyOpenAIQueueTiming(result, turnArrivedAt, turnStart, turnStart, "ws_frame_ctx_pool", "pre_final_forward")
 				if replayInput := replayCollector.Items(); len(replayInput) > 0 {
