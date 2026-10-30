@@ -191,7 +191,9 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	t.Cleanup(upstream.Close)
 	target, err := url.Parse(upstream.URL)
 	require.NoError(t, err)
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok, "fixture requires the standard HTTP transport")
+	transport = transport.Clone()
 	t.Cleanup(transport.CloseIdleConnections)
 	route := issue600LocalTransport{target: target, transport: transport}
 	oldClient := http.DefaultClient
