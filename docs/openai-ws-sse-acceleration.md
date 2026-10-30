@@ -5,7 +5,7 @@
 ## 使用条件
 
 1. 编辑普通 OpenAI OAuth 账号，将 WS mode 设为「上下文池」，关闭「自动透传」，开启「HTTP 流式 WS 加速」并保存。
-2. 网关已有的 `gateway.openai_ws.enabled`、`oauth_enabled`、`responses_websockets_v2` 必须开启，账号及全局 `force_http` 不能开启。
+2. 网关已有的 `gateway.openai_ws.enabled`、`oauth_enabled`、`responses_websockets_v2` 必须开启，账号及全局 `force_http` 不能开启；账号级 WS mode 还需要 `gateway.openai_ws.mode_router_v2_enabled=true`，否则会按 legacy `ctx_pool` 处理。
 3. 客户端使用 HTTP Responses 且 `stream: true`。非流式、`/responses/compact`、Messages 兼容桥接及携带非空 `previous_response_id` 的请求继续使用原传输。
 
 数据库字段为 `accounts.extra.openai_oauth_ws_sse_acceleration`，仅布尔值 `true` 启用，不需要数据库迁移。连接数、超时、账号代理和会话隔离沿用已有 WS 配置。自动透传账号继续走自己的 HTTP 转发链；已绑定的 OAuth 出站传输插件优先，不会被这个开关绕过。API Key、setup-token、影子账号、Agent Identity、PAT 和 BPS 协议不由此开关切换传输。
@@ -29,3 +29,7 @@
 | 修改前 | 修改后（已开启） |
 | --- | --- |
 | [修改前账号传输设置](https://github.com/ranxi2001/sub2api/blob/297e9201a2f6d6fe70073b370a5b71f49579accf/docs/screenshots/ws-sse-acceleration/before.png) | [新增 HTTP 流式 WS 加速开关](https://github.com/ranxi2001/sub2api/blob/297e9201a2f6d6fe70073b370a5b71f49579accf/docs/screenshots/ws-sse-acceleration/after.png) |
+
+## 相关文档
+
+- [OpenAI Responses WebSocket 模式（WS mode）](openai-ws-mode.md)：模式、账号字段、连接池和 1013 排障。
