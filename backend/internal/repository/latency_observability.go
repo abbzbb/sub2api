@@ -79,6 +79,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
 ), boundaries AS (
  SELECT *,CASE WHEN jsonb_typeof(a->'start_ms')='number' THEN (a->>'start_ms')::numeric END started,
  CASE WHEN jsonb_typeof(a->'end_ms')='number' THEN (a->>'end_ms')::numeric END ended,
+ CASE WHEN jsonb_typeof(detail->'total_ms')='number' THEN (detail->>'total_ms')::numeric END request_ended,
  CASE WHEN jsonb_typeof(a->'events'->'headers_written')='number' THEN (a->'events'->>'headers_written')::numeric END headers,
  CASE WHEN jsonb_typeof(a->'events'->'request_written')='number' THEN (a->'events'->>'request_written')::numeric
  WHEN jsonb_typeof(a->'events'->'wrote_request')='number' THEN (a->'events'->>'wrote_request')::numeric END written,
@@ -89,23 +90,23 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  CASE WHEN jsonb_typeof(a->'events'->'first_byte')='number' THEN (a->'events'->>'first_byte')::numeric END byte_first
  FROM attempts
 ), measured AS (
- SELECT *,CASE WHEN started>=0 AND headers>=started AND written>=headers AND ended>=written AND NOT (a->'events' ? 'request_write_failed') THEN written-headers END upload
+ SELECT *,CASE WHEN ended IS NOT NULL THEN GREATEST(ended,request_ended) END parsed_ended,CASE WHEN started>=0 AND headers>=started AND written>=headers AND ended>=written AND NOT (a->'events' ? 'request_write_failed') THEN written-headers END upload
  FROM boundaries
 ), samples AS (
  SELECT body_bucket,cache,effort,account_id,model,COUNT(*) attempts,COUNT(upload) uploads,AVG(upload)::float8 upload_avg,
- COUNT(*) FILTER (WHERE upload IS NOT NULL AND semantic>=written AND ended>=semantic) waits,
- AVG(CASE WHEN upload IS NOT NULL AND semantic>=written AND ended>=semantic THEN semantic-written END)::float8 wait_avg,
- COUNT(*) FILTER (WHERE upload IS NOT NULL AND visible>=written AND ended>=visible) visibles,
- AVG(CASE WHEN upload IS NOT NULL AND visible>=written AND ended>=visible THEN visible-written END)::float8 visible_avg,
- COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=ended) reasonings,
- AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=ended THEN reasoning END)::float8 reasoning_avg,
- COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) texts,
- AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended THEN text_first END)::float8 text_avg,
+ COUNT(*) FILTER (WHERE upload IS NOT NULL AND semantic>=written AND parsed_ended>=semantic) waits,
+ AVG(CASE WHEN upload IS NOT NULL AND semantic>=written AND parsed_ended>=semantic THEN semantic-written END)::float8 wait_avg,
+ COUNT(*) FILTER (WHERE upload IS NOT NULL AND visible>=written AND parsed_ended>=visible) visibles,
+ AVG(CASE WHEN upload IS NOT NULL AND visible>=written AND parsed_ended>=visible THEN visible-written END)::float8 visible_avg,
+ COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=parsed_ended) reasonings,
+ AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=parsed_ended THEN reasoning END)::float8 reasoning_avg,
+ COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=parsed_ended) texts,
+ AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=parsed_ended THEN text_first END)::float8 text_avg,
  COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND byte_first>=started AND byte_first<=ended) bytes,
  AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND byte_first>=started AND byte_first<=ended THEN byte_first END)::float8 byte_avg,
- percentile_cont(.5) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p50,
- percentile_cont(.9) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p90,
- percentile_cont(.99) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p99
+ percentile_cont(.5) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=parsed_ended) text_p50,
+ percentile_cont(.9) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=parsed_ended) text_p90,
+ percentile_cont(.99) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=parsed_ended) text_p99
  FROM measured GROUP BY body_bucket,cache,effort,account_id,model
 )
  SELECT c.body_bucket,c.cache,c.effort,c.requests,c.traces,COALESCE(s.attempts,0),COALESCE(s.uploads,0),COALESCE(s.waits,0),COALESCE(s.visibles,0),

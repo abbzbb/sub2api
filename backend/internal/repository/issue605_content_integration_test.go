@@ -23,7 +23,7 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	k := mustCreateApiKey(t, client, &service.APIKey{UserID: u.ID, Key: "synthetic605", Name: "synthetic"})
 	a := mustCreateAccount(t, client, &service.Account{Name: "synthetic605", Platform: service.PlatformOpenAI})
 	now := time.Now().UTC().Add(-time.Minute)
-	end := 1000.0
+	end := 50.0
 	var ids []int64
 	for i, effort := range []string{"xhigh", "medium"} {
 		latency := 100 + i*200
@@ -31,7 +31,7 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 		_, err := repo.Create(ctx, usage)
 		require.NoError(t, err)
 		ids = append(ids, usage.ID)
-		s := requesttiming.Snapshot{Attempts: []requesttiming.Attempt{{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, ProxyID: 2, Events: map[string]float64{"first_byte": 10, "first_reasoning": float64(latency), "first_visible_text": float64(latency + 100)}}}}
+		s := requesttiming.Snapshot{TotalMS: 1000, Attempts: []requesttiming.Attempt{{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, ProxyID: 2, Events: map[string]float64{"first_byte": 10, "first_reasoning": float64(latency), "first_visible_text": float64(latency + 100)}}}}
 		raw, err := json.Marshal(s)
 		require.NoError(t, err)
 		_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)VALUES($1,$2,$3::jsonb)`, usage.ID, uuid.NewString(), string(raw))
@@ -61,7 +61,7 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.Equal(t, 100.0, signals[a.ID].P90TTFTMs, "different effort must not enter the priority history latency population")
 	// A failed earlier attempt on another account must not enter the billed
 	// account's typed latency population, even though upload components remain.
-	mixed := requesttiming.Snapshot{Attempts: []requesttiming.Attempt{
+	mixed := requesttiming.Snapshot{TotalMS: 1000, Attempts: []requesttiming.Attempt{
 		{Kind: "http", AccountID: a.ID + 99, StartMS: 0, EndMS: &end, Events: map[string]float64{"first_reasoning": 900, "first_visible_text": 950}},
 		{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, Events: map[string]float64{"first_byte": 10, "first_reasoning": 100, "first_visible_text": 200}},
 	}}

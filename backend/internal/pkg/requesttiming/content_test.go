@@ -58,3 +58,15 @@ func TestIssue605HistoricalAndProxySocketEvidenceStaysUnknown(t *testing.T) {
 	require.Equal(t, "proxy_obscured", v.UpstreamSocket.Status)
 	require.Nil(t, v.UpstreamSocket.MinRTTMS)
 }
+
+func TestIssue605ContentAfterTransportEOFKeepsParserObservation(t *testing.T) {
+	end := 100.0
+	s := Snapshot{TotalMS: 300, Attempts: []Attempt{{Kind: "http", StartMS: 0, EndMS: &end, Events: map[string]float64{"headers_written": 10, "request_written": 20, "first_byte": 30, "first_reasoning": 150, "first_visible_text": 200, "first_semantic": 150, "first_visible": 200}}}}
+	v := DeriveContentObservation(s)
+	require.NotNil(t, v.ReasoningFirstMS, "buffered SSE may be parsed after transport EOF")
+	require.Equal(t, 150.0, *v.ReasoningFirstMS, "buffered SSE may be parsed after transport EOF")
+	require.Equal(t, 200.0, *v.VisibleTextFirstMS)
+	require.Equal(t, 130.0, *DeriveLatency(s).Attempts[0].SemanticWait.MS)
+	s.Attempts[0].Events["first_reasoning"] = 400
+	require.Nil(t, DeriveContentObservation(s).ReasoningFirstMS, "request completion still bounds parser events")
+}

@@ -52,3 +52,5 @@ Issue 研究是作者单实例的观察，不是普遍因果，也不用于自�
 追加生产增量：typed Content 识别已接真实 SSE scanner/native/passthrough，usage page 批量 repository 读取与 DTO 三边界；分组 SQL 增加 account/public model 与 typed 样本/可见文本分位数；默认/高级普通/priority history 的真实观测链增加 effort（公开模型与策略后请求 effort，max/xhigh 保留独立）key。默认未知 capability/source 与分 hop socket 未采集 envelope 已实现。qdisc root dump 与 fixture/collector delta 测试已实现。上述 #605 与 qdisc 增量等待远端完整 RED/GREEN，不使用前一 SHA 绿灯代替。
 
 #605 typed 分组与列表仅选择最终物理 HTTP attempt，且分组要求其账号与用量/trace 账号匹配；前面切换的失败账号不被归入最终账号的 reasoning/text 分位数。旧首字上传组件保留全 attempt 诊断语义。已补真实 loopback HTTP/SSE native handler 的 first_byte→typed reasoning→output_text 顺序和 mixed-account PG 分位数隔离回归。
+
+真实 native loopback SSE 发现 transport EOF 可早于缓冲区事件解析，导致把有效 typed 内容错判为缺失；已保持上传/first-byte 的 transport 边界，同时把 semantic/visible/typed parser 上界绑定到真实完成请求（要求已知 transport end），不把 EOF 当解析结束。新增旧 content.go blob 的命名行为 RED、buffered EOF native/PG 回归；该失败不是生产探测或 prefill 推断。

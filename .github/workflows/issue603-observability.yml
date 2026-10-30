@@ -133,6 +133,25 @@ jobs:
           ! grep -Eq 'build failed|undefined:|no tests to run|panic:|setup failed' "$RUNNER_TEMP/issue605-effort-red.log"
           grep -F -- '--- FAIL: TestIssue605DefaultAndAdvancedFeedbackEffortIsolation' "$RUNNER_TEMP/issue605-effort-red.log"
           grep -F 'default feedback must isolate effort populations' "$RUNNER_TEMP/issue605-effort-red.log"
+      - name: RED - old transport EOF bound must lose buffered parser observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/issue605-eof-red"
+          git worktree add --detach "$old" "$SOURCE_HEAD"
+          trap 'git worktree remove --force "$old"' EXIT
+          file=backend/internal/pkg/requesttiming/content.go
+          git -C "$old" restore --source=b45cd37e3ccaa71c1fcfa2a3791ff9b9524bd9e8 -- "$file"
+          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "b45cd37e3ccaa71c1fcfa2a3791ff9b9524bd9e8:$file")"
+          set +e
+          (cd "$old/backend" && go test ./internal/pkg/requesttiming -run '^TestIssue605ContentAfterTransportEOFKeepsParserObservation$' -count=1 -v) > "$RUNNER_TEMP/issue605-eof-red.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/issue605-eof-red.log"
+          test "$result" -ne 0
+          ! grep -Eq 'build failed|undefined:|no tests to run|panic:|setup failed' "$RUNNER_TEMP/issue605-eof-red.log"
+          grep -F -- '--- FAIL: TestIssue605ContentAfterTransportEOFKeepsParserObservation' "$RUNNER_TEMP/issue605-eof-red.log"
+          grep -F 'buffered SSE may be parsed after transport EOF' "$RUNNER_TEMP/issue605-eof-red.log"
       - name: GREEN - clean candidate real collector, scheduler, handlers, repository packages
         shell: bash
         run: |

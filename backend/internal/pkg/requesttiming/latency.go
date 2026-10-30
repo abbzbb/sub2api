@@ -87,6 +87,15 @@ func DeriveLatency(s Snapshot) LatencySummary {
 		}
 		item.SemanticWait = attemptInterval(*a, written, "first_semantic")
 		item.VisibleWait = attemptInterval(*a, written, "first_visible")
+		// Network EOF can precede parsing buffered SSE data. Parser timestamps
+		// remain bounded by the completed request, not the transport read EOF.
+		if a.EndMS != nil && finite(*a.EndMS) && finite(s.TotalMS) && s.TotalMS > *a.EndMS {
+			parsed := *a
+			end := s.TotalMS
+			parsed.EndMS = &end
+			item.SemanticWait = attemptInterval(parsed, written, "first_semantic")
+			item.VisibleWait = attemptInterval(parsed, written, "first_visible")
+		}
 		item.ResponseWait = attemptInterval(*a, written, "response_headers")
 		if item.Upload.Status != "measured" {
 			item.SemanticWait = Measurement{Status: item.Upload.Status}
