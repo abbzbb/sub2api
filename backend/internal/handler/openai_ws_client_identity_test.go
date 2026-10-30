@@ -66,9 +66,11 @@ func (u issue600LocalHTTPUpstream) DoWithTLS(req *http.Request, proxy string, id
 }
 
 type issue600Upstream struct {
-	mu      sync.Mutex
-	frames  [][]byte
-	headers []http.Header
+	mu              sync.Mutex
+	frames          [][]byte
+	headers         []http.Header
+	rejectedHeaders []http.Header
+	rejectedBodies  [][]byte
 }
 
 func (u *issue600Upstream) record(r *http.Request, body []byte) int {
@@ -89,10 +91,28 @@ func issue600Thread(body []byte) string {
 	}
 	return gjson.GetBytes(body, "response.client_metadata.thread_id").String()
 }
-func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool, headers http.Header) (*openAIWSPassthroughHandlerHarness, *issue600Upstream) {
+func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool, headers http.Header, switchAccount ...bool) (*openAIWSPassthroughHandlerHarness, *issue600Upstream) {
 	t.Helper()
 	observed := &issue600Upstream{}
+	failover := len(switchAccount) > 0 && switchAccount[0]
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failover && r.Header.Get("Authorization") == "Bearer fixture-account-a" {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			observed.mu.Lock()
+			observed.rejectedHeaders = append(observed.rejectedHeaders, r.Header.Clone())
+			observed.rejectedBodies = append(observed.rejectedBodies, body)
+			observed.mu.Unlock()
+			// A pre-generation refusal is safe for the existing account failover.
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"fixture pre-generation refusal"}}`)
+			return
+		}
 		completed := func(n int) []byte {
 			return []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_issue600_%d","model":"gpt-5.1","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1}}}`, n))
 		}
@@ -138,7 +158,7 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: route}
 	t.Cleanup(func() { http.DefaultClient = oldClient })
-	h := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstream.URL, headers, map[string]string{service.SettingKeyCyberSessionIdentityStrictEnabled: strconv.FormatBool(strict)}, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream) {
+	h := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstream.URL, headers, map[string]string{service.SettingKeyCyberSessionIdentityStrictEnabled: strconv.FormatBool(strict)}, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
 		a.Extra["codex_fingerprint_mode"] = "off"
 		a.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 		if namespace != "none" {
@@ -148,12 +168,26 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 			a.Extra["openai_oauth_responses_websockets_v2_enabled"] = true
 			a.Extra["openai_oauth_responses_websockets_v2_mode"] = mode
 			cfg.Gateway.OpenAIWS.OAuthEnabled = true
-			if strings.HasPrefix(namespace, "connection") {
-				a.AuthConnectionID = "fixture-authorized-" + namespace
+			if namespace == "managed" {
+				a.AuthConnectionID = "11111111-1111-4111-8111-111111111111"
+				a.Extra["openai_connections_managed"] = true
 			}
 		}
 		cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = mode != "legacy"
 		*up = issue600LocalHTTPUpstream{HTTPUpstream: testutil.NewRealHTTPUpstream(cfg), route: route}
+		if failover {
+			cfg.Gateway.MaxAccountSwitches = 2
+			a.Priority = 2
+			a.Credentials["access_token"] = "fixture-account-b"
+			first := *a
+			first.ID = a.ID + 1
+			first.Priority = 1
+			first.Credentials = map[string]any{"access_token": "fixture-account-a", "chatgpt_account_id": "fixture-other-account"}
+			if a.AuthConnectionID != "" {
+				first.AuthConnectionID = "fixture-other-connection"
+			}
+			*repo = &openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{first, *a}}
+		}
 	})
 	return h, observed
 }
@@ -213,7 +247,7 @@ func TestIssue600ClientIdentityNetwork(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			for _, strict := range []bool{false, true} {
 				t.Run("strict="+strconv.FormatBool(strict), func(t *testing.T) {
-					for _, namespace := range []string{"none", "oauth", "connection"} {
+					for _, namespace := range []string{"none", "oauth"} {
 						t.Run(namespace, func(t *testing.T) {
 							for _, tc := range []struct {
 								name          string
@@ -273,7 +307,7 @@ func TestIssue600NamespaceAccountBoundaries(t *testing.T) {
 	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
 		t.Run(mode, func(t *testing.T) {
 			var identities []string
-			for _, namespace := range []string{"oauth-a", "oauth-b", "connection-a", "connection-b"} {
+			for _, namespace := range []string{"oauth-a", "oauth-b"} {
 				// Each selection uses an independent connection. A client cannot move its
 				// namespace into another selected credential, even with identical input.
 				t.Run(namespace, func(t *testing.T) {
@@ -305,4 +339,64 @@ func TestIssue600WSTurnRejectionDiagnostic(t *testing.T) {
 	require.Contains(t, entry.ErrorMessage, "websocket turn rejected during session identity admission")
 	require.NotContains(t, entry.ErrorMessage, "before account selection")
 	require.Contains(t, entry.ErrorMessage, "session_identity_status=conflict")
+}
+
+// The first selected credential refuses before generation. The same downstream
+// connection then gets two completed turns from a different selected credential.
+func TestIssue600AccountSwitchBeforeGeneration(t *testing.T) {
+	payload := `{"type":"response.create","model":"gpt-5.1","client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}`
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, namespace := range []string{"oauth"} {
+				t.Run(namespace, func(t *testing.T) {
+					headers := http.Header{"Thread-Id": []string{"fixture-client-thread"}}
+					h, up := newIssue600NetworkHarness(t, mode, namespace, true, headers, true)
+					issue600Send(t, h, payload, 1, false)
+					issue600Send(t, h, payload, 2, false)
+					issue600Finish(t, h, headers)
+					frames, outHeaders := up.snapshot()
+					require.Len(t, frames, 2, "only the replacement account generates, once per turn")
+					up.mu.Lock()
+					rejectedHeaders := append([]http.Header(nil), up.rejectedHeaders...)
+					rejectedBodies := append([][]byte(nil), up.rejectedBodies...)
+					up.mu.Unlock()
+					require.Len(t, rejectedHeaders, 1, "exactly one pre-generation refusal, no blind replay")
+					projected := issue600Thread(frames[0])
+					require.NotEqual(t, "fixture-client-thread", projected)
+					require.NotEqual(t, rejectedHeaders[0].Get("thread-id"), projected, "account switch must rotate outbound namespace")
+					if mode == service.OpenAIWSIngressModeHTTPBridge {
+						require.Equal(t, rejectedHeaders[0].Get("thread-id"), issue600Thread(rejectedBodies[0]))
+					}
+					for i, frame := range frames {
+						require.Equal(t, projected, issue600Thread(frame), "replacement must scope the original, never the prior projected identity")
+						require.Equal(t, projected, outHeaders[i].Get("thread-id"))
+						require.Equal(t, "Bearer fixture-account-b", outHeaders[i].Get("Authorization"))
+					}
+				})
+			}
+		})
+	}
+}
+
+// Managed connections intentionally have no WS ingress capability at this base.
+// Preserve this account-selection fence instead of fabricating a usable grant.
+func TestIssue600ManagedConnectionWSBoundary(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, strict := range []bool{false, true} {
+				t.Run(strconv.FormatBool(strict), func(t *testing.T) {
+					headers := http.Header{"Thread-Id": []string{"fixture-client-thread"}}
+					h, up := newIssue600NetworkHarness(t, mode, "managed", strict, headers)
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					require.NoError(t, h.clientConn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}`)))
+					_, _, err := h.clientConn.Read(ctx)
+					require.Equal(t, coderws.StatusTryAgainLater, coderws.CloseStatus(err), "managed connections must remain excluded from WS scheduling")
+					issue600Finish(t, h, headers)
+					frames, _ := up.snapshot()
+					require.Empty(t, frames, "unauthorized WS transport must cause zero upstream generation")
+				})
+			}
+		})
+	}
 }

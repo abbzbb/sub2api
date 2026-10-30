@@ -73,7 +73,7 @@ jobs:
             grep -q -- '--- PASS: TestIssue600ClientIdentityNetwork ' "$RUNNER_TEMP/issue600-$PHASE.log"
             for mode in ctx_pool http_bridge passthrough legacy; do
               for strict in false true; do
-                for namespace in none oauth connection; do
+                for namespace in none oauth; do
                   for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
                     grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
                   done
