@@ -2,13 +2,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AccountModal from '../AccountTestModal.vue'
 import AdminModal from '../../admin/account/AccountTestModal.vue'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
 
-vi.mock('@/api/admin', () => ({ adminAPI: { accounts: { getAvailableModels: vi.fn().mockResolvedValue([{ id: 'synthetic-model', display_name: 'Synthetic' }]) } } }))
+const { getAvailableModels } = vi.hoisted(() => ({ getAvailableModels: vi.fn() }))
+vi.mock('@/api/admin', () => ({ adminAPI: { accounts: { getAvailableModels } } }))
 vi.mock('@/composables/useClipboard', () => ({ useClipboard: () => ({ copyToClipboard: vi.fn() }) }))
 
 const fixtureDirectory = process.env.ACCOUNT_TIMING_FIXTURES_DIR
@@ -38,6 +39,9 @@ function mountModal(component: typeof AccountModal, locale = 'en') {
   })
 }
 
+beforeEach(() => {
+  getAvailableModels.mockReset().mockResolvedValue([{ id: 'synthetic-model', display_name: 'Synthetic' }])
+})
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 for (const [name, component] of [['account', AccountModal], ['admin', AdminModal]] as const) {
@@ -117,7 +121,7 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
 
     describe.skipIf(!fixtureDirectory)('captured real handler → service → synthetic HTTP/SSE → UI', () => {
       for (const locale of ['en', 'zh']) {
-        for (const scenario of ['apikey-responses', 'oauth-responses', 'apikey-chat', 'upstream-error', 'incomplete', 'non-stream']) {
+        for (const scenario of ['apikey-responses', 'oauth-responses', 'apikey-chat', 'upstream-error', 'incomplete', 'non-stream', 'timeout-headers', 'timeout-body', 'canceled-headers', 'canceled-body']) {
           it(`${locale}: ${scenario}`, async () => {
             const text = readFileSync(join(fixtureDirectory!, `${scenario}.sse`), 'utf8')
             const { response, reader } = responseStream(text)
@@ -137,6 +141,8 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
               expect(panel.get('[data-metric="stream_output"]').text()).toMatch(/\d/)
             }
             if (scenario === 'non-stream') expect(panel.get('[data-metric="first_content"]').text()).toContain('—')
+            if (scenario.startsWith('timeout-')) expect(panel.text()).toContain(locale === 'en' ? 'Timeout' : '超时')
+            if (scenario.startsWith('canceled-')) expect(panel.text()).toContain(locale === 'en' ? 'Canceled' : '取消')
             expect(reader.releaseLock).toHaveBeenCalledOnce()
             wrapper.unmount()
           })

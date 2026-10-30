@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,6 +52,7 @@ func (r timingAccounts) UpdateExtra(context.Context, int64, map[string]any) erro
 type timingFixtureUpstream struct {
 	delegate service.HTTPUpstream
 	target   *url.URL
+	written  chan struct{}
 }
 
 func (u timingFixtureUpstream) Do(req *http.Request, proxy string, account int64, concurrency int) (*http.Response, error) {
@@ -58,15 +60,28 @@ func (u timingFixtureUpstream) Do(req *http.Request, proxy string, account int64
 	target := *u.target
 	target.Path = req.URL.Path
 	forward.URL, forward.Host = &target, ""
+	if u.written != nil {
+		var once sync.Once
+		forward = forward.WithContext(httptrace.WithClientTrace(forward.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					once.Do(func() { close(u.written) })
+				}
+			},
+		}))
+	}
 	return u.delegate.Do(forward, proxy, account, concurrency)
 }
 func (u timingFixtureUpstream) DoWithTLS(req *http.Request, proxy string, account int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxy, account, concurrency)
 }
 
-func timingRouter(account *service.Account, target *url.URL) *gin.Engine {
+func timingRouter(account *service.Account, target *url.URL, written ...chan struct{}) *gin.Engine {
 	cfg := &config.Config{}
 	upstream := timingFixtureUpstream{delegate: repository.NewHTTPUpstream(cfg), target: target}
+	if len(written) != 0 {
+		upstream.written = written[0]
+	}
 	svc := service.NewAccountTestService(timingAccounts{account: account}, nil, nil, nil, nil, upstream, cfg, nil)
 	h := admin.NewAccountHandler(nil, nil, nil, nil, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil)
 	router := gin.New()
@@ -96,6 +111,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 	for _, scenario := range []string{"apikey-responses", "oauth-responses", "apikey-chat", "upstream-error", "incomplete", "metadata-only", "non-stream"} {
 		t.Run(scenario, func(t *testing.T) {
 			entered, headers, metadata, content, contentSeen, terminal := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+			requestWritten := make(chan struct{})
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				defer func() { _ = r.Body.Close() }()
 				var payload map[string]any
@@ -165,13 +181,16 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 			if scenario == "non-stream" {
 				account.Platform = service.PlatformTypeSafe
 			}
-			downstream := httptest.NewServer(timingRouter(account, target))
+			downstream := httptest.NewServer(timingRouter(account, target, requestWritten))
 			defer downstream.Close()
 			client := &http.Client{Timeout: 15 * time.Second}
 			response, err := client.Post(downstream.URL+"/api/v1/admin/accounts/42/test", "application/json", strings.NewReader(`{"model_id":"synthetic-model"}`))
 			require.NoError(t, err)
 			defer func() { _ = response.Body.Close() }()
 			timingWait(t, entered)
+			// Server receipt alone does not synchronize net/http's asynchronous
+			// WroteRequest callback. Gate delayed headers on the actual callback.
+			timingWait(t, requestWritten)
 			close(headers)
 			stream := scenario != "upstream-error" && scenario != "non-stream"
 			if stream {
@@ -204,7 +223,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 			require.Nil(t, timings[0].FirstContent.DurationMS)
 			require.NotNil(t, last.TotalMS)
 			require.NotNil(t, last.FinishedAt)
-			require.NotNil(t, last.ResponseHeaders.DurationMS)
+			require.NotNil(t, last.ResponseHeaders.DurationMS, "response_headers=%+v", last.ResponseHeaders)
 			require.NotNil(t, last.LocalProcessing.DurationMS)
 			if stream && scenario != "metadata-only" {
 				require.NotNil(t, last.FirstContent.DurationMS)
@@ -310,6 +329,12 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 				require.Equal(t, outcome, final.Outcome)
 				require.Nil(t, final.FirstContent.DurationMS)
 				require.NotContains(t, recorder.Body.String(), `"success":true`)
+				// Record actual handler events from this synthetic sink. Real
+				// disconnected-client delivery is tested separately below.
+				if dir := os.Getenv("ACCOUNT_TIMING_FIXTURES_DIR"); dir != "" {
+					require.NoError(t, os.MkdirAll(dir, 0700))
+					require.NoError(t, os.WriteFile(filepath.Join(dir, outcome+"-"+phase+".sse"), []byte(recorder.Body.String()), 0600))
+				}
 			})
 		}
 	}
