@@ -25,7 +25,10 @@ func TestIssue603RealHTTPTransportBoundaries(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: synthetic\n\n")
-		w.(http.Flusher).Flush()
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("flush synthetic SSE: %v", err)
+			return
+		}
 		<-release
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))

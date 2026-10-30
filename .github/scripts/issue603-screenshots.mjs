@@ -30,8 +30,8 @@ apiClient.defaults.adapter=async request=>{
  else if(url.endsWith('/snapshot-v2'))data={stats,trend:[],models:[],groups:[]}
  else if(url.endsWith('/models'))data={models:[]}
  else if(url.endsWith('/settings')||url.endsWith('/settings/public'))data={run_mode:'simple',ops_monitoring_enabled:true}
- else if(url.endsWith('/accounts'))data={items:[],total:0,pages:0}
- else if(url.endsWith('/groups')||url.endsWith('/groups/all')||url.endsWith('/api-keys')||url.includes('/search-'))data=[]
+ else if(url.endsWith('/accounts')||url.endsWith('/groups'))data={items:[],total:0,pages:0}
+ else if(url.endsWith('/groups/all')||url.endsWith('/api-keys')||url.includes('/search-'))data=[]
  return {data:{code:0,message:'success',data},status:200,statusText:'OK',headers:{},config:request}
 }
 `
