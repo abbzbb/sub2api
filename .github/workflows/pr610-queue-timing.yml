@@ -89,7 +89,7 @@ jobs:
             test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"
             echo "red_blob=$BASELINE:$file $(git -C "$old" hash-object "$file")"
           done
-          for testname in TestPR610RealWaitNativeIngress TestPR610RealBridgeRetryDenominator; do
+          for testname in TestPR610RealWaitNativeIngress TestPR610RealBridgeRetryDenominator TestPR610RealCtxPoolRetryKeepsFinalAttemptScope; do
             set +e
             (cd "$old/backend" && go test -tags=unit ./internal/handler -run "^$testname$" -count=1 -v -timeout=5m) > "$RUNNER_TEMP/pr610-red-$testname.log" 2>&1
             result=$?
@@ -110,6 +110,7 @@ jobs:
           grep -F 'legacy operations TTFT must retain its original population and values' "$RUNNER_TEMP/pr610-red-operations.log"
           grep -F 'accepted frame must count real blocked acquisition before forward' "$RUNNER_TEMP/pr610-red-TestPR610RealWaitNativeIngress.log"
           grep -F 'rejected-field network time must stay in legacy TPS denominator' "$RUNNER_TEMP/pr610-red-TestPR610RealBridgeRetryDenominator.log"
+          grep -F 'ctx_pool retry retains accepted frame and pre-final-forward scope' "$RUNNER_TEMP/pr610-red-TestPR610RealCtxPoolRetryKeepsFinalAttemptScope.log"
           for file in "${files[@]}"; do test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"; done
           test -z "$(git status --porcelain)"
       - name: Race check for actual turn boundary lifetimes

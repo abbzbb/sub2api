@@ -48,6 +48,7 @@ type pr610TimingScenario struct {
 	holderRelease chan struct{}
 	holderDone    chan struct{}
 	gateway       *service.OpenAIGatewayService
+	ctxRetry      bool
 	retry         bool
 	longFirst     bool
 	attempts      atomic.Int32
@@ -611,4 +612,39 @@ func TestPR610ProtocolClockValidityAndClamp(t *testing.T) {
 			})
 		}
 	}
+}
+
+func (s *pr610TimingScenario) handleCtxRetry(c *coderws.Conn) bool {
+	if !s.ctxRetry {
+		return false
+	}
+	if s.attempts.Add(1) != 1 {
+		return false
+	}
+	s.advance(7 * time.Second)
+	require.NoError(s.t, c.Write(context.Background(), coderws.MessageText, []byte(`{"type":"error","status":400,"error":{"type":"invalid_request_error","code":"invalid_parameter","param":"truncation","message":"Unsupported parameter: truncation"}}`)))
+	return true
+}
+func TestPR610CtxPoolRejectedFieldRetryScope(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModeCtxPool)
+	s.ctxRetry = true
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode, authSetup: pr610Auth, firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":true,"truncation":"auto"}`})
+	require.EqualValues(t, 2, s.attempts.Load())
+	row := got.log
+	require.EqualValues(t, 47000, *row.QueueWaitMs, "ctx_pool final-attempt legacy baseline leaves earlier attempt in explicit pre-final scope")
+	require.EqualValues(t, 2000, *row.FirstTokenMs)
+	require.EqualValues(t, 2000, *row.DurationMs)
+	require.NotNil(t, row.QueueTiming)
+	require.Equal(t, "pre_final_forward", row.QueueTiming.Scope)
+	require.EqualValues(t, 49000, *row.QueueTiming.ServerFirstTokenMs)
+}
+func TestPR610RealCtxPoolRetryKeepsFinalAttemptScope(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModeCtxPool)
+	s.ctxRetry = true
+	s.realtime = true
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode, authSetup: pr610Auth, firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":true,"truncation":"auto"}`})
+	require.EqualValues(t, 2, s.attempts.Load())
+	require.NotNil(t, got.log.QueueWaitMs)
+	require.GreaterOrEqual(t, *got.log.QueueWaitMs, 460, "ctx_pool retry retains accepted frame and pre-final-forward scope")
+	require.InDelta(t, 20, *got.log.DurationMs, 100, "legacy TPS denominator remains the final attempt")
 }
