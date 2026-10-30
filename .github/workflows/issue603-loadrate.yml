@@ -32,7 +32,7 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
-      BASELINE: c81e2a9e735c5fc53c7175448d29441cb777a143
+      BASELINE: ec007920de042797299fc7cf2c034ad24c136462
       SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v6

@@ -15,7 +15,7 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
-      BASELINE: c81e2a9e735c5fc53c7175448d29441cb777a143
+      BASELINE: ec007920de042797299fc7cf2c034ad24c136462
       SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
       SUB2API_TEST_POSTGRES_IMAGE: postgres:15-alpine
       SUB2API_TEST_REDIS_IMAGE: redis:7-alpine
@@ -123,10 +123,9 @@ jobs:
           old="$RUNNER_TEMP/issue605-effort-red"
           git worktree add --detach "$old" "$SOURCE_HEAD"
           trap 'git worktree remove --force "$old"' EXIT
-          for file in backend/internal/service/default_scheduler_feedback.go backend/internal/service/scheduler_effort_feedback.go; do
-            git -C "$old" restore --source="$BASELINE" -- "$file" 2>/dev/null || true
-          done
-          test "$(git -C "$old" hash-object backend/internal/service/default_scheduler_feedback.go)" = "$(git rev-parse "$BASELINE:backend/internal/service/default_scheduler_feedback.go")"
+          file=backend/internal/service/default_scheduler_feedback.go
+          git -C "$old" restore --source=fb70cc126105f984a63c24f8db65fe0412dd856a -- "$file"
+          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "fb70cc126105f984a63c24f8db65fe0412dd856a:$file")"
           set +e
           (cd "$old/backend" && go test -tags=unit ./internal/service -run '^TestIssue605DefaultAndAdvancedFeedbackEffortIsolation$' -count=1 -v -timeout=5m) > "$RUNNER_TEMP/issue605-effort-red.log" 2>&1
           result=$?
@@ -195,7 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      BASELINE: c81e2a9e735c5fc53c7175448d29441cb777a143
+      BASELINE: ec007920de042797299fc7cf2c034ad24c136462
       SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v6
