@@ -86,21 +86,27 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
     })
 
     it('isolates a restarted request from a late event on the old stream', async () => {
-      let resolveRead: (value: unknown) => void = () => {}
-      const oldReader = {
-        read: vi.fn(() => new Promise(resolve => { resolveRead = resolve })),
-        cancel: vi.fn(async () => { resolveRead({ done: false, value: new TextEncoder().encode('data: {"type":"error","error":"stale-error"}\n\n') }) }), releaseLock: vi.fn()
-      }
+      let resolveOldFetch: (value: unknown) => void = () => {}
+      const old = responseStream('data: {"type":"error","error":"stale-error"}\n\n')
       const fresh = responseStream(legacy)
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, body: { getReader: () => oldReader } }).mockResolvedValueOnce(fresh.response))
+      const fetch = vi.fn().mockImplementationOnce(() => new Promise(resolve => { resolveOldFetch = resolve })).mockResolvedValueOnce(fresh.response)
+      vi.stubGlobal('fetch', fetch)
       const wrapper = mountModal(component)
       await wrapper.setProps({ show: true }); await flushPromises()
       const oldRequest = (wrapper.vm as any).startTest(); await flushPromises()
-      const freshRequest = (wrapper.vm as any).startTest()
-      await Promise.all([oldRequest, freshRequest]); await flushPromises()
+      // Use the actual close/reopen flow: the admin modal correctly refuses a
+      // second start while connecting. An old fetch may still resolve late.
+      await wrapper.setProps({ show: false })
+      await wrapper.setProps({ show: true }); await flushPromises()
+      await (wrapper.vm as any).startTest()
+      resolveOldFetch(old.response)
+      await oldRequest; await flushPromises()
       expect(wrapper.text()).not.toContain('stale-error')
       expect(wrapper.text()).toContain('hello synthetic')
-      expect(oldReader.releaseLock).toHaveBeenCalledOnce()
+      expect(fetch.mock.calls[0][1].signal.aborted).toBe(true)
+      expect(old.reader.read).not.toHaveBeenCalled()
+      expect(old.reader.cancel).toHaveBeenCalled()
+      expect(old.reader.releaseLock).toHaveBeenCalledOnce()
       expect(fresh.reader.releaseLock).toHaveBeenCalledOnce()
       wrapper.unmount()
     })
@@ -121,7 +127,7 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
 
     describe.skipIf(!fixtureDirectory)('captured real handler → service → synthetic HTTP/SSE → UI', () => {
       for (const locale of ['en', 'zh']) {
-        for (const scenario of ['apikey-responses', 'oauth-responses', 'apikey-chat', 'upstream-error', 'incomplete', 'non-stream', 'timeout-headers', 'timeout-body', 'canceled-headers', 'canceled-body']) {
+        for (const scenario of ['apikey-responses', 'oauth-responses', 'apikey-chat', 'upstream-error', 'incomplete', 'metadata-only', 'non-stream', 'timeout-headers', 'timeout-body', 'canceled-headers', 'canceled-body']) {
           it(`${locale}: ${scenario}`, async () => {
             const text = readFileSync(join(fixtureDirectory!, `${scenario}.sse`), 'utf8')
             const { response, reader } = responseStream(text)
@@ -140,7 +146,7 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
               expect(panel.get('[data-metric="first_content"]').text()).toMatch(/\d/)
               expect(panel.get('[data-metric="stream_output"]').text()).toMatch(/\d/)
             }
-            if (scenario === 'non-stream') expect(panel.get('[data-metric="first_content"]').text()).toContain('—')
+            if (scenario === 'non-stream' || scenario === 'metadata-only') expect(panel.get('[data-metric="first_content"]').text()).toContain('—')
             if (scenario.startsWith('timeout-')) expect(panel.text()).toContain(locale === 'en' ? 'Timeout' : '超时')
             if (scenario.startsWith('canceled-')) expect(panel.text()).toContain(locale === 'en' ? 'Canceled' : '取消')
             expect(reader.releaseLock).toHaveBeenCalledOnce()
