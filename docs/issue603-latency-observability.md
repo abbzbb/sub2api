@@ -1,6 +1,6 @@
 # Issue #603：延迟观测与调度反馈覆盖矩阵
 
-基线：`origin/production` / `77455cf755fa0f119367b911704f11df88e7917e`（包含 #601）。单一 Draft [PR #604](https://github.com/ranxi2001/sub2api/pull/604)，Refs #603，保持 Draft，禁止 merge / ready / release / deploy。唯一 writer；未修改 #602 分支、工作树或账户连接测试功能。
+初始基线：`77455cf755fa0f119367b911704f11df88e7917e`（包含 #601）。已按授权普通 merge 集成最新 `origin/production` / `ec007920de042797299fc7cf2c034ad24c136462`（包含 #602、#607），保留双方共享 requesttiming 改动；未 rebase 或 force push。单一 Draft [PR #604](https://github.com/ranxi2001/sub2api/pull/604)，Refs #603，保持 Draft，禁止 merge / ready / release / deploy。唯一 writer；未修改 #602 分支、工作树或账户连接测试功能。
 
 Issue 研究是作者单实例的观察，不是普遍因果，也不用于自动校准。上传完成后的等待包含网络、上游排队和工作，不是 prefill 或纯模型耗时。
 
@@ -49,8 +49,24 @@ Issue 研究是作者单实例的观察，不是普遍因果，也不用于自�
 | 605-4 socket | 当前只有 host 聚合，不能推断逐请求 socket | client↔server 与 server↔upstream 分开返回 null/source=none；反代/代理的实际 hop 不明时显式 obscured/not_collected。不执行 ss/MTR，不拿 host重传代替 socket证据 | 真实 usage list/DTO/report、历史/代理 socket evidence 和双语 UI 明确 null/source/scope；实现已推送，当前 head CI 见 PR |
 | 603-6 qdisc 补强 | 原先固定 unsupported，父审要求研究安全读取，现已实现 best effort | 依据 Linux UAPI 的只读 RTM_GETQDISC dump，限定无特权、超时和payload上限，解析 root egress qdisc queue drops；无权限/不支持/截断/reset 显式状态，不调用 tc 或修改配置 | `TestIssue605QdiscRootFixturesAndCollectorDelta` 与 collector→storage→handler→UI；实现已推送，当前 head CI 见 PR |
 
-追加生产增量：typed Content 识别已接真实 SSE scanner/native/passthrough，usage page 批量 repository 读取与 DTO 三边界；分组 SQL 增加 account/public model 与 typed 样本/可见文本分位数；默认/高级普通/priority history 的真实观测链增加 effort（公开模型与策略后请求 effort，max/xhigh 保留独立）key。默认未知 capability/source 与分 hop socket 未采集 envelope 已实现。qdisc root dump 与 fixture/collector delta 测试已实现。上述 #605 与 qdisc 增量等待远端完整 RED/GREEN，不使用前一 SHA 绿灯代替。
+追加生产增量：typed Content 识别已接真实 SSE scanner/native/passthrough，usage page 批量 repository 读取与 DTO 三边界；分组 SQL 增加 account/public model 与 typed 样本/可见文本分位数；默认/高级普通/priority history 的真实观测链增加 effort（公开模型与策略后请求 effort，max/xhigh 保留独立）key。默认未知 capability/source 与分 hop socket 未采集 envelope 已实现。qdisc root dump 与 fixture/collector delta 测试已实现。上述 #605 与 qdisc 增量已在生产集成后的 checkpoint `270f7e904` 完成远端专用 RED/GREEN；最终交付 exact head 的全部检查仍以 PR 正文和外部 acceptance 记录为准，不以 checkpoint 代替。
 
 #605 typed 分组与列表仅选择最终物理 HTTP attempt，且分组要求其账号与用量/trace 账号匹配；前面切换的失败账号不被归入最终账号的 reasoning/text 分位数。旧首字上传组件保留全 attempt 诊断语义。已补真实 loopback HTTP/SSE native handler 的 first_byte→typed reasoning→output_text 顺序和 mixed-account PG 分位数隔离回归。
 
 真实 native loopback SSE 发现 transport EOF 可早于缓冲区事件解析，导致把有效 typed 内容错判为缺失；已保持上传/first-byte 的 transport 边界，同时把 semantic/visible/typed parser 上界绑定到真实完成请求（要求已知 transport end），不把 EOF 当解析结束。新增旧 content.go blob 的命名行为 RED、buffered EOF native/PG 回归；该失败不是生产探测或 prefill 推断。
+
+
+## production 集成后的验收 checkpoint
+
+候选 `270f7e904bbf5575345d22c3270258314280830b` 包含 production `ec007920de042797299fc7cf2c034ad24c136462`。以下是该 checkpoint 的真实远端结果；本文件后续文档提交产生的新 head 必须独立重新验收，最终 SHA 和全部 check-runs/statuses 在 PR #604 正文及外部 acceptance 记录中冻结。
+
+| 验收路径 | 结果与证据 |
+| --- | --- |
+| collector、默认选号、注册路由、typed SSE、effort 隔离、EOF/parser 边界 | [完整验收 41120612019](https://github.com/ranxi2001/sub2api/actions/runs/41120612019) 成功：六个旧生产行为命名断言 RED，拒绝编译/fixture/无测试失败；独立干净候选 race GREEN |
+| 真实 SQL / handler / repository / scheduler | 同一 run 中 PostgreSQL 15 / Redis 合成隔离数据库、usage list/DTO、account×model×effort 分位数与 priority history、失败 trace、qdisc collector/store/UI 都通过 |
+| 普通生产包与 server | 同一 run 成功编译；server SHA256 `874bd3630b2fff8fc507d93c284dd0ebf63f9d667a72909f5d7a619520215731`，不作为生产发布物 |
+| 容量 adapter / projection | [容量验收 41120612094](https://github.com/ranxi2001/sub2api/actions/runs/41120612094) 成功：原 10000 vs 实际 2 命名 RED → GREEN、repository 和普通包编译 |
+| 真实页面与中英文浏览器 | 完整验收同一 run：86 个页面/组件用例、3 个 locale 检查、typecheck/Vite build、基线/当前中英桌面移动截图；proof 标记 synthetic=true、browserErrors=[]、externalRequests=[] |
+| #602/#607 共享兼容性 | 专用验收执行整个 requesttiming 包（含 #602 account clock/headers/range 测试）；仓库 `make test-unit` 的真实 `internal/integration/accountconnectiontiming` 合成 handler/transport 包纳入最终全 CI；#607 既有 preserved-contracts 与 network RED/GREEN 同 head 验收 |
+
+边界：受限 admin API key 的 usage 响应保持原 #601 allowlist，不自动获得新增诊断字段；完整 admin 和用户本人已授权的 usage 列表才走相应 DTO enrichment。E2E/client upload、逐 hop socket 仍为未采集/source none，reasoning capability unknown；不从 host 数据或协议事件推断排队/计算原因。parent 独立 review 不由 writer 自称完成。
