@@ -9,7 +9,7 @@ import (
 )
 
 func TestIssue600NestedIdentityRawAndMapProjection(t *testing.T) {
-	body := []byte(`{"type":"response.create","prompt_cache_key":"fixture-session","client_metadata":{"session_id":"fixture-session","thread_id":"fixture-thread","x-codex-turn-metadata":"{\"thread_id\":\"fixture-thread\"}","label":"preserved"},"response":{"prompt_cache_key":"fixture-session","client_metadata":{"session_id":"fixture-session","thread_id":"fixture-thread","x-codex-turn-metadata":"{\"thread_id\":\"fixture-thread\"}","label":"preserved"},"input":[{"role":"user","content":"nested input"}],"instructions":"nested instructions"}}`)
+	body := []byte(`{"type":"response.create","prompt_cache_key":"fixture-session","client_metadata":{"session_id":"fixture-session","thread_id":"fixture-thread","x-codex-turn-metadata":"{\"thread_id\":\"fixture-thread\"}","label":"preserved","sequence":9007199254740993},"response":{"prompt_cache_key":"fixture-session","client_metadata":{"session_id":"fixture-session","thread_id":"fixture-thread","x-codex-turn-metadata":"{\"thread_id\":\"fixture-thread\"}","label":"preserved","sequence":9007199254740993},"input":[{"role":"user","content":"nested input"}],"instructions":"nested instructions"}}`)
 	for _, namespace := range []string{"apikey", "oauth", "connection"} {
 		t.Run(namespace, func(t *testing.T) {
 			a := &Account{Type: AccountTypeAPIKey, Platform: PlatformOpenAI}
@@ -24,7 +24,7 @@ func TestIssue600NestedIdentityRawAndMapProjection(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, namespace != "apikey", changed)
 			var mapped map[string]any
-			require.NoError(t, json.Unmarshal(body, &mapped))
+			require.NoError(t, decodeOpenAIJSONUseNumber(body, &mapped))
 			require.Equal(t, changed, applyCodexAccountIdentityClientMetadataMap(mapped, a, 77))
 			encoded, err := json.Marshal(mapped)
 			require.NoError(t, err)
@@ -40,6 +40,7 @@ func TestIssue600NestedIdentityRawAndMapProjection(t *testing.T) {
 			require.Equal(t, gjson.GetBytes(raw, "client_metadata.session_id").String(), gjson.GetBytes(raw, "response.prompt_cache_key").String())
 			require.Equal(t, gjson.GetBytes(body, "response.input").Raw, gjson.GetBytes(raw, "response.input").Raw)
 			require.Equal(t, "preserved", gjson.GetBytes(raw, "response.client_metadata.label").String())
+			require.Equal(t, "9007199254740993", gjson.GetBytes(raw, "response.client_metadata.sequence").Raw, "non-identity metadata must not lose integer precision")
 			// A different account/authorized connection must derive from the same source.
 			if namespace != "apikey" {
 				b := *a

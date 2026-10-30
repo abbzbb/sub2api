@@ -22,6 +22,7 @@ func issue600NestedMetadata() map[string]any {
 		"thread_id": "fixture-client-thread", "session_id": "fixture-nested-session",
 		"installation_id": "fixture-nested-installation", "window_id": "fixture-nested-window", "turn_id": "fixture-nested-turn",
 		"x-codex-turn-metadata": `{"thread_id":"fixture-client-thread","session_id":"fixture-nested-session","installation_id":"fixture-nested-installation","window_id":"fixture-nested-window","turn_id":"fixture-nested-turn"}`,
+		"fixture_sequence":      json.Number("9007199254740993"),
 		"fixture_label":         "preserved",
 	}
 }
@@ -50,6 +51,7 @@ func issue600AssertNestedProjection(t *testing.T, namespace string, original, pr
 			continue
 		}
 		require.Equal(t, before.Get("fixture_label").String(), after.Get("fixture_label").String())
+		require.Equal(t, before.Get("fixture_sequence").Raw, after.Get("fixture_sequence").Raw, "non-identity metadata precision must survive")
 		for _, field := range []string{"thread_id", "session_id", "installation_id", "window_id", "turn_id"} {
 			raw := before.Get(field).String()
 			actual := after.Get(field).String()

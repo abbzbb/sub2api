@@ -76,6 +76,8 @@ jobs:
             grep -q -- '--- FAIL: TestIssue600ClientIdentityNetwork/' "$RUNNER_TEMP/issue600-$PHASE.log"
             grep -q 'stable original client identity must admit turn 2' "$RUNNER_TEMP/issue600-$PHASE.log"
             grep -q 'cyber_session_identity_conflict' "$RUNNER_TEMP/issue600-$PHASE.log"
+            grep -q 'nested outbound identity must be account isolated' "$RUNNER_TEMP/issue600-$PHASE.log"
+            grep -q 'rejected turn must have no response generation' "$RUNNER_TEMP/issue600-$PHASE.log"
             for mode in ctx_pool http_bridge passthrough legacy; do
               for strict in false true; do
                 for scenario in stable_header_body body_only; do
