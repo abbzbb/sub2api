@@ -20,14 +20,20 @@ import { nextTick } from 'vue'
 import en from '@/i18n/locales/en/admin/resources'
 import zh from '@/i18n/locales/zh/admin/resources'
 import UsageTable from '../UsageTable.vue'
+import enDashboard from '@/i18n/locales/en/dashboard'
+import zhDashboard from '@/i18n/locales/zh/dashboard'
 
 let locale: 'en' | 'zh' = 'en'
 const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
   en: {
+    'usage.latencyFirstToken': enDashboard.usage.latencyFirstToken,
+    'usage.latencyDuration': enDashboard.usage.latencyDuration,
     'admin.usage.longContext': en.usage.longContext,
     'admin.usage.longContextPricingTooltip': en.usage.longContextPricingTooltip,
   },
   zh: {
+    'usage.latencyFirstToken': zhDashboard.usage.latencyFirstToken,
+    'usage.latencyDuration': zhDashboard.usage.latencyDuration,
     'admin.usage.longContext': zh.usage.longContext,
     'admin.usage.longContextPricingTooltip': zh.usage.longContextPricingTooltip,
   },
@@ -1150,3 +1156,17 @@ describe('admin UsageTable latency TPS', () => {
     appStoreMocks.cachedPublicSettings = undefined
   })
 })
+
+for (const [language, first, total] of [['en', 'Server TTFT', 'Server total'], ['zh', '服务端首字', '服务端总耗时']] as const) {
+  it(`Issue603 labels real usage table server timing explicitly in ${language}`, () => {
+    locale = language
+    const wrapper = mount(UsageTable, {
+      props: { data: [{ ...baseImageRow, duration_ms: 1000, first_token_ms: 200 }], loading: false, columns: [{ key: 'latency', label: 'Latency' }] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    expect(wrapper.text()).toContain(first)
+    expect(wrapper.text()).toContain(total)
+    wrapper.unmount()
+    locale = 'en'
+  })
+}

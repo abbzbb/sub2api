@@ -32,6 +32,8 @@ type priorityAttemptKey struct {
 type priorityAttemptBucket struct {
 	minute              int64
 	successes, failures int64
+	latencySamples      int64
+	latencyTotalMS      float64
 }
 type priorityAttemptEntry struct {
 	buckets [priorityAttemptMaxMinutes]priorityAttemptBucket
@@ -47,17 +49,19 @@ type priorityAttemptStats struct {
 }
 
 type PriorityErrorEvidence struct {
-	ErrorRate     *float64  `json:"error_rate"`
-	SmoothedRate  float64   `json:"error_smoothed_rate"`
-	Successes     int64     `json:"error_successes"`
-	Failures      int64     `json:"error_failures"`
-	WindowMinutes int       `json:"error_window_minutes"`
-	PriorSamples  int       `json:"error_prior_samples"`
-	ObservedAt    time.Time `json:"error_observed_at"`
-	Endpoint      string    `json:"error_endpoint"`
+	LatencySamples int64     `json:"attempt_latency_samples,omitempty"`
+	LatencyTotalMS float64   `json:"attempt_latency_total_ms,omitempty"`
+	ErrorRate      *float64  `json:"error_rate"`
+	SmoothedRate   float64   `json:"error_smoothed_rate"`
+	Successes      int64     `json:"error_successes"`
+	Failures       int64     `json:"error_failures"`
+	WindowMinutes  int       `json:"error_window_minutes"`
+	PriorSamples   int       `json:"error_prior_samples"`
+	ObservedAt     time.Time `json:"error_observed_at"`
+	Endpoint       string    `json:"error_endpoint"`
 }
 
-func (s *priorityAttemptStats) report(key priorityAttemptKey, success bool, now time.Time) {
+func (s *priorityAttemptStats) report(key priorityAttemptKey, success bool, now time.Time, latencyMS ...float64) {
 	if key.accountID <= 0 || key.model == "" || len(key.model) > 200 {
 		return
 	}
@@ -83,6 +87,10 @@ func (s *priorityAttemptStats) report(key priorityAttemptKey, success bool, now 
 	}
 	if success {
 		b.successes++
+		if len(latencyMS) > 0 && latencyMS[0] >= 0 && !math.IsNaN(latencyMS[0]) && !math.IsInf(latencyMS[0], 0) {
+			b.latencySamples++
+			b.latencyTotalMS += latencyMS[0]
+		}
 	} else {
 		b.failures++
 	}
@@ -99,6 +107,8 @@ func (s *priorityAttemptStats) snapshot(key priorityAttemptKey, now time.Time, w
 			if b.minute <= minute && b.minute > minute-int64(window) {
 				out.Successes += b.successes
 				out.Failures += b.failures
+				out.LatencySamples += b.latencySamples
+				out.LatencyTotalMS += b.latencyTotalMS
 			}
 		}
 	}
@@ -195,6 +205,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 	observation := scope.begin()
 	s.initOpenAIAccountScheduler()
 	stats := s.openaiAccountStats
+	started := stats.currentTime()
 	key := priorityAttemptKey{accountID: account.ID, model: scope.model, endpoint: scope.endpoint, groupID: scope.groupID, hasGroup: scope.hasGroup}
 	return func(resp *http.Response, err error) {
 		if err != nil {
@@ -216,6 +227,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 			s.guardExcelBPSProgress(req.Context(), resp)
 		}
 		b := newPriorityAttemptBody(resp.Body, stats, key, scope.ctx, resp.StatusCode, bps || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream"))
+		b.started = started
 		// Delay the final sample until Forward knows whether downstream writing
 		// failed. Starting a retry flushes the preceding attempt independently.
 		b.scope = scope
@@ -257,6 +269,8 @@ func (s *OpenAIGatewayService) doPriorityObservedHTTP(req *http.Request, proxy s
 // A bounded passive observer: it neither changes bytes nor creates retries.
 // Unknown/oversized protocol evidence is excluded, never assumed successful.
 type priorityAttemptBody struct {
+	started         time.Time
+	firstSemanticMS *float64
 	io.ReadCloser
 	mu                                                 sync.Mutex
 	stats                                              *openAIAccountRuntimeStats
@@ -276,7 +290,7 @@ type priorityAttemptBody struct {
 }
 
 func newPriorityAttemptBody(body io.ReadCloser, stats *openAIAccountRuntimeStats, key priorityAttemptKey, ctx context.Context, status int, stream bool) *priorityAttemptBody {
-	return &priorityAttemptBody{ReadCloser: body, stats: stats, key: key, ctx: ctx, status: status, stream: stream, chat: key.endpoint == "/v1/chat/completions"}
+	return &priorityAttemptBody{ReadCloser: body, stats: stats, key: key, ctx: ctx, status: status, stream: stream, chat: key.endpoint == "/v1/chat/completions", started: stats.currentTime()}
 }
 func (b *priorityAttemptBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
@@ -362,6 +376,10 @@ func (b *priorityAttemptBody) observeLine(line []byte) {
 		return
 	}
 	typ := gjson.GetBytes(data, "type").String()
+	if b.firstSemanticMS == nil && openAIStreamDataStartsSemanticTTFT(string(data), typ) {
+		ms := b.stats.currentTime().Sub(b.started).Seconds() * 1000
+		b.firstSemanticMS = &ms
+	}
 	if typ == "error" || typ == "response.failed" || gjson.GetBytes(data, "error").Exists() {
 		b.failed = true
 		b.excluded = b.excluded || priorityExcludedError(data)
@@ -390,7 +408,11 @@ func (b *priorityAttemptBody) Close() error {
 	b.buf = nil
 	report := func(disconnected, forced bool) {
 		if (include || forced) && !disconnected && b.ctx.Err() == nil {
-			b.stats.attempts.report(b.key, success && !forced, b.stats.currentTime())
+			if b.firstSemanticMS != nil && success && !forced {
+				b.stats.attempts.report(b.key, true, b.stats.currentTime(), *b.firstSemanticMS)
+			} else {
+				b.stats.attempts.report(b.key, success && !forced, b.stats.currentTime())
+			}
 		}
 	}
 	if b.scope != nil {
@@ -413,7 +435,7 @@ func (b *priorityAttemptBody) outcome() (bool, bool) {
 		if priorityExcludedError(b.buf) {
 			return false, false
 		}
-		return false, isOpenAITransientProcessingError(b.status, extractUpstreamErrorMessage(b.buf), b.buf) || b.status == 408 || b.status == 429 || b.status >= 500 && b.status <= 599
+		return false, isOpenAITransientProcessingError(b.status, extractUpstreamErrorMessage(b.buf), b.buf) || b.status == 403 || b.status == 408 || b.status == 429 || b.status >= 500 && b.status <= 599
 	}
 	if b.status < 200 || b.status >= 300 {
 		return false, false

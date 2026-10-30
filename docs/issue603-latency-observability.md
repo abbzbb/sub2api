@@ -28,3 +28,18 @@ prefill or pure model time.
   credentials, or operational host modifications are part of validation.
 - The final delivery remains a Draft referencing #603, not a ready, merged,
   released, or deployed change.
+
+## 第二增量：完整生产链和验收入口（2026-10-31）
+
+| 项 | 已实现生产路径 | 合成回归与剩余验收 |
+| --- | --- | --- |
+| 1 | `requesttiming/latency.go` 按物理 HTTP attempt 派生；collector 完成与 timing repository 序列化；`repository/latency_observability.go` 直接从历史 JSON 边界分组 SQL；共享 service → admin usage/ops handler → routes/权限目录 → API → `LatencyObservabilityPanel.vue`，嵌入真实 admin usage/ops 页面 | `TestIssue603CollectorPublishesAttemptMetrics`、`TestIssue603AttemptBoundaryAndFailoverSemantics`、`TestIssue603RealLatencyAggregationSQL`、`TestIssue603RealUsageAndOpsHandlers` 与页面回归；等候远端验收 |
+| 2 | 容量输入原样使用 Concurrency（含 0 无限）；load_factor 仅为 0.5–2 倍有界排序偏好；保持真实 LoadRate 和 slot/admission；projection 同步 admin/ops | 首轮 `a939d1470` 命名 RED → GREEN、普通生产 handler/repository/service 编译与 server build 均已通过专用 run `41088425102`；最终 head 仍需复验 |
+| 3 | 默认 OpenAI legacy 批量/非批量/读取失败兜底排序使用真实 transport 的公开模型+端点+分组+账号窗口。最少 5 样本，10 分钟窗口，错误加 5 先验；25 点错误 + 10 点延迟上限；延迟目标沿用既有 15 秒参考。该延迟是发送到首 semantic 的观测，含上传和网络，不是纯模型耗时。安全权限/配额拒绝排除；无来源的其他协议保持未知和中性。已有高级/优先路径及其配置保持独立 | `TestIssue603DefaultSchedulerUsesScopedFeedback`、`TestIssue603TransportSemanticAnd403Feedback`；等候真实 scheduler/handler 与既有 priority 回归 |
+| 4 | JSON 记录每物理 attempt 的 initial/same_account_retry/account_switch/unknown，>1 MiB 次数与组件成本进入上述 SQL、handler 和页面。重叠/未结束/截断/失败写入保留状态；真实测得的失败响应 header wait 与首内容等待区分；旧 JSON 缺派生成本时样本数为 0 | attempt 边界/重试/切换 SQL 与 UI 回归；不引入 limit，不改原 retry budgets |
+| 5 | usage 表格中英改为服务端首字与服务端总耗时；新 usage/ops API 显式 end_to_end=null/status=not_collected/source=none，client_upload=null；真实页面显示未采集和来源无 | 真实 `UsageView.spec.ts`/`UsageTable.spec.ts` RED → GREEN 与双语 panel 回归；等候远端 |
+| 6 | collector 在 leader 锁之前每实例读取可读 proc counters → `ops_network_minutes`（迁移 320）→ 真实 minute SQL → ops handler/权限/API → `OpsNetworkChart.vue`。正文曲线从持久化 `request_connection_traces` 按应用开始分钟聚合，含失败/部分读取。采样错误是状态而非 0 | 注入 proc fixtures 的 collector 测试、真实 PG 存储/分钟 SQL、handler、chart 回归；等候远端 |
+
+能力与兼容：qdisc 当前为 `unsupported_unprivileged_collector`，不运行 shell/tc/netlink 特权操作，数值为 null。网络只反映各进程网络命名空间，虚拟接口可能重复计量，不等同整台物理宿主机或多实例总和；实例是随机进程 UUID，不记录接口名/IP/域名。每次采样使用实际 elapsed seconds，45–90 秒外标记不齐窗口。TCP 无发出分段时比例未知。body bytes 是全站应用 trace 已读数（非计费 row，不重复叠加主机实例），不是客户端带宽。网络采样按现有 ops minute retention 清理。时间范围 latency 最长 31 天、网络最长 24 小时；网络图为最近一小时。
+
+首轮远端证据在 artifacts `a939d1470-capacity-raw.log`；所有验收都须在最终 exact head 再核实。未 merge、ready、release 或 deploy，#601 保留，#602 未触及。
