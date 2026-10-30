@@ -24,7 +24,6 @@ jobs:
     env:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
-      ACCOUNT_TIMING_FIXTURES_DIR: ${{ runner.temp }}/timing-proof/fixtures
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
       BASELINE: 77455cf755fa0f119367b911704f11df88e7917e
     steps:
@@ -68,6 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export ACCOUNT_TIMING_FIXTURES_DIR="$RUNNER_TEMP/timing-proof/fixtures"
           go test -race -tags=unit ./internal/pkg/requesttiming ./internal/service ./internal/handler/admin -run 'TestAccountConnectionTiming|TestAccountTestService_|TestProcessGeminiStream|TestOpenAIConnectionManagementRejectsAPIKey|TestOpenAIConnectionCreationRejectsMixedCredentials|TestOpenAIConnectionHandlerAccountType' -count=1 -v -timeout=20m 2>&1 | tee "$RUNNER_TEMP/timing-proof/green.log"
           test -f "$ACCOUNT_TIMING_FIXTURES_DIR/apikey-responses.sse"
           test -f "$ACCOUNT_TIMING_FIXTURES_DIR/oauth-responses.sse"
@@ -86,7 +86,6 @@ jobs:
     timeout-minutes: 20
     env:
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-      ACCOUNT_TIMING_FIXTURES_DIR: ${{ runner.temp }}/handler-proof/fixtures
     steps:
       - uses: actions/checkout@v6
         with:
@@ -109,6 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export ACCOUNT_TIMING_FIXTURES_DIR="$RUNNER_TEMP/handler-proof/fixtures"
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           mkdir -p "$RUNNER_TEMP/ui-proof"
           printf 'exact_head=%s\n' "$EXPECTED_HEAD" | tee "$RUNNER_TEMP/ui-proof/source.txt"
