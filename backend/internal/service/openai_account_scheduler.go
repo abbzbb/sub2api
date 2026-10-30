@@ -911,8 +911,10 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	if left.account.Priority != right.account.Priority {
 		return left.account.Priority < right.account.Priority
 	}
-	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
-		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
+	leftLoad := accountLoadPreferenceRate(left.account, left.loadInfo.LoadRate)
+	rightLoad := accountLoadPreferenceRate(right.account, right.loadInfo.LoadRate)
+	if leftLoad != rightLoad {
+		return leftLoad < rightLoad
 	}
 	if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
 		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
@@ -1213,7 +1215,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if maxPriority > minPriority {
 			priorityFactor = 1 - float64(item.priority-minPriority)/float64(maxPriority-minPriority)
 		}
-		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
+		loadFactor := 1 - clamp01(float64(accountLoadPreferenceRate(item.account, item.loadInfo.LoadRate))/100.0)
 		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
 		errorFactor := 1 - clamp01(item.errorRate)
 		ttftFactor := 0.5
@@ -1415,8 +1417,10 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		aLoad := accountLoadPreferenceRate(a.account, a.loadInfo.LoadRate)
+		bLoad := accountLoadPreferenceRate(b.account, b.loadInfo.LoadRate)
+		if aLoad != bLoad {
+			return aLoad < bLoad
 		}
 		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
 			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
@@ -1820,7 +1824,7 @@ func (s *defaultOpenAIAccountScheduler) loadOpenAIEligibleAccounts(ctx context.C
 		filtered = append(filtered, account)
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	if len(filtered) == 0 {
@@ -2064,7 +2068,7 @@ func buildOpenAIAccountLoadRequest(accounts []*Account) []AccountWithConcurrency
 		}
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	return loadReq
@@ -3338,7 +3342,7 @@ func buildOpenAIAccountSchedulerScoreSnapshot(
 		if maxPriority > minPriority {
 			priorityFactor = 1 - float64(candidate.priority-minPriority)/float64(maxPriority-minPriority)
 		}
-		loadFactor := 1 - clamp01(float64(candidate.loadInfo.LoadRate)/100.0)
+		loadFactor := 1 - clamp01(float64(accountLoadPreferenceRate(candidate.account, candidate.loadInfo.LoadRate))/100.0)
 		queueFactor := 1 - clamp01(float64(candidate.loadInfo.WaitingCount)/float64(maxWaiting))
 		errorFactor := 1.0
 		ttftFactor := 0.5
