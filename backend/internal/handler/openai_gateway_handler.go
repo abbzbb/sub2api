@@ -3822,6 +3822,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if !service.OpenAIWSIngressCanFailover(ctx, c) {
 				return
 			}
+			// A later turn can retry on this same account without rebuilding hooks.
+			// Carry that frame's timestamps into the new ingress attempt too.
+			hooks.InitialTurnStartedAt = firstTurnStartedAt
+			hooks.InitialFrameArrivedAt = firstFrameArrivedAt
 			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 			if err == nil {
 				reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))

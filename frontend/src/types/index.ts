@@ -2,7 +2,8 @@
  * Core Type Definitions for Sub2API Frontend
  */
 
-// ==================== Common Types =============
+// ==================== Common Types ====================
+
 export interface SelectOption {
   value: string | number | boolean | null
   label: string
@@ -21,7 +22,8 @@ export interface FetchOptions {
   signal?: AbortSignal
 }
 
-// ==================== Notification Types =============
+// ==================== Notification Types ====================
+
 /** Notification email entry with enable/disable and verification state.
  *  email="" is a placeholder for the primary email (user's registration email or admin email). */
 export interface NotifyEmailEntry {
@@ -30,7 +32,8 @@ export interface NotifyEmailEntry {
   verified: boolean
 }
 
-// ==================== User & Auth Types =============
+// ==================== User & Auth Types ====================
+
 export type UserAuthProvider = 'email' | 'linuxdo' | 'oidc' | 'wechat' | 'github' | 'google' | 'dingtalk'
 
 export interface UserAuthBindingStatus {
@@ -315,7 +318,8 @@ export interface CurrentUserResponse extends User {
   run_mode?: 'standard' | 'simple'
 }
 
-// ==================== Subscription Types =============
+// ==================== Subscription Types ====================
+
 export interface Subscription {
   id: number
   user_id: number
@@ -345,7 +349,8 @@ export interface UpdateSubscriptionRequest {
   is_active?: boolean
 }
 
-// ==================== Announcement Types =============
+// ==================== Announcement Types ====================
+
 export type AnnouncementStatus = 'draft' | 'active' | 'archived'
 export type AnnouncementNotifyMode = 'silent' | 'popup'
 
@@ -425,7 +430,8 @@ export interface AnnouncementUserReadStatus {
   read_at?: string
 }
 
-// ==================== Proxy Node Types =============
+// ==================== Proxy Node Types ====================
+
 export interface ProxyNode {
   id: number
   subscription_id: number
@@ -441,7 +447,8 @@ export interface ProxyNode {
   updated_at: string
 }
 
-// ==================== Conversion Types =============
+// ==================== Conversion Types ====================
+
 export interface ConversionRequest {
   subscription_ids: number[]
   target_type: 'clash' | 'v2ray' | 'surge' | 'quantumult' | 'shadowrocket'
@@ -464,7 +471,8 @@ export interface ConversionResult {
   node_count: number
 }
 
-// ==================== Statistics Types =============
+// ==================== Statistics Types ====================
+
 export interface SubscriptionStats {
   subscription_id: number
   total_nodes: number
@@ -482,7 +490,8 @@ export interface UserStats {
   last_conversion: string | null
 }
 
-// ==================== API Response Types =============
+// ==================== API Response Types ====================
+
 export interface ApiResponse<T = unknown> {
   code: number
   message: string
@@ -503,7 +512,8 @@ export interface PaginatedResponse<T> {
   pages: number
 }
 
-// ==================== UI State Types =============
+// ==================== UI State Types ====================
+
 export type ToastType = 'success' | 'error' | 'info' | 'warning'
 
 export interface Toast {
@@ -521,13 +531,15 @@ export interface AppState {
   toasts: Toast[]
 }
 
-// ==================== Validation Types =============
+// ==================== Validation Types ====================
+
 export interface ValidationError {
   field: string
   message: string
 }
 
-// ==================== Table/List Types =============
+// ==================== Table/List Types ====================
+
 export interface SortConfig {
   key: string
   order: 'asc' | 'desc'
@@ -542,7 +554,8 @@ export interface PaginationConfig {
   page_size: number
 }
 
-// ==================== API Key & Group Types =============
+// ==================== API Key & Group Types ====================
+
 /**
  * 分组平台：具体平台或 composite。具体平台以平台清单（constants/platformCatalog）
  * 为准，后端新登记的平台是 KnownAccountPlatform 之外的字符串。
@@ -970,7 +983,8 @@ export interface UpdateGroupRequest {
   copy_accounts_from_group_ids?: number[]
 }
 
-// ==================== Account & Proxy Types =============
+// ==================== Account & Proxy Types ====================
+
 /** 前端内置专属界面（图标、配色、表单等）的平台。 */
 export type KnownAccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'command_code' | 'cline'
 /**
@@ -1961,7 +1975,8 @@ export interface CodexSessionImportResult {
   errors?: CodexSessionImportMessage[]
 }
 
-// ==================== Usage & Redeem Types =============
+// ==================== Usage & Redeem Types ====================
+
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
 export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2' | 'cyber' | 'live'
 export type ImageSizeSource = 'output' | 'input' | 'default' | 'legacy'
@@ -2147,7 +2162,8 @@ export interface RedeemCodeRequest {
   code: string
 }
 
-// ==================== Dashboard & Statistics =============
+// ==================== Dashboard & Statistics ====================
+
 export interface DashboardStats {
   // 用户统计
   total_users: number
@@ -2217,7 +2233,8 @@ export interface UsageStatsResponse {
   endpoint_paths?: EndpointStat[]
 }
 
-// ==================== Trend & Chart Types =============
+// ==================== Trend & Chart Types ====================
+
 export interface TrendDataPoint {
   date: string
   requests: number
@@ -2311,7 +2328,8 @@ export interface ApiKeyUsageTrendPoint {
   tokens: number
 }
 
-// ==================== Admin User Management =============
+// ==================== Admin User Management ====================
+
 export interface ObserverSetupOptions {
   create_dedicated_group: boolean
   revoke_public_groups: boolean
@@ -2344,7 +2362,8 @@ export interface ChangePasswordRequest {
   new_password: string
 }
 
-// ==================== User Subscription Types =============
+// ==================== User Subscription Types ====================
+
 export interface UserSubscription {
   id: number
   user_id: number
@@ -2405,7 +2424,8 @@ export interface ExtendSubscriptionRequest {
   days: number
 }
 
-// ==================== Query Parameters =============
+// ==================== Query Parameters ====================
+
 export interface UserErrorRequest {
   id: number
   created_at: string
@@ -2464,7 +2484,8 @@ export interface UsageQueryParams {
   sort_order?: 'asc' | 'desc'
 }
 
-// ==================== Account Usage Statistics =============
+// ==================== Account Usage Statistics ====================
+
 export interface AccountUsageHistory {
   date: string
   label: string
@@ -2519,7 +2540,8 @@ export interface AccountUsageStatsResponse {
   upstream_endpoints: EndpointStat[]
 }
 
-// ==================== User Attribute Types =============
+// ==================== User Attribute Types ====================
+
 export type UserAttributeType = 'text' | 'textarea' | 'number' | 'email' | 'url' | 'date' | 'select' | 'multi_select'
 
 export interface UserAttributeOption {
@@ -2592,7 +2614,8 @@ export interface UserAttributeValuesMap {
   [attributeId: number]: string
 }
 
-// ==================== Promo Code Types =============
+// ==================== Promo Code Types ====================
+
 export interface PromoCode {
   id: number
   code: string
@@ -2632,7 +2655,8 @@ export interface UpdatePromoCodeRequest {
   notes?: string
 }
 
-// ==================== TOTP (2FA) Types =============
+// ==================== TOTP (2FA) Types ====================
+
 export interface TotpStatus {
   enabled: boolean
   enabled_at: number | null  // Unix timestamp in seconds
@@ -2680,7 +2704,8 @@ export interface TotpLogin2FARequest {
   totp_code: string
 }
 
-// ==================== Scheduled Test Types =============
+// ==================== Scheduled Test Types ====================
+
 export interface QualityJudgeConfig {
   kind?: 'llm' | 'jev'
   group_id: number

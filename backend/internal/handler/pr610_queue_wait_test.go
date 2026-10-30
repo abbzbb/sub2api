@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ type pr610TimingScenario struct {
 	invalidClock  bool
 	beyondHour    bool
 	keyQueue      bool
+	sameAccount   bool
 	failover      bool
 	failedSwitch  atomic.Bool
 	poolHolder    bool
@@ -92,6 +94,15 @@ func (s *pr610TimingScenario) middleware(c *gin.Context) {
 	c.Next()
 }
 func (s *pr610TimingScenario) configure(a *service.Account, cfg *config.Config) {
+	if s.sameAccount {
+		a.Type = service.AccountTypeOAuth
+		a.Credentials["access_token"] = "fixture-account-a"
+		a.Credentials["chatgpt_account_id"] = "fixture-account"
+		a.Extra["openai_oauth_responses_websockets_v2_enabled"] = true
+		a.Extra["openai_oauth_responses_websockets_v2_mode"] = s.mode
+		a.Extra["codex_fingerprint_mode"] = "off"
+		cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	}
 	require.Equal(s.t, s.mode, a.ResolveOpenAIResponsesWebSocketV2Mode(cfg.Gateway.OpenAIWS.IngressModeDefault), "fixture must resolve the requested effective mode")
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
 	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
@@ -211,12 +222,14 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	}
 	payload, err := io.ReadAll(r.Body)
 	require.NoError(s.t, err)
-	if s.failover && s.turn.Load() == 2 && r.Header.Get("Authorization") == "Bearer fixture-account-a" && s.failedSwitch.CompareAndSwap(false, true) {
+	if (s.failover || s.sameAccount) && s.turn.Load() == 2 && r.Header.Get("Authorization") == "Bearer fixture-account-a" && s.failedSwitch.CompareAndSwap(false, true) {
 		s.advance(7 * time.Second)
-		w.Header().Set("Retry-After", "60")
+		if !s.sameAccount {
+			w.Header().Set("Retry-After", "60")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"synthetic pre-generation account refusal"}}`)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"try again"}}`)
 		return true
 	}
 	if s.retry && s.attempts.Add(1) == 1 {
@@ -647,4 +660,39 @@ func TestPR610RealCtxPoolRetryKeepsFinalAttemptScope(t *testing.T) {
 	require.NotNil(t, got.log.QueueWaitMs)
 	require.GreaterOrEqual(t, *got.log.QueueWaitMs, 460, "ctx_pool retry retains accepted frame and pre-final-forward scope")
 	require.InDelta(t, 20, *got.log.DurationMs, 100, "legacy TPS denominator remains the final attempt")
+}
+
+// Redirect only the fixed OAuth endpoint into this fixture. No public egress or
+// global client mutation; the production bridge still builds/adopts the request.
+type pr610OAuthHTTPUpstream struct {
+	service.HTTPUpstream
+	target *url.URL
+}
+
+func (u *pr610OAuthHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	if req.URL.Host != "chatgpt.com" && req.URL.Host != u.target.Host {
+		return nil, fmt.Errorf("unexpected synthetic destination %s", req.URL.Host)
+	}
+	local := req.Clone(req.Context())
+	copy := *req.URL
+	local.URL = &copy
+	local.URL.Scheme = u.target.Scheme
+	local.URL.Host = u.target.Host
+	local.Host = u.target.Host
+	return http.DefaultClient.Do(local)
+}
+func TestPR610AuthenticatedSameAccountRetryKeepsFollowupStart(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModeHTTPBridge)
+	s.sameAccount = true
+	s.longFirst = true
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode, authSetup: pr610Auth,
+		firstPayload:  `{"type":"response.create","model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first portable request"}]}]}`,
+		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"followup portable request"}]}]}`})
+	require.True(t, s.failedSwitch.Load(), "transient OAuth 429 must exercise production same-account retry")
+	require.EqualValues(t, 9901, got.logs[0].AccountID)
+	require.EqualValues(t, 9901, got.logs[1].AccountID)
+	require.NotNil(t, got.logs[1].QueueTiming)
+	require.EqualValues(t, 37000, *got.logs[1].QueueWaitMs, "same-account retry must keep current frame start and exclude prior long turn")
+	require.EqualValues(t, 39000, *got.logs[1].QueueTiming.ServerFirstTokenMs)
+	require.EqualValues(t, 2000, *got.logs[1].FirstTokenMs)
 }

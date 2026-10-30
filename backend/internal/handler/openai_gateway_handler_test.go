@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3111,6 +3112,12 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	if tc.authSetup != nil {
 		gatewayConcurrency = service.NewConcurrencyService(concurrencyCache)
 	}
+	var networkUpstream service.HTTPUpstream = &compositeWSHTTPUpstream{}
+	if tc.timing != nil && tc.timing.sameAccount {
+		target, err := url.Parse(upstreamServer.URL)
+		require.NoError(t, err)
+		networkUpstream = &pr610OAuthHTTPUpstream{target: target}
+	}
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
 		nil,
@@ -3126,7 +3133,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		service.NewBillingService(cfg, nil),
 		service.NewRateLimitService(accountRepo, nil, cfg, nil, nil),
 		billingCacheSvc,
-		&compositeWSHTTPUpstream{},
+		networkUpstream,
 		&service.DeferredService{},
 		nil,
 		nil,
