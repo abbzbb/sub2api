@@ -20,18 +20,24 @@ import { nextTick } from 'vue'
 import en from '@/i18n/locales/en/admin/resources'
 import zh from '@/i18n/locales/zh/admin/resources'
 import UsageTable from '../UsageTable.vue'
+import enLatency from '@/i18n/locales/en/latencyObservability'
+import zhLatency from '@/i18n/locales/zh/latencyObservability'
 import enDashboard from '@/i18n/locales/en/dashboard'
 import zhDashboard from '@/i18n/locales/zh/dashboard'
 
 let locale: 'en' | 'zh' = 'en'
 const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
   en: {
+    'latencyObservability.notCollected': enLatency.notCollected,
+    'latencyObservability.sourceNone': enLatency.sourceNone,
     'usage.latencyFirstToken': enDashboard.usage.latencyFirstToken,
     'usage.latencyDuration': enDashboard.usage.latencyDuration,
     'admin.usage.longContext': en.usage.longContext,
     'admin.usage.longContextPricingTooltip': en.usage.longContextPricingTooltip,
   },
   zh: {
+    'latencyObservability.notCollected': zhLatency.notCollected,
+    'latencyObservability.sourceNone': zhLatency.sourceNone,
     'usage.latencyFirstToken': zhDashboard.usage.latencyFirstToken,
     'usage.latencyDuration': zhDashboard.usage.latencyDuration,
     'admin.usage.longContext': zh.usage.longContext,
@@ -1166,6 +1172,8 @@ for (const [language, first, total] of [['en', 'Server TTFT', 'Server total'], [
     })
     expect(wrapper.text()).toContain(first)
     expect(wrapper.text()).toContain(total)
+    expect(wrapper.get('[data-testid="latency-e2e-uncollected"]').text()).toBe(language === 'en' ? enLatency.notCollected : zhLatency.notCollected)
+    expect(wrapper.get('[data-testid="latency-e2e-uncollected"]').attributes('title')).toBe(language === 'en' ? enLatency.sourceNone : zhLatency.sourceNone)
     wrapper.unmount()
     locale = 'en'
   })

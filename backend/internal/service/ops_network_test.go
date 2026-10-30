@@ -73,9 +73,11 @@ func TestIssue603CollectorNetworkFixturesAndUnknownBoundaries(t *testing.T) {
 	require.Equal(t, "uneven_window", store.points[5].EgressStatus)
 	denied = true
 	require.NoError(t, c.collectNetwork(context.Background(), now.Add(11*time.Minute)))
-	require.Equal(t, "unavailable", store.points[6].EgressStatus)
+	require.Equal(t, "permission_denied", store.points[6].EgressStatus)
 	require.Nil(t, store.points[6].EgressMbps)
 	malformed := parseNetworkCounters(func(string) ([]byte, error) { return []byte("broken"), nil }, now)
 	require.False(t, malformed.netOK)
 	require.False(t, malformed.tcpOK)
+	require.Equal(t, "malformed", malformed.tcpStatus)
+	require.Equal(t, "unsupported", networkReadStatus(os.ErrNotExist))
 }

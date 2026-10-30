@@ -85,6 +85,7 @@ jobs:
           grep -F -- '--- PASS: TestIssue603RealUsageAndOpsHandlers' "$RUNNER_TEMP/issue603-behavior-green.log"
           grep -F -- '--- PASS: TestIssue603DefaultSchedulerUsesScopedFeedback' "$RUNNER_TEMP/issue603-behavior-green.log"
           grep -F -- '--- PASS: TestIssue603CollectorNetworkFixturesAndUnknownBoundaries' "$RUNNER_TEMP/issue603-behavior-green.log"
+          (cd backend && go test -race ./internal/pkg/requesttiming -count=1 -v -timeout=5m) 2>&1 | tee "$RUNNER_TEMP/issue603-http-timing-green.log"
       - name: GREEN - isolated PostgreSQL and Redis real SQL and adapters
         shell: bash
         run: |
@@ -160,10 +161,32 @@ jobs:
         run: |
           set -euo pipefail
           (cd frontend && pnpm build) 2>&1 | tee "$RUNNER_TEMP/issue603-ui-build.log"
+      - name: Install isolated browser for actual usage page screenshots
+        run: |
+          npm install --prefix "$RUNNER_TEMP/issue603-browser" --no-save --ignore-scripts playwright@1.56.1
+          "$RUNNER_TEMP/issue603-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Render exact baseline and head with offline synthetic data
+        env:
+          PLAYWRIGHT_ROOT: ${{ runner.temp }}/issue603-browser/node_modules/playwright
+          SCREENSHOT_DIR: ${{ runner.temp }}/issue603-screenshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/issue603-before-browser"
+          git worktree add --detach "$old" "$BASELINE"
+          trap 'git worktree remove --force "$old"' EXIT
+          ln -s "$GITHUB_WORKSPACE/frontend/node_modules" "$old/frontend/node_modules"
+          VIEW_ROOT="$old" SCREENSHOT_MODE=before node .github/scripts/issue603-screenshots.mjs
+          test "$(git -C "$old" hash-object frontend/src/views/admin/UsageView.vue)" = "$(git rev-parse "$BASELINE:frontend/src/views/admin/UsageView.vue")"
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          SCREENSHOT_MODE=after node .github/scripts/issue603-screenshots.mjs
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: issue603-ui-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/issue603-*.log
+          path: |
+            ${{ runner.temp }}/issue603-*.log
+            ${{ runner.temp }}/issue603-screenshots
           if-no-files-found: error
           retention-days: 14

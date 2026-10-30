@@ -13,8 +13,8 @@ import (
 
 func serveLatencyReport(c *gin.Context, read func(context.Context, service.LatencyReportFilter) (*service.LatencyReport, error)) {
 	end := time.Now().UTC()
-	f := service.LatencyReportFilter{Start: end.Add(-24 * time.Hour), End: end, Model: strings.TrimSpace(c.Query("model"))}
-	if len(f.Model) > 256 {
+	f := service.LatencyReportFilter{Start: end.Add(-24 * time.Hour), End: end, Model: strings.TrimSpace(c.Query("model")), Platform: strings.TrimSpace(c.Query("platform"))}
+	if len(f.Model) > 256 || len(f.Platform) > 32 {
 		response.BadRequest(c, "Model exceeds length limit")
 		return
 	}

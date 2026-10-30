@@ -246,10 +246,10 @@
               :style="cacheRateBarStyle(row)"
               aria-hidden="true"
             ></span>
-            <span class="col-start-2 row-start-1 text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
+            <span class="col-start-2 row-start-1 text-gray-400 dark:text-gray-500" :title="t('requestTiming.legacyFirst')">{{ t('usage.latencyFirstToken') }}</span>
             <span v-if="row.first_token_ms != null" class="col-start-3 row-start-1 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
             <span v-else class="col-start-3 row-start-1 text-gray-400 dark:text-gray-500">-</span>
-            <span class="col-start-2 row-start-2 text-gray-400 dark:text-gray-500">{{ t('usage.latencyDuration') }}</span>
+            <span class="col-start-2 row-start-2 text-gray-400 dark:text-gray-500" :title="t('requestTiming.legacyTotal')">{{ t('usage.latencyDuration') }}</span>
             <span class="col-start-3 row-start-2 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
             <span class="col-start-2 row-start-3 text-gray-400 dark:text-gray-500">{{ t('usage.latencyTps') }}</span>
             <span
@@ -270,6 +270,8 @@
               >{{ formatUsageCacheRate(row) }}</span>
               <span v-else data-testid="latency-cache-rate" class="col-start-3 row-start-4 text-gray-400 dark:text-gray-500">-</span>
             </template>
+            <span class="col-start-2 text-gray-400 dark:text-gray-500" :class="showCacheRate ? 'row-start-5' : 'row-start-4'">{{ t('latencyObservability.e2e') }}</span>
+            <span data-testid="latency-e2e-uncollected" class="col-start-3 text-gray-400 dark:text-gray-500" :class="showCacheRate ? 'row-start-5' : 'row-start-4'" :title="t('latencyObservability.sourceNone')">{{ t('latencyObservability.notCollected') }}</span>
           </component>
         </template>
 

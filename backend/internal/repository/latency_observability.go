@@ -7,39 +7,60 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// Both usage and ops use the same SQL population. Physical HTTP samples are
-// counted independently of egress parents. Missing traces and boundaries remain
-// in the request count without contributing a zero latency sample.
+// Usage and ops share boundary arithmetic. Ops additionally retains unbilled
+// application traces with unknown cache/effort, deduplicated against usage.
+// Physical HTTP samples exclude parents; absent boundaries are never zeros.
 func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
 	args := []any{f.Start, f.End}
-	where := "u.created_at >= $1 AND u.created_at < $2"
-	for _, field := range []struct {
-		name  string
-		value int64
-	}{
-		{"user_id", f.UserID}, {"api_key_id", f.APIKeyID}, {"account_id", f.AccountID}, {"group_id", f.GroupID},
-	} {
-		if field.value > 0 {
-			args = append(args, field.value)
-			where += fmt.Sprintf(" AND u.%s=$%d", field.name, len(args))
+	filterWhere := func(alias, timeColumn, model string) string {
+		where := alias + "." + timeColumn + " >= $1 AND " + alias + "." + timeColumn + " < $2"
+		for _, field := range []struct {
+			name  string
+			value int64
+		}{
+			{"user_id", f.UserID}, {"api_key_id", f.APIKeyID}, {"account_id", f.AccountID}, {"group_id", f.GroupID},
+		} {
+			if field.value > 0 {
+				args = append(args, field.value)
+				where += fmt.Sprintf(" AND %s.%s=$%d", alias, field.name, len(args))
+			}
 		}
+		if f.Model != "" {
+			args = append(args, f.Model)
+			where += fmt.Sprintf(" AND %s=$%d", model, len(args))
+		}
+		if f.Platform != "" {
+			args = append(args, f.Platform)
+			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM accounts p WHERE p.id=%s.account_id AND p.platform=$%d)", alias, len(args))
+		}
+		return where
 	}
-	if f.Model != "" {
-		args = append(args, f.Model)
-		where += fmt.Sprintf(" AND COALESCE(NULLIF(u.requested_model,''),u.model)=$%d", len(args))
+	where := filterWhere("u", "created_at", "COALESCE(NULLIF(u.requested_model,''),u.model)")
+	unbilled := ""
+	if f.IncludeUnbilled {
+		connectionWhere := filterWhere("c", "started_at", "c.model")
+		unbilled = ` UNION ALL
+ SELECT 'unbilled:'||c.trace_id::text,'unknown','unknown',c.detail,c.trace_id,
+ CASE WHEN jsonb_typeof(c.detail->'body_bytes')='number' THEN (c.detail->>'body_bytes')::numeric END
+ FROM request_connection_traces c WHERE c.source='application' AND ` + connectionWhere + `
+ AND NOT EXISTS (SELECT 1 FROM request_timing_details d WHERE d.trace_id=c.trace_id)
+ AND NOT EXISTS (SELECT 1 FROM usage_logs u WHERE u.api_key_id=c.api_key_id
+ AND (u.request_id=c.request_id OR (c.client_request_id<>'' AND u.request_id='client:'||c.client_request_id)))`
 	}
-	return `WITH traces AS (
- SELECT u.id, COALESCE(NULLIF(u.reasoning_effort,''),'unknown') effort,
+	return `WITH usage_traces AS (
+ SELECT u.id::text id, COALESCE(NULLIF(u.reasoning_effort,''),'unknown') effort,
  CASE WHEN u.input_tokens+u.cache_read_tokens<=0 THEN 'unknown'
  WHEN u.cache_read_tokens::numeric/(u.input_tokens::numeric+u.cache_read_tokens)<.8 THEN '<80%'
  WHEN u.cache_read_tokens::numeric/(u.input_tokens::numeric+u.cache_read_tokens)<.95 THEN '80-95%' ELSE '95%+' END cache,
  d.detail,d.trace_id,
  CASE WHEN jsonb_typeof(d.detail->'body_bytes')='number' THEN (d.detail->>'body_bytes')::numeric END body
  FROM usage_logs u LEFT JOIN LATERAL (
-  SELECT detail,trace_id FROM request_timing_details WHERE usage_log_id=u.id ORDER BY created_at DESC,trace_id LIMIT 20
+  SELECT detail,trace_id FROM request_timing_details WHERE usage_log_id=u.id
  ) d ON true WHERE ` + where + `
+),traces AS (
+ SELECT * FROM usage_traces` + unbilled + `
 ), grouped_traces AS (
- SELECT *,CASE WHEN body IS NULL THEN 'unknown' WHEN body<65536 THEN '<64KiB'
+ SELECT *,CASE WHEN body IS NULL OR body<0 THEN 'unknown' WHEN body<65536 THEN '<64KiB'
  WHEN body<262144 THEN '64-256KiB' WHEN body<=1048576 THEN '256KiB-1MiB'
  WHEN body<=4194304 THEN '1-4MiB' ELSE '4MiB+' END body_bucket FROM traces
 ), trace_counts AS (

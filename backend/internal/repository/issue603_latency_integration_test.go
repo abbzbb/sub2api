@@ -37,7 +37,8 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	snapshot.Latency = &derived
 	raw, err := json.Marshal(snapshot)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,$3::jsonb)`, usage.ID, uuid.NewString(), string(raw))
+	traceID := uuid.NewString()
+	_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,$3::jsonb)`, usage.ID, traceID, string(raw))
 	require.NoError(t, err)
 	_, err = repo.Create(ctx, &service.UsageLog{UserID: u.ID, APIKeyID: k.ID, AccountID: a.ID, Model: "historical", CreatedAt: now})
 	require.NoError(t, err)
@@ -62,6 +63,21 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	require.Zero(t, groups[0].Attempts)
 	require.Nil(t, groups[0].UploadAvgMS)
 	require.Zero(t, groups[0].FailoverSamples)
+	for _, id := range []string{traceID, uuid.NewString()} {
+		_, err = tx.ExecContext(ctx, `INSERT INTO request_connection_traces(trace_id,started_at,request_id,client_request_id,user_id,api_key_id,account_id,model,path,stream,detail)
+ VALUES($1,$2,$3,'',$4,$5,$6,'fixture','/v1/responses',true,$7::jsonb)`, id, now, "unbilled:"+id, u.ID, k.ID, a.ID, string(raw))
+		require.NoError(t, err)
+	}
+	groups, err = readLatencyGroups(ctx, tx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID, Model: "fixture", IncludeUnbilled: true, Platform: a.Platform})
+	require.NoError(t, err)
+	require.Len(t, groups, 2, "ops retains an unbilled trace in an unknown cache/effort cohort")
+	var requests, attempts int64
+	for _, g := range groups {
+		requests += g.Requests
+		attempts += g.Attempts
+	}
+	require.EqualValues(t, 2, requests, "linked application trace and timing detail must not double count")
+	require.EqualValues(t, 4, attempts)
 }
 
 func TestIssue603NetworkMinuteStorageAndBodySQL(t *testing.T) {

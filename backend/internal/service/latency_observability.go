@@ -8,13 +8,15 @@ import (
 )
 
 type LatencyReportFilter struct {
-	Start     time.Time
-	End       time.Time
-	UserID    int64
-	APIKeyID  int64
-	AccountID int64
-	GroupID   int64
-	Model     string
+	Start           time.Time
+	End             time.Time
+	UserID          int64
+	APIKeyID        int64
+	AccountID       int64
+	GroupID         int64
+	Model           string
+	Platform        string
+	IncludeUnbilled bool
 }
 
 type LatencyGroup struct {
@@ -75,5 +77,6 @@ func (s *OpsService) LatencyReport(ctx context.Context, f LatencyReportFilter) (
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, err
 	}
+	f.IncludeUnbilled = true
 	return readLatencyReport(ctx, s.opsRepo, f)
 }

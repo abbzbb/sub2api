@@ -45,6 +45,7 @@ func TestIssue603RealUsageAndOpsHandlers(t *testing.T) {
 		require.Contains(t, w.Body.String(), `"end_to_end_source":"none"`)
 		require.Equal(t, int64(42), stub.filter.UserID)
 		require.Equal(t, "synthetic", stub.filter.Model)
+		require.Equal(t, path == "/ops/latency-report", stub.filter.IncludeUnbilled)
 		for _, bad := range []string{"user_id=-1", "start_date=bad", "start_date=2026-01-01&end_date=2026-03-01"} {
 			w = httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest("GET", path+"?"+bad, nil))

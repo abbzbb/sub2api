@@ -17,8 +17,6 @@ on:
       - 'backend/internal/handler/admin/account_handler.go'
       - '.github/workflows/issue603-loadrate.yml'
       - '.github/scripts/issue603-loadrate-check-red.py'
-  push:
-    branches: [feat/issue603-latency-observability]
 
 permissions:
   contents: read

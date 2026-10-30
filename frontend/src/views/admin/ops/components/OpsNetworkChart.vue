@@ -12,9 +12,10 @@
         <h4 class="text-sm">{{ t(`latencyObservability.${series.key}`) }}</h4>
         <svg viewBox="0 0 600 100" class="h-28 w-full" role="img" :aria-label="t(`latencyObservability.${series.key}`)">
           <path :d="path(series.values)" fill="none" stroke="currentColor" stroke-width="2" class="text-sky-600" />
-          <circle v-for="(v, i) in series.values" :key="i" :cx="x(i, series.values.length)" :cy="y(v.value, series.values)" :r="v.value == null ? 0 : 3" class="fill-sky-600"><title>{{ v.at }} · {{ v.value ?? t('latencyObservability.notCollected') }} · {{ v.status }}</title></circle>
+          <circle v-for="(v, i) in series.values" :key="i" :cx="x(i, series.values)" :cy="y(v.value, series.values)" :r="v.value == null ? 0 : 3" class="fill-sky-600"><title>{{ v.at }} · {{ v.value ?? t('latencyObservability.notCollected') }} · {{ v.status }}</title></circle>
         </svg>
         <p class="text-xs text-gray-500">{{ series.values.at(-1)?.value ?? t('latencyObservability.notCollected') }} · {{ series.values.at(-1)?.status ?? t('latencyObservability.notCollected') }}</p>
+        <p v-if="series.values.length" class="flex justify-between text-xs text-gray-400"><span>{{ series.values[0]?.at.slice(11, 16) }} UTC</span><span>{{ series.values.at(-1)?.at.slice(11, 16) }} UTC</span></p>
       </div>
     </div>
   </section>
@@ -35,13 +36,18 @@ const curves = computed(() => [
   { key: 'qdisc', values: points.value.map(p => ({ at: p.at, value: p.qdisc_drops, status: p.qdisc_status })) },
   { key: 'bodyBytes', values: data.value?.body_points.map(p => ({ at: p.at, value: p.bytes, status: `n=${p.samples}` })) ?? [] }
 ])
-const x = (i: number, count: number) => 10 + i * 580 / Math.max(1, count - 1)
+const x = (i: number, values: Value[]) => {
+  const start = Date.parse(values[0]?.at ?? '')
+  const end = Date.parse(values.at(-1)?.at ?? '')
+  const value = Date.parse(values[i]?.at ?? '')
+  return Number.isFinite(start + end + value) ? 10 + (value - start) * 580 / Math.max(60000, end - start) : 10
+}
 const y = (value: number | null, values: Value[]) => 90 - (value ?? 0) * 80 / Math.max(1, ...values.map(v => v.value ?? 0))
 const path = (values: Value[]) => {
   let result = '', connected = false
   values.forEach((v, i) => {
     if (v.value == null || (i > 0 && Date.parse(v.at) - Date.parse(values[i - 1]!.at) > 90000)) connected = false
-    if (v.value != null) { result += `${connected ? 'L' : 'M'}${x(i, values.length)},${y(v.value, values)} `; connected = true }
+    if (v.value != null) { result += `${connected ? 'L' : 'M'}${x(i, values)},${y(v.value, values)} `; connected = true }
   })
   return result
 }

@@ -1,6 +1,6 @@
 export default {
   "title": "HTTP attempt 延迟分组",
-  "scope": "应用侧观测。上传为 headers-written 到成功 request-written；semantic 内容可包含推理，visible 为可见输出。上传后等待包含网络和上游工作，不代表 prefill。额外成本仅为已测组件，不是墙钟总时长；历史缺失保持未采集。",
+  "scope": "应用侧观测。上传为 headers-written 到成功 request-written；semantic 内容可包含推理，visible 为可见输出。上传后等待包含网络和上游工作，不代表 prefill。额外成本为首个 send 之后各 attempt 的上传/等待组件，不是墙钟总时长或反事实节省量；历史缺失保持未采集。",
   "e2e": "客户端端到端耗时",
   "clientUpload": "进入应用前的客户端上传",
   "notCollected": "未采集",
@@ -8,19 +8,20 @@ export default {
   "error": "延迟观测加载失败",
   "empty": "此时间段暂无观测",
   "body": "请求体大小",
-  "cache": "缓存读取 /（输入 + 缓存读取）",
+  "cache": "最终用量缓存读取 /（输入 + 缓存读取）",
   "effort": "实际推理强度",
   "samples": "请求 / trace / HTTP attempt",
   "upload": "平均正文上传",
   "semantic": "平均上传后首内容等待",
   "visible": "平均上传后首可见等待",
   "switches": ">1 MiB 切换 / 同账号重试",
-  "extra": "额外上传 / 等待组件累计",
+  "extra": "后续 attempt 上传 / 等待组件累计",
   "networkTitle": "网络与请求正文分钟曲线 · 最近一小时",
   "networkScope": "每实例上报进程所在网络命名空间的非 loopback 接口总量，虚拟链路可能重复计量。重传比例为重传段数/发出段数。body bytes 为跨实例应用 trace 的已读正文，含失败/部分读取，不代表客户端上传带宽。窗口缺口和不支持的 qdisc 保持未采集。",
   "instance": "实例",
   "egress": "出口 Mbps",
   "retrans": "TCP 重传段比例（%）",
   "qdisc": "qdisc drops（不支持时无数据）",
-  "bodyBytes": "应用已读正文 bytes / 分钟"
+  "bodyBytes": "应用已读正文 bytes / 分钟",
+  "opsPopulation": "Ops 包含未生成计费用量的应用 trace，其缓存与推理强度保持 unknown。已关联 trace 按最终 usage 分组，包含该请求此前失败的 attempt。"
 }

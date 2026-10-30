@@ -56,6 +56,18 @@ func DeriveLatency(s Snapshot) LatencySummary {
 	var previous *Attempt
 	var upload, wait float64
 	costComplete, overlap := true, false
+	parents := make(map[int]bool)
+	for _, a := range s.Attempts {
+		if a.Kind == "http" && a.Parent > 0 {
+			parents[a.Parent] = true
+		}
+	}
+	unobservedEgress := false
+	for _, a := range s.Attempts {
+		if a.Kind == "egress" && !parents[a.Number] {
+			unobservedEgress = true
+		}
+	}
 	for i := range s.Attempts {
 		a := &s.Attempts[i]
 		if a.Kind != "http" {
@@ -93,7 +105,9 @@ func DeriveLatency(s Snapshot) LatencySummary {
 				item.Transition = "account_switch"
 				out.AccountSwitches++
 			}
-			if previous.EndMS == nil || a.StartMS < *previous.EndMS {
+			if previous.EndMS == nil || !finite(*previous.EndMS) || !finite(a.StartMS) {
+				costComplete = false
+			} else if a.StartMS < *previous.EndMS {
 				overlap = true
 			}
 			if item.Upload.MS == nil {
@@ -119,14 +133,14 @@ func DeriveLatency(s Snapshot) LatencySummary {
 	if len(out.Attempts) == 0 {
 		out.Status = "not_collected"
 	}
-	if s.Truncated {
+	if s.Truncated || unobservedEgress {
 		out.Status = "partial"
 	}
 	if out.LargeBody && len(out.Attempts) > 1 {
 		switch {
 		case overlap:
 			out.CostStatus = "overlap"
-		case !costComplete || s.Truncated || out.UnknownTransitions > 0:
+		case !costComplete || s.Truncated || unobservedEgress || out.UnknownTransitions > 0:
 			out.CostStatus = "partial"
 		default:
 			out.CostStatus = "measured_components"

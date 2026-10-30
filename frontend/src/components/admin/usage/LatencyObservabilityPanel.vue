@@ -2,6 +2,7 @@
   <section class="card space-y-3 p-4" data-testid="latency-observability">
     <h3 class="font-semibold">{{ t('latencyObservability.title') }}</h3>
     <p class="text-xs text-gray-500">{{ t('latencyObservability.scope') }}</p>
+    <p v-if="ops" class="text-xs text-gray-500">{{ t('latencyObservability.opsPopulation') }}</p>
     <p data-testid="latency-e2e" class="text-sm">{{ t('latencyObservability.e2e') }}: {{ t('latencyObservability.notCollected') }} · {{ t('latencyObservability.sourceNone') }}</p>
     <p class="text-sm">{{ t('latencyObservability.clientUpload') }}: {{ t('latencyObservability.notCollected') }}</p>
     <p v-if="loading" role="status">{{ t('common.loading') }}</p>
@@ -27,18 +28,18 @@
 import { ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getLatencyReport, type LatencyReport } from '@/api/admin/latencyObservability'
-const props = defineProps<{ ops?: boolean; startDate?: string; endDate?: string; model?: string; userId?: number; apiKeyId?: number; accountId?: number; groupId?: number; refreshToken?: number }>()
+const props = defineProps<{ ops?: boolean; startDate?: string; endDate?: string; model?: string; platform?: string; userId?: number; apiKeyId?: number; accountId?: number; groupId?: number; refreshToken?: number }>()
 const { t } = useI18n()
 const report = ref<LatencyReport | null>(null), loading = ref(false), error = ref(false)
 const columns = ['body', 'cache', 'effort', 'samples', 'upload', 'semantic', 'visible', 'switches', 'extra']
 const measured = (value: number | null, count: number) => `${value == null ? t('latencyObservability.notCollected') : `${value.toFixed(1)} ms`} (n=${count})`
 let controller: AbortController | undefined
-watch(() => [props.ops, props.startDate, props.endDate, props.model, props.userId, props.apiKeyId, props.accountId, props.groupId, props.refreshToken], async () => {
+watch(() => [props.ops, props.startDate, props.endDate, props.model, props.platform, props.userId, props.apiKeyId, props.accountId, props.groupId, props.refreshToken], async () => {
   controller?.abort()
   const current = new AbortController(); controller = current
   loading.value = true; error.value = false; report.value = null
   try {
-    const result = await getLatencyReport(!!props.ops, { start_date: props.startDate, end_date: props.endDate, model: props.model || undefined, user_id: props.userId || undefined, api_key_id: props.apiKeyId || undefined, account_id: props.accountId || undefined, group_id: props.groupId || undefined }, current.signal)
+    const result = await getLatencyReport(!!props.ops, { start_date: props.startDate, end_date: props.endDate, model: props.model || undefined, platform: props.platform || undefined, user_id: props.userId || undefined, api_key_id: props.apiKeyId || undefined, account_id: props.accountId || undefined, group_id: props.groupId || undefined }, current.signal)
     if (controller === current && !current.signal.aborted) report.value = result
   } catch {
     if (controller === current && !current.signal.aborted) error.value = true

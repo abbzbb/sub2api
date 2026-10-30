@@ -1,6 +1,6 @@
 export default {
   "title": "HTTP attempt latency groups",
-  "scope": "Application observations. Upload: successful headers-written to request-written. Semantic content may include reasoning; visible output is separate. Post-upload wait includes network and upstream work, and does not measure prefill. Extra costs are measured components, never wall time. Historical gaps remain unavailable.",
+  "scope": "Application observations. Upload: successful headers-written to request-written. Semantic content may include reasoning; visible output is separate. Post-upload wait includes network and upstream work, and does not measure prefill. Additional costs are upload/wait components of sends after the first, never wall time or counterfactual savings. Historical gaps remain unavailable.",
   "e2e": "Client end-to-end time",
   "clientUpload": "Client upload before application entry",
   "notCollected": "Not collected",
@@ -8,19 +8,20 @@ export default {
   "error": "Unable to load latency observations",
   "empty": "No observations for this range",
   "body": "Body size",
-  "cache": "Cache read / (input + cache read)",
+  "cache": "Final usage cache read / (input + cache read)",
   "effort": "Effective effort",
   "samples": "Requests / traces / HTTP attempts",
   "upload": "Mean body upload",
   "semantic": "Mean post-upload first content wait",
   "visible": "Mean post-upload first visible wait",
   "switches": ">1 MiB switches / same-account retries",
-  "extra": "Extra upload / wait component totals",
+  "extra": "Additional-attempt upload / wait components",
   "networkTitle": "Network and request-body minute curves · last hour",
   "networkScope": "Each instance reports its process network namespace, aggregating all non-loopback interfaces; virtual links can count traffic twice. TCP ratio = retransmitted / outgoing segments. Body bytes cover observed application traces across instances, including failed/partial reads, not client upload bandwidth. Gaps and unsupported qdisc counters remain unavailable.",
   "instance": "Instance",
   "egress": "Egress Mbps",
   "retrans": "TCP retransmitted segments (%)",
   "qdisc": "qdisc drops (unavailable when unsupported)",
-  "bodyBytes": "Observed application body bytes / minute"
+  "bodyBytes": "Observed application body bytes / minute",
+  "opsPopulation": "Ops includes application traces without billed usage; their cache and effort remain unknown. Bound traces use the final usage cohort, including its preceding failed attempts."
 }

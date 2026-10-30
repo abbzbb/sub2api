@@ -38,18 +38,29 @@ type opsNetworkStore interface {
 }
 
 type networkCounters struct {
-	interfaces   map[string]uint64
-	out, retrans uint64
-	netOK, tcpOK bool
-	at           time.Time
+	interfaces           map[string]uint64
+	out, retrans         uint64
+	netOK, tcpOK         bool
+	netStatus, tcpStatus string
+	at                   time.Time
 }
 type hostNetworkSampler struct {
 	readFile func(string) ([]byte, error)
 	previous *networkCounters
 }
 
+func networkReadStatus(err error) string {
+	if os.IsPermission(err) {
+		return "permission_denied"
+	}
+	if os.IsNotExist(err) {
+		return "unsupported"
+	}
+	return "read_error"
+}
+
 func parseNetworkCounters(read func(string) ([]byte, error), now time.Time) networkCounters {
-	c := networkCounters{at: now, interfaces: map[string]uint64{}}
+	c := networkCounters{at: now, interfaces: map[string]uint64{}, netStatus: "malformed", tcpStatus: "malformed"}
 	if data, err := read("/proc/net/dev"); err == nil {
 		valid := true
 		for _, line := range strings.Split(string(data), "\n") {
@@ -74,6 +85,11 @@ func parseNetworkCounters(read func(string) ([]byte, error), now time.Time) netw
 			c.interfaces[name] = v
 		}
 		c.netOK = valid && len(c.interfaces) > 0
+		if valid && len(c.interfaces) == 0 {
+			c.netStatus = "no_interfaces"
+		}
+	} else {
+		c.netStatus = networkReadStatus(err)
 	}
 	if data, err := read("/proc/net/snmp"); err == nil {
 		lines := strings.Split(string(data), "\n")
@@ -101,6 +117,8 @@ func parseNetworkCounters(read func(string) ([]byte, error), now time.Time) netw
 			c.tcpOK = found == 2
 			break
 		}
+	} else {
+		c.tcpStatus = networkReadStatus(err)
 	}
 	return c
 }
@@ -111,7 +129,7 @@ func (s *hostNetworkSampler) sample(now time.Time, instance string) OpsNetworkPo
 		read = os.ReadFile
 	}
 	c := parseNetworkCounters(read, now)
-	p := OpsNetworkPoint{At: now, Instance: instance, EgressStatus: "unavailable", TCPStatus: "unavailable", QdiscStatus: "unsupported_unprivileged_collector"}
+	p := OpsNetworkPoint{At: now, Instance: instance, EgressStatus: c.netStatus, TCPStatus: c.tcpStatus, QdiscStatus: "unsupported_unprivileged_collector"}
 	previous := s.previous
 	s.previous = &c
 	if c.netOK {
