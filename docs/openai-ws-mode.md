@@ -152,7 +152,7 @@ v2 模式路由的解析优先级：分类型模式字符串 → 分类型布尔
 1013 upstream websocket is busy
 ```
 
-在 `ctx_pool` 的连接获取路径中，该关闭消息对应获取超时或连接队列满，不足以单独证明连接池耗尽；透传路径也会把上游握手 `429` 映射成同样的 1013 消息。先核对模式、底层错误和 `queue_wait_ms`；确认是本地容量限制后，再调整 `max_conns_per_account` / 动态系数、活跃会话数或 `ingress_inter_turn_idle_timeout_seconds`。
+在 `ctx_pool` 的连接获取路径中，该关闭消息对应获取超时或连接队列满，不足以单独证明连接池耗尽。先核对实际模式、底层错误、握手状态和 `queue_wait_ms`；确认是本地容量限制后，再调整 `max_conns_per_account` / 动态系数、活跃会话数或 `ingress_inter_turn_idle_timeout_seconds`。
 
 上游也可能返回 1013，例如：
 
@@ -176,7 +176,7 @@ reason = "no available account"
 | 下拉框选了 `ctx_pool`/`http_bridge` 但行为没变 | `mode_router_v2_enabled`、账号启用布尔值和全局协议开关 | 要按模式分发需开启 v2 路由并重启；legacy 仍检查账号 WS 资格 |
 | 面板显示「流式」而不是「WS」 | 客户端是否真的用 WS ingress；`usage_logs.openai_ws_mode` | HTTP 客户端即使使用上游 WS 加速也仍是 HTTP ingress；客户端另行重试 HTTP 是独立请求 |
 | 有 WS 连接但 0 成功 | 本地选号日志及 `conn_reader_loop_closed` 的 close status/reason | 先确认 1013 来源；确认上游 WS 不可用且 HTTP 可用后再考虑 `http_bridge` |
-| 报 `1013 upstream websocket is busy` | 模式、底层获取错误或握手状态、`queue_wait_ms` | 确认本地容量限制后再扩池或减少会话；透传需检查上游握手 `429` |
+| 报 `1013 upstream websocket is busy` | 模式、底层获取错误或握手状态、`queue_wait_ms` | 确认本地容量限制后再扩池或减少会话 |
 | 大输出请求首 token 很高 | 是否 WS ingress、输出 token 数、上游是否增量流式 | 按实际事件和耗时判断传输差异；不要只凭输出大小推断 `http_bridge` 更快 |
 | 账号明明 active 但仍不走 WS | SIWC / Copilot SDK / Excel BPS all-models / `openai_ws_force_http` / 账号状态 | 关闭冲突开关或换账号 |
 | HTTP 流式加速不生效 | 是否首轮、是否 HTTP、`stream=true`、是否有 `previous_response_id`、自动透传是否关闭 | 该开关只覆盖首轮流式请求 |
