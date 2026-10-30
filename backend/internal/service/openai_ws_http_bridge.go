@@ -1019,7 +1019,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				turn,
 				truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
 				payloadBytes,
-				time.Since(turnStart).Milliseconds(),
+				requesttiming.Now(ctx).Sub(turnStart).Milliseconds(),
 				eventCount,
 				tokenEventCount,
 				terminalEventCount,

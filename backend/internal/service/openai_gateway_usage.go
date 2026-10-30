@@ -360,10 +360,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		billingType = BillingTypeSubscription
 	}
 
-	// Create usage log. QueueWait is persisted separately: forward-scope
-	// Duration/FirstTokenMs keep their existing scheduling and ops semantics,
-	// while the usage UI can present first_token_ms + queue_wait_ms as the
-	// end-to-end wait.
+	// Preserve protocol-specific legacy timers and the TPS denominator.
+	// QueueTiming supplies separately sampled server/forward observations.
 	queueWaitMs := 0
 	if result.QueueWait > 0 {
 		queueWaitMs = int(min(result.QueueWait, maxOpenAIQueueWait).Milliseconds())

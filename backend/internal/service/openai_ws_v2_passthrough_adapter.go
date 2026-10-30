@@ -1038,6 +1038,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
 	var acceptedTurnForwardAt atomic.Pointer[time.Time]
+	var acceptedQueueArrival atomic.Pointer[time.Time]
 	clientFrameConn := &openAIWSClientFrameConn{
 		conn:                 clientConn,
 		reader:               openAIWSGetIngressReader(c, clientConn),
@@ -1070,6 +1071,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			isResponseCreate := eventType == "response.create"
 			responseCreateAt := time.Time{}
+			responseFrameAt := time.Time{}
 			acceptedTurn := false
 			if isResponseCreate {
 				if hooks != nil && hooks.TurnStarted != nil {
@@ -1089,9 +1091,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						return payload, nil, err
 					}
 				}
-				responseCreateAt = time.Time{}
+				// Preserve the legacy baseline after payload preflight. The new
+				// observation separately retains actual socket receipt before it.
+				responseCreateAt = requesttiming.Now(ctx)
 				if received := clientFrameConn.reader.lastReadAt.Load(); received != nil {
-					responseCreateAt = *received
+					responseFrameAt = *received
 				}
 				if !turnLifecycle.beginResponseCreate(clientFrameConn.markTurnStarted) {
 					err := errors.New("overlapping response.create is not supported")
@@ -1290,6 +1294,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				SetOpsUpstreamModel(c, actualModel)
 				responseCreateAtCopy := responseCreateAt
 				acceptedTurnStartedAt.Store(&responseCreateAtCopy)
+				responseFrameAtCopy := responseFrameAt
+				acceptedQueueArrival.Store(&responseFrameAtCopy)
 				acceptedTurn = true
 			}
 			if acceptedTurn {
@@ -1345,6 +1351,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
 	firstForwardAt := requesttiming.Now(ctx)
 	acceptedTurnForwardAt.Store(&firstForwardAt)
+	if hooks != nil {
+		arrival := hooks.InitialTurnStartedAt
+		acceptedQueueArrival.Store(&arrival)
+	}
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
@@ -1453,9 +1463,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					FirstTokenMs:                  turn.FirstTokenMs,
 				}
 				if forward := acceptedTurnForwardAt.Swap(nil); forward != nil {
-					arrival := turn.StartedAt
-					if turnNo == 1 && firstTurnStartedAt.IsZero() {
-						arrival = time.Time{}
+					arrival := time.Time{}
+					if sampled := acceptedQueueArrival.Swap(nil); sampled != nil {
+						arrival = *sampled
 					}
 					applyOpenAIQueueTiming(turnResult, arrival, *forward, turn.StartedAt, "ws_frame_passthrough", "accepted_frame_including_admission")
 				}

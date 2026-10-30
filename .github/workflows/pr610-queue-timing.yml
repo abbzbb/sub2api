@@ -96,6 +96,13 @@ jobs:
           grep -F 'rejected-field network time must stay in legacy TPS denominator' "$RUNNER_TEMP/pr610-red-TestPR610RealBridgeRetryDenominator.log"
           for file in "${files[@]}"; do test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"; done
           test -z "$(git status --porcelain)"
+      - name: PostgreSQL measured cohorts, full migration runner and joint upgrade
+        run: |
+          set -euo pipefail
+          (cd backend && go test -tags=integration ./internal/repository -run '^TestPR610' -count=1 -v -timeout=8m) 2>&1 | tee "$RUNNER_TEMP/pr610-postgres.log"
+          ! grep -E -- '--- SKIP:|no tests to run' "$RUNNER_TEMP/pr610-postgres.log"
+          grep -F -- '--- PASS: TestPR610MeasuredCohortPreservesLegacyOperations' "$RUNNER_TEMP/pr610-postgres.log"
+          grep -F -- '--- PASS: TestPR610Migrations320321322JointUpgradeIdempotencyAndLegacyRead' "$RUNNER_TEMP/pr610-postgres.log"
       - name: Race check for actual turn boundary lifetimes
         run: |
           set -euo pipefail

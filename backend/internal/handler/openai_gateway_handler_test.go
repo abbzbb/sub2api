@@ -2963,7 +2963,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			_ = conn.CloseNow()
 		}()
 
-		for frame := 1; frame <= frameCount; frame++ {
+		maxFrames := frameCount
+		if tc.timing != nil && tc.timing.poolHolder {
+			maxFrames++
+		}
+		for frame := 1; frame <= maxFrames; frame++ {
 			readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
 			msgType, payload, readErr := conn.Read(readCtx)
 			cancelRead()
@@ -2974,6 +2978,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
 				upstreamErrCh <- errors.New("unexpected upstream websocket message type")
 				return
+			}
+			if tc.timing != nil && tc.timing.handleHolder(conn, payload) {
+				continue
 			}
 			upstreamPayloadCh <- payload
 			if frame == 1 && tc.afterFirstUpstreamRequest != nil {
@@ -3053,7 +3060,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		tc.timing.configure(&account, cfg)
 	}
 	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
-	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, turnCount)}
+	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, turnCount+1)}
 
 	if len(tc.channelMapping) > 0 {
 		channelSvc = service.NewChannelService(&openAIWSUsageHandlerChannelRepoStub{
@@ -3174,11 +3181,16 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	router.Use(middleware.GroupBlockSubagents())
 	handlerDone := make(chan struct{})
 	router.GET("/v1/responses", func(c *gin.Context) {
-		defer close(handlerDone)
+		if c.GetHeader("X-PR610-Pool-Holder") != "true" {
+			defer close(handlerDone)
+		}
 		h.ResponsesWebSocket(c)
 	})
 	handlerServer := httptest.NewServer(router)
 	defer handlerServer.Close()
+	if tc.timing != nil && tc.timing.poolHolder {
+		tc.timing.startHolder(handlerServer.URL, apiKey.Key, gatewaySvc)
+	}
 
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+apiKey.Key)
@@ -3252,12 +3264,19 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 		if tc.timing != nil {
-			select {
-			case usage := <-usageRepo.created:
-				earlyLogs = append(earlyLogs, usage)
-			case <-time.After(3 * time.Second):
-				t.Fatal("timing fixture must settle usage before accepting the next turn")
+			for {
+				select {
+				case usage := <-usageRepo.created:
+					if usage.RequestID == "resp_pool_holder" {
+						continue
+					}
+					earlyLogs = append(earlyLogs, usage)
+				case <-time.After(3 * time.Second):
+					t.Fatal("timing fixture must settle usage before accepting the next turn")
+				}
+				break
 			}
+
 		}
 	}
 	readCompleted()
@@ -3335,7 +3354,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		}
 	}
 
-	if tc.accountPlatform == service.PlatformGrok {
+	if tc.accountPlatform == service.PlatformGrok || (tc.timing != nil && tc.timing.mode == service.OpenAIWSIngressModeHTTPBridge) {
 		upstreamErrCh <- nil
 	}
 	select {

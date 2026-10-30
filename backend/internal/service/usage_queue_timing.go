@@ -37,6 +37,9 @@ func applyOpenAIQueueTiming(r *OpenAIForwardResult, arrival, forward, legacy tim
 		return
 	}
 	r.QueueWait, r.QueueWaitMeasured, r.QueueTiming = 0, false, nil
+	if r.OpenAIWSMode && r.UpstreamTerminalEvent == "error" && r.RequestID == "" {
+		return
+	}
 	if arrival.IsZero() || forward.IsZero() || legacy.IsZero() || forward.Before(arrival) || legacy.Before(arrival) || forward.Before(legacy) || r.Duration < 0 {
 		return
 	}

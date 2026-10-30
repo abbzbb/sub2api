@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,20 +31,26 @@ type pr610Barrier struct {
 // Busy user/account slots still reject according to the existing WS policy;
 // these barriers model a delayed acquisition, not a new capacity-wait policy.
 type pr610TimingScenario struct {
-	t         *testing.T
-	mode      string
-	realtime  bool
-	base      time.Time
-	offset    atomic.Int64
-	turn      atomic.Int32
-	retry     bool
-	longFirst bool
-	attempts  atomic.Int32
-	mu        sync.Mutex
-	gated     map[string]bool
-	barriers  chan pr610Barrier
-	deltaRead chan struct{}
-	cache     service.ConcurrencyCache
+	t             *testing.T
+	mode          string
+	realtime      bool
+	base          time.Time
+	offset        atomic.Int64
+	turn          atomic.Int32
+	poolHolder    bool
+	holderHandled atomic.Bool
+	holderArrived chan struct{}
+	holderRelease chan struct{}
+	holderDone    chan struct{}
+	gateway       *service.OpenAIGatewayService
+	retry         bool
+	longFirst     bool
+	attempts      atomic.Int32
+	mu            sync.Mutex
+	gated         map[string]bool
+	barriers      chan pr610Barrier
+	deltaRead     chan struct{}
+	cache         service.ConcurrencyCache
 }
 
 func newPR610Scenario(t *testing.T, mode string) *pr610TimingScenario {
@@ -65,7 +72,13 @@ func (s *pr610TimingScenario) advance(d time.Duration) {
 	}
 	s.offset.Add(int64(d))
 }
+
+type pr610HolderKey struct{}
+
 func (s *pr610TimingScenario) middleware(c *gin.Context) {
+	if c.GetHeader("X-PR610-Pool-Holder") == "true" {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), pr610HolderKey{}, true))
+	}
 	c.Request = c.Request.WithContext(requesttiming.WithClock(c.Request.Context(), s.now))
 	c.Next()
 }
@@ -73,6 +86,9 @@ func (s *pr610TimingScenario) configure(a *service.Account, cfg *config.Config) 
 	require.Equal(s.t, s.mode, a.ResolveOpenAIResponsesWebSocketV2Mode(cfg.Gateway.OpenAIWS.IngressModeDefault), "fixture must resolve the requested effective mode")
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
 	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	if s.poolHolder {
+		a.Concurrency = 2
+	}
 }
 func (s *pr610TimingScenario) block(phase string) {
 	s.mu.Lock()
@@ -101,7 +117,7 @@ func (s *pr610TimingScenario) prepareTurn() {
 	s.gated = map[string]bool{}
 	s.mu.Unlock()
 	phases := []string{"user", "account"}
-	if turn == 1 && s.mode == service.OpenAIWSIngressModeCtxPool {
+	if turn == 1 && s.mode == service.OpenAIWSIngressModeCtxPool && !s.poolHolder {
 		phases = append(phases, "pool")
 	}
 	go func() {
@@ -122,10 +138,15 @@ func (s *pr610TimingScenario) prepareTurn() {
 				return
 			}
 		}
+		if s.poolHolder {
+			require.Eventually(s.t, func() bool { return s.gateway.SnapshotOpenAIWSPoolMetrics().AcquireQueueWaitTotal > 0 }, 3*time.Second, time.Millisecond, "target must enter real busy lease queue")
+			s.advance(10 * time.Second)
+			close(s.holderRelease)
+		}
 	}()
 }
 func (s *pr610TimingScenario) poolHandshake() {
-	if s.mode == service.OpenAIWSIngressModeCtxPool {
+	if s.mode == service.OpenAIWSIngressModeCtxPool && !s.poolHolder {
 		s.block("pool")
 	}
 }
@@ -173,6 +194,13 @@ func (s *pr610TimingScenario) serveHTTP(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 func (s *pr610TimingScenario) assertReleased() {
+	if s.poolHolder {
+		select {
+		case <-s.holderDone:
+		case <-time.After(3 * time.Second):
+			s.t.Fatal("pool holder did not release")
+		}
+	}
 	users, err := s.cache.GetUserConcurrency(context.Background(), 1701)
 	require.NoError(s.t, err)
 	require.Zero(s.t, users)
@@ -187,11 +215,15 @@ type pr610SlotCache struct {
 }
 
 func (c *pr610SlotCache) AcquireUserSlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
-	c.s.block("user")
+	if ctx.Value(pr610HolderKey{}) != true {
+		c.s.block("user")
+	}
 	return c.ConcurrencyCache.AcquireUserSlot(ctx, id, limit, member)
 }
 func (c *pr610SlotCache) AcquireAccountSlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
-	c.s.block("account")
+	if ctx.Value(pr610HolderKey{}) != true {
+		c.s.block("account")
+	}
 	return c.ConcurrencyCache.AcquireAccountSlot(ctx, id, limit, member)
 }
 
@@ -304,4 +336,66 @@ func TestPR610RealBridgeRetryDenominator(t *testing.T) {
 	row := got.log
 	require.GreaterOrEqual(t, *row.DurationMs, 85, "rejected-field network time must stay in legacy TPS denominator")
 	require.Less(t, *row.QueueWaitMs, 380, "rejected-field network time must not move into queue")
+}
+
+func (s *pr610TimingScenario) startHolder(serverURL, key string, gateway *service.OpenAIGatewayService) {
+	s.gateway = gateway
+	s.holderArrived = make(chan struct{})
+	s.holderRelease = make(chan struct{})
+	s.holderDone = make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(serverURL, "http")+"/v1/responses", &coderws.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + key}, "X-PR610-Pool-Holder": {"true"}}})
+	require.NoError(s.t, err)
+	require.NoError(s.t, c.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.4","stream":true,"input":"pool-holder"}`)))
+	go func() {
+		defer close(s.holderDone)
+		defer func() { _ = c.CloseNow() }()
+		readCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_, event, err := c.Read(readCtx)
+		if err != nil {
+			s.t.Error(err)
+			return
+		}
+		if gjson.GetBytes(event, "response.id").String() != "resp_pool_holder" {
+			s.t.Errorf("unexpected pool holder event %s", event)
+		}
+		_ = c.Close(coderws.StatusNormalClosure, "release lease")
+	}()
+	select {
+	case <-s.holderArrived:
+	case <-time.After(3 * time.Second):
+		s.t.Fatal("holder did not acquire real pool lease")
+	}
+}
+func (s *pr610TimingScenario) handleHolder(c *coderws.Conn, payload []byte) bool {
+	if !s.poolHolder || gjson.GetBytes(payload, "input").String() != "pool-holder" || !s.holderHandled.CompareAndSwap(false, true) {
+		return false
+	}
+	close(s.holderArrived)
+	select {
+	case <-s.holderRelease:
+	case <-time.After(5 * time.Second):
+		s.t.Error("target did not release pool holder")
+		return true
+	}
+	require.NoError(s.t, c.Write(context.Background(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_pool_holder","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":1}}}`)))
+	return true
+}
+func TestPR610AuthenticatedBusyPoolLeaseCountsOnce(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModeCtxPool)
+	s.poolHolder = true
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode,
+		authSetup: func(key *service.APIKey, cfg *config.Config) *service.APIKeyService {
+			svc := pr610Auth(key, cfg)
+			key.User.Concurrency = 2
+			return svc
+		},
+		firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":true,"input":"pool-holder"}`})
+	require.Greater(t, s.gateway.SnapshotOpenAIWSPoolMetrics().AcquireQueueWaitTotal, int64(0), "must contend on a busy pool lease")
+	require.NotNil(t, got.log.QueueTiming)
+	require.EqualValues(t, 40000, *got.log.QueueWaitMs, "actual busy lease wait and both slot calls count once")
+	require.EqualValues(t, 42000, *got.log.QueueTiming.ServerFirstTokenMs)
+	require.EqualValues(t, 2000, *got.log.FirstTokenMs)
 }
