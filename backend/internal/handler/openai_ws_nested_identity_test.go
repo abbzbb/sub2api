@@ -28,12 +28,13 @@ func issue600NestedMetadata() map[string]any {
 }
 func issue600NestedPayload(t *testing.T, rootMetadata, nestedMetadata any) string {
 	t.Helper()
-	body := map[string]any{"type": "response.create", "model": "gpt-5.1", "input": "fixture root input", "response": map[string]any{"input": []any{map[string]any{"role": "user", "content": "fixture nested input"}}, "instructions": "preserve nested instructions"}}
+	response := map[string]any{"input": []any{map[string]any{"role": "user", "content": "fixture nested input"}}, "instructions": "preserve nested instructions"}
+	body := map[string]any{"type": "response.create", "model": "gpt-5.1", "input": "fixture root input", "response": response}
 	if rootMetadata != nil {
 		body["client_metadata"] = rootMetadata
 	}
 	if nestedMetadata != nil {
-		body["response"].(map[string]any)["client_metadata"] = nestedMetadata
+		response["client_metadata"] = nestedMetadata
 	}
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
@@ -92,21 +93,23 @@ func TestIssue600NestedIdentityNetwork(t *testing.T) {
 						t.Run(namespace, func(t *testing.T) {
 							for _, scenario := range []string{"nested_header_body", "nested_body_only", "root_nested_consistent", "omitted_nested_identity", "root_hidden_by_empty_envelope", "conflicting_root_nested_thread", "conflicting_root_nested_session", "invalid_nested_identity", "invalid_root_identity", "invalid_nested_metadata", "invalid_root_metadata", "nested_header_conflict", "true_nested_switch", "session_only_consistent", "session_only_switch"} {
 								t.Run(scenario, func(t *testing.T) {
+									rootFields, nestedFields := issue600NestedMetadata(), issue600NestedMetadata()
 									var rootMeta any
-									nestedMeta := any(issue600NestedMetadata())
+									var nestedMeta any = nestedFields
 									headers := http.Header{}
 									switch scenario {
 									case "nested_header_body", "nested_header_conflict":
 										headers.Set("thread-id", "fixture-client-thread")
 									case "root_nested_consistent", "conflicting_root_nested_thread", "conflicting_root_nested_session", "invalid_nested_identity", "invalid_root_identity", "invalid_nested_metadata", "invalid_root_metadata":
-										rootMeta = issue600NestedMetadata()
+										rootMeta = rootFields
 									case "root_hidden_by_empty_envelope":
-										rootMeta = issue600NestedMetadata()
+										rootMeta = rootFields
 										nestedMeta = nil
 									case "session_only_consistent", "session_only_switch":
-										delete(nestedMeta.(map[string]any), "thread_id")
-										delete(nestedMeta.(map[string]any), "x-codex-turn-metadata")
-										rootMeta = map[string]any{"session_id": "fixture-nested-session", "fixture_label": "preserved"}
+										delete(nestedFields, "thread_id")
+										delete(nestedFields, "x-codex-turn-metadata")
+										rootFields = map[string]any{"session_id": "fixture-nested-session", "fixture_label": "preserved"}
+										rootMeta = rootFields
 									}
 									stable := issue600NestedPayload(t, rootMeta, nestedMeta)
 									third := stable
@@ -115,20 +118,20 @@ func TestIssue600NestedIdentityNetwork(t *testing.T) {
 									case "omitted_nested_identity":
 										third = issue600NestedPayload(t, nil, nil)
 									case "conflicting_root_nested_thread":
-										rootMeta.(map[string]any)["thread_id"] = "fixture-conflicting-thread"
+										rootFields["thread_id"] = "fixture-conflicting-thread"
 										reject = true
 									case "conflicting_root_nested_session":
-										delete(rootMeta.(map[string]any), "thread_id")
-										delete(nestedMeta.(map[string]any), "thread_id")
+										delete(rootFields, "thread_id")
+										delete(nestedFields, "thread_id")
 										// Bind a session for this case so thread precedence stays intentional.
 										stable = issue600NestedPayload(t, rootMeta, nestedMeta)
-										rootMeta.(map[string]any)["session_id"] = "fixture-conflicting-session"
+										rootFields["session_id"] = "fixture-conflicting-session"
 										reject = true
 									case "invalid_nested_identity":
-										nestedMeta.(map[string]any)["thread_id"] = 123
+										nestedFields["thread_id"] = 123
 										reject = true
 									case "invalid_root_identity":
-										rootMeta.(map[string]any)["thread_id"] = "fixture\ninvalid"
+										rootFields["thread_id"] = "fixture\ninvalid"
 										reject = true
 									case "invalid_nested_metadata":
 										nestedMeta = []string{"invalid"}
@@ -137,11 +140,11 @@ func TestIssue600NestedIdentityNetwork(t *testing.T) {
 										rootMeta = "invalid"
 										reject = true
 									case "nested_header_conflict", "true_nested_switch":
-										nestedMeta.(map[string]any)["thread_id"] = "fixture-switched-thread"
+										nestedFields["thread_id"] = "fixture-switched-thread"
 										reject = true
 									case "session_only_switch":
-										rootMeta.(map[string]any)["session_id"] = "fixture-switched-session"
-										nestedMeta.(map[string]any)["session_id"] = "fixture-switched-session"
+										rootFields["session_id"] = "fixture-switched-session"
+										nestedFields["session_id"] = "fixture-switched-session"
 										reject = true
 									}
 									if reject {
