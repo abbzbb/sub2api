@@ -9,6 +9,17 @@ const requireFrontend = createRequire(path.join(frontend, 'package.json'))
 const { createServer } = requireFrontend('vite')
 const vueModule = requireFrontend('@vitejs/plugin-vue'), vue = vueModule.default || vueModule
 const tailwind = requireFrontend('tailwindcss'), autoprefixer = requireFrontend('autoprefixer')
+const loadTailwindConfig = requireFrontend('tailwindcss/loadConfig')
+const tailwindConfig = loadTailwindConfig(path.join(frontend, 'tailwind.config.js'))
+const tailwindContent = Array.isArray(tailwindConfig.content) ? { files: tailwindConfig.content } : tailwindConfig.content
+// Keep the real theme/plugins while making source discovery independent of cwd.
+const browserTailwindConfig = {
+  ...tailwindConfig,
+  content: {
+    ...tailwindContent,
+    files: tailwindContent.files.map(file => typeof file === 'string' ? path.resolve(frontend, file) : file)
+  }
+}
 const { chromium } = createRequire(path.join(process.env.PLAYWRIGHT_ROOT, 'package.json'))('playwright')
 const output = process.env.ACCOUNT_TIMING_SCREENSHOT_DIR
 await fs.mkdir(output, { recursive: true })
@@ -40,13 +51,32 @@ const server = await createServer({
   }],
   resolve: { alias: [{ find: /^@\/api\/admin$/, replacement: 'virtual:account-timing-api' }, { find: '@', replacement: path.join(frontend, 'src') }] },
   define: { __INTLIFY_JIT_COMPILATION__: true },
-  css: { postcss: { plugins: [tailwind({ config: path.join(frontend, 'tailwind.config.js') }), autoprefixer()] } },
+  css: { postcss: { plugins: [tailwind(browserTailwindConfig), autoprefixer()] } },
   server: { host: '127.0.0.1', port: 4191, strictPort: true },
   optimizeDeps: { noDiscovery: true, include: ['vue', 'vue-i18n', 'pinia'] }
 })
 await server.listen()
 const browser = await chromium.launch({ headless: true })
 const failures = [], observations = []
+async function assertComputedStyles(page, label) {
+  const css = await page.getByRole('dialog').evaluate(dialog => {
+    const content = dialog.querySelector('.modal-content')
+    const icon = dialog.querySelector('.modal-header svg.w-5.h-5')
+    if (!content || !icon) throw new Error('Missing real dialog content or header icon')
+    const overlayStyle = getComputedStyle(dialog), contentStyle = getComputedStyle(content), iconStyle = getComputedStyle(icon)
+    return {
+      overlayPosition: overlayStyle.position, overlayDisplay: overlayStyle.display,
+      contentDisplay: contentStyle.display, contentDirection: contentStyle.flexDirection,
+      iconWidth: iconStyle.width, iconHeight: iconStyle.height
+    }
+  })
+  if (css.overlayPosition !== 'fixed' || css.overlayDisplay !== 'flex' ||
+      css.contentDisplay !== 'flex' || css.contentDirection !== 'column' ||
+      css.iconWidth !== '20px' || css.iconHeight !== '20px') {
+    throw new Error(`${label}: invalid real dialog CSS ${JSON.stringify(css)}`)
+  }
+  return css
+}
 try {
   const sse = await fs.readFile(path.join(process.env.ACCOUNT_TIMING_FIXTURES_DIR, 'apikey-responses.sse'), 'utf8')
   for (const variant of ['account', 'admin']) for (const locale of ['en', 'zh']) {
@@ -67,6 +97,7 @@ try {
     const start = page.getByRole('button', { name: locale === 'en' ? 'Start Test' : '开始测试', exact: true })
     await start.waitFor()
     await page.waitForFunction(element => element instanceof HTMLButtonElement && !element.disabled, await start.elementHandle())
+    const desktopCss = await assertComputedStyles(page, `${variant}/${locale}/desktop`)
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-before-start.png`), fullPage: true })
     await start.click()
     const panel = page.getByTestId('account-test-timing')
@@ -75,6 +106,7 @@ try {
     if (!(await panel.textContent()).includes('UTC+09:00')) throw new Error('browser local timezone was not explicit')
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-desktop.png`), fullPage: true })
     await page.setViewportSize({ width: 390, height: 844 })
+    const mobileCss = await assertComputedStyles(page, `${variant}/${locale}/mobile`)
     await panel.scrollIntoViewIfNeeded()
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-mobile.png`), fullPage: true })
     await panel.locator('summary').click()
@@ -84,7 +116,7 @@ try {
     })
     if (overflow.page || overflow.panel) throw new Error(`${variant}/${locale}: mobile horizontal overflow`)
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-mobile-details.png`), fullPage: true })
-    observations.push({ variant, locale, openedFromClosed: true, modelLoaded: true, startEnabled: true, mobileWidth: 390, defaultCollapsed: true, timezone: 'Asia/Seoul UTC+09:00', overflow })
+    observations.push({ variant, locale, openedFromClosed: true, modelLoaded: true, startEnabled: true, mobileWidth: 390, defaultCollapsed: true, timezone: 'Asia/Seoul UTC+09:00', css: { desktop: desktopCss, mobile: mobileCss }, overflow })
     await context.close()
   }
   if (failures.length) throw new Error(failures.join('; '))
