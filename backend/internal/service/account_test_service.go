@@ -31,6 +31,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
@@ -50,16 +51,17 @@ const (
 
 // TestEvent represents a SSE event for account testing
 type TestEvent struct {
-	UpstreamStatus    int    `json:"upstream_status,omitempty"`
-	UpstreamModel     string `json:"upstream_model,omitempty"`
-	RequestID         string `json:"request_id,omitempty"`
-	UpstreamErrorCode string `json:"upstream_error_code,omitempty"`
-	Type              string `json:"type"`
-	Text              string `json:"text,omitempty"`
-	Model             string `json:"model,omitempty"`
-	Status            string `json:"status,omitempty"`
-	Code              string `json:"code,omitempty"`
-	ImageURL          string `json:"image_url,omitempty"`
+	Timing            *requesttiming.AccountTestTiming `json:"timing,omitempty"`
+	UpstreamStatus    int                              `json:"upstream_status,omitempty"`
+	UpstreamModel     string                           `json:"upstream_model,omitempty"`
+	RequestID         string                           `json:"request_id,omitempty"`
+	UpstreamErrorCode string                           `json:"upstream_error_code,omitempty"`
+	Type              string                           `json:"type"`
+	Text              string                           `json:"text,omitempty"`
+	Model             string                           `json:"model,omitempty"`
+	Status            string                           `json:"status,omitempty"`
+	Code              string                           `json:"code,omitempty"`
+	ImageURL          string                           `json:"image_url,omitempty"`
 	// AudioURL / VideoURL are data: or https URLs for in-browser media players.
 	AudioURL string `json:"audio_url,omitempty"`
 	VideoURL string `json:"video_url,omitempty"`
@@ -373,6 +375,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // mode is optional - "compact" routes OpenAI accounts to the /responses/compact probe path
 // opts is optional media (image/audio data URLs for real generation / STT).
 func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) (testErr error) {
+	collector, start := beginAccountConnectionTiming(c)
 	initAccountTestLogger(c, accountID, modelID, mode)
 	ctx := context.WithValue(c.Request.Context(), qualityProbeContextKey{}, true)
 	c.Request = c.Request.WithContext(ctx)
@@ -384,7 +387,10 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 			testErr = c.Request.Context().Err()
 		}
 		stopKeepalive()
+		s.finishAccountConnectionTiming(c, collector, testErr)
 	}()
+	started := requesttiming.AccountTestStarted(start)
+	s.sendEvent(c, TestEvent{Type: "timing", Timing: &started})
 	ctx = c.Request.Context()
 	testOpts := firstAccountTestOptions(opts)
 
