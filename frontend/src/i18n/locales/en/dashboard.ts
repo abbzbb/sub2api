@@ -436,6 +436,7 @@ export default {
     duration: 'Duration',
     latency: 'Latency',
     latencyFirstToken: 'Server TTFT (incl. queue)',
+    queuePortion: 'incl. queue',
     latencyFirstTokenHint: 'Server TTFT includes pre-forward elapsed time {queue}; forward TTFT {first}. Uses sampled boundaries, never client E2E. Rows without a measured source show their legacy timer.',
     latencyDurationHint: 'Server duration includes pre-forward elapsed time {queue}; forward duration {forward}. Internal retries remain in their documented scope. Average TPS uses the unchanged legacy duration.',
     latencyDuration: 'Server total (incl. queue)',
