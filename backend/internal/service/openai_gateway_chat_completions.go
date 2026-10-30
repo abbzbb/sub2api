@@ -66,6 +66,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, admissionErr
 	}
 	ctx = admittedCtx
+	ctx = WithObservationRequestEffort(ctx, body)
 	ctx, errorScope := withPriorityAttemptScope(ctx, gjson.GetBytes(body, "model").String(), "/v1/chat/completions")
 	meterCtx, finish, err := s.beginRegionalMeter(ctx, c, account, body)
 	if err != nil {

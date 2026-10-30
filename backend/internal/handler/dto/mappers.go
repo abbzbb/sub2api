@@ -747,6 +747,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		DurationMs:                l.DurationMs,
 		FirstTokenMs:              l.FirstTokenMs,
 		QueueWaitMs:               l.QueueWaitMs,
+		ContentTiming:             l.ContentTiming,
 		ImageCount:                l.ImageCount,
 		ImageSize:                 l.ImageSize,
 		ImageInputSize:            l.ImageInputSize,
