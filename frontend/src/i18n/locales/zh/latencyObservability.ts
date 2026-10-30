@@ -23,5 +23,6 @@ export default {
   "retrans": "TCP 重传段比例（%）",
   "qdisc": "qdisc drops（不支持时无数据）",
   "bodyBytes": "应用已读正文 bytes / 分钟",
-  "opsPopulation": "Ops 包含未生成计费用量的应用 trace，其缓存与推理强度保持 unknown。已关联 trace 按最终 usage 分组，包含该请求此前失败的 attempt。"
+  "opsPopulation": "Ops 包含未生成计费用量的应用 trace，其缓存与推理强度保持 unknown。已关联 trace 按最终 usage 分组，包含该请求此前失败的 attempt。",
+  "unknownTransitions": "账号身份未知的转移"
 }

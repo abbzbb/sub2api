@@ -66,8 +66,8 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
 ), trace_counts AS (
  SELECT body_bucket,cache,effort,COUNT(DISTINCT id) requests,COUNT(trace_id) traces,
  COUNT(*) FILTER (WHERE detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured') failover_samples,
- SUM(CASE WHEN detail->'latency'->>'large_body'='true' THEN COALESCE((detail->'latency'->>'account_switches')::bigint,0) ELSE 0 END) switches,
- SUM(CASE WHEN detail->'latency'->>'large_body'='true' THEN COALESCE((detail->'latency'->>'same_account_retries')::bigint,0) ELSE 0 END) retries,
+ SUM(CASE WHEN detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured' THEN COALESCE((detail->'latency'->>'account_switches')::bigint,0) ELSE 0 END) switches,
+ SUM(CASE WHEN detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured' THEN COALESCE((detail->'latency'->>'same_account_retries')::bigint,0) ELSE 0 END) retries,
  COUNT(*) FILTER (WHERE detail->'latency'->>'cost_status'='measured_components') costs,
  SUM((detail->'latency'->>'extra_upload_component_ms')::float8) extra_upload,
  SUM((detail->'latency'->>'extra_wait_component_ms')::float8) extra_wait

@@ -148,4 +148,9 @@ func TestIssue603AttemptBoundaryAndFailoverSemantics(t *testing.T) {
 	s.Truncated = false
 	s.Attempts = append(s.Attempts, Attempt{Kind: "egress", Number: 10, AccountID: 3})
 	require.Equal(t, "partial", DeriveLatency(s).Status, "unobserved physical send must not assert complete switch history")
+	unknown := Snapshot{BodyBytes: 2 << 20, Attempts: []Attempt{latencyAttempt(1, 1, 0, 200), latencyAttempt(2, 0, 220, 420)}}
+	derived := DeriveLatency(unknown)
+	require.Equal(t, 1, derived.UnknownTransitions)
+	require.Equal(t, "partial", derived.Status, "unknown account identity cannot be a complete zero-switch sample")
+	require.Equal(t, "partial", derived.CostStatus)
 }

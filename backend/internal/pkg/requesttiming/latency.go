@@ -133,7 +133,7 @@ func DeriveLatency(s Snapshot) LatencySummary {
 	if len(out.Attempts) == 0 {
 		out.Status = "not_collected"
 	}
-	if s.Truncated || unobservedEgress {
+	if s.Truncated || unobservedEgress || overlap || out.UnknownTransitions > 0 {
 		out.Status = "partial"
 	}
 	if out.LargeBody && len(out.Attempts) > 1 {

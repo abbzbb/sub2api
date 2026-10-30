@@ -30,8 +30,8 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	end := 200.0
 	snapshot := requesttiming.Snapshot{BodyBytes: 2 << 20, Attempts: []requesttiming.Attempt{
 		{Kind: "egress", Number: 1, Events: map[string]float64{"headers_written": 0, "request_written": 1}},
-		{Kind: "http", Number: 2, AccountID: a.ID, StartMS: 10, EndMS: &end, Events: map[string]float64{"headers_written": 20, "request_written": 50, "first_semantic": 90, "first_visible": 120}},
-		{Kind: "http", Number: 3, AccountID: a.ID + 1, StartMS: 210, Events: map[string]float64{"headers_written": 220}},
+		{Kind: "http", Parent: 1, Number: 2, AccountID: a.ID, StartMS: 10, EndMS: &end, Events: map[string]float64{"headers_written": 20, "request_written": 50, "first_semantic": 90, "first_visible": 120}},
+		{Kind: "http", Parent: 1, Number: 3, AccountID: a.ID + 1, StartMS: 210, Events: map[string]float64{"headers_written": 220}},
 	}}
 	derived := requesttiming.DeriveLatency(snapshot)
 	snapshot.Latency = &derived
@@ -56,6 +56,8 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	require.Equal(t, 40.0, *g.WaitAvgMS)
 	require.Equal(t, 70.0, *g.VisibleAvgMS)
 	require.Nil(t, g.ExtraUploadMS, "partial attempt costs cannot be wall-time totals")
+	require.EqualValues(t, 1, g.LargeBodySwitches)
+	require.EqualValues(t, 1, g.FailoverSamples)
 	groups, err = repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID, Model: "historical"})
 	require.NoError(t, err)
 	require.Len(t, groups, 1)
@@ -78,6 +80,19 @@ func TestIssue603RealLatencyAggregationSQL(t *testing.T) {
 	}
 	require.EqualValues(t, 2, requests, "linked application trace and timing detail must not double count")
 	require.EqualValues(t, 4, attempts)
+	snapshot.Truncated = true
+	partial := requesttiming.DeriveLatency(snapshot)
+	snapshot.Latency = &partial
+	raw, err = json.Marshal(snapshot)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail) VALUES($1,$2,$3::jsonb)`, usage.ID, uuid.NewString(), string(raw))
+	require.NoError(t, err)
+	groups, err = repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID, Model: "fixture"})
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	require.EqualValues(t, 2, groups[0].Traces)
+	require.EqualValues(t, 1, groups[0].FailoverSamples, "partial trace must not increase complete failover sample count")
+	require.EqualValues(t, 1, groups[0].LargeBodySwitches, "partial transition counts cannot be mixed into complete sample totals")
 }
 
 func TestIssue603NetworkMinuteStorageAndBodySQL(t *testing.T) {

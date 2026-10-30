@@ -23,5 +23,6 @@ export default {
   "retrans": "TCP retransmitted segments (%)",
   "qdisc": "qdisc drops (unavailable when unsupported)",
   "bodyBytes": "Observed application body bytes / minute",
-  "opsPopulation": "Ops includes application traces without billed usage; their cache and effort remain unknown. Bound traces use the final usage cohort, including its preceding failed attempts."
+  "opsPopulation": "Ops includes application traces without billed usage; their cache and effort remain unknown. Bound traces use the final usage cohort, including its preceding failed attempts.",
+  "unknownTransitions": "Transitions with unknown account identity"
 }

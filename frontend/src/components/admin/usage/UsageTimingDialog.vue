@@ -35,6 +35,7 @@
           <h4 class="font-semibold">{{ t('latencyObservability.title') }} · {{ trace.latency.status }}</h4>
           <p>{{ t('latencyObservability.scope') }}</p>
           <p>{{ t('latencyObservability.switches') }}: {{ trace.latency.account_switches }} / {{ trace.latency.same_account_retries }} · {{ trace.latency.cost_status }}</p>
+          <p v-if="trace.latency.unknown_transitions">{{ t('latencyObservability.unknownTransitions') }}: {{ trace.latency.unknown_transitions }}</p>
           <p>{{ t('latencyObservability.extra') }}: {{ ms(trace.latency.extra_upload_component_ms) }} / {{ ms(trace.latency.extra_wait_component_ms) }}</p>
           <p v-for="a in trace.latency.attempts" :key="a.number">#{{ a.number }} · {{ a.transition }} · {{ t('latencyObservability.upload') }} {{ ms(a.body_upload.ms) }} ({{ a.body_upload.status }}) · {{ t('latencyObservability.semantic') }} {{ ms(a.post_upload_first_content_wait.ms) }} ({{ a.post_upload_first_content_wait.status }}) · {{ t('latencyObservability.visible') }} {{ ms(a.post_upload_first_visible_wait.ms) }} ({{ a.post_upload_first_visible_wait.status }})</p>
         </section>
