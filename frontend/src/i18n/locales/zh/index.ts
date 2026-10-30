@@ -29,6 +29,7 @@ import admin from './admin'
 import misc from './misc'
 
 import requestTiming from './requestTiming'
+import latencyObservability from './latencyObservability'
 
 import autoConfig from './autoConfig'
 
@@ -54,6 +55,7 @@ export default {
   modelTrace,
   tokenGuardV2,
   requestTiming,
+  latencyObservability,
   adminAccessKeys,
   ...landing,
   ...common,
