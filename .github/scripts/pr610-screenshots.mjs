@@ -42,22 +42,27 @@ try {
    if(await page.getByTestId('typed-content-timing').count()!==2)throw new Error('typed content columns lost')
    if(!(await page.getByTestId('latency-e2e-uncollected').first().getAttribute('title'))?.includes(lang==='en'?'none':'无'))throw new Error('client E2E source must remain none')
   }
-  await page.screenshot({path:path.join(output,`${before?'before':'after'}-table-${lang}-desktop.png`),fullPage:true})
+  await page.screenshot({path:path.join(output,`${before?'before':'after'}-table-${lang}-desktop.png`),fullPage:true,animations:'disabled'})
   await pass.getByRole('button',{name:lang==='en'?'Request timing details':'请求耗时详情'}).click()
   const dialog=page.getByRole('dialog');await dialog.waitFor()
+  // Vue drawer transitions can expose an accessible dialog while its panel is
+  // still outside the viewport. Finish animations before the review artifact.
+  await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a.playState==='running').map(a=>a.finished.catch(()=>{})))})
+  const bounds=await dialog.boundingBox()
+  if(!bounds||bounds.x<0||bounds.x+bounds.width>1441)throw new Error('dialog did not settle inside desktop viewport')
   const body=await dialog.innerText()
   if(!before && ((body.includes('62.00s')||body.includes('1m 2s'))||!body.includes(lang==='en'?'Server TTFT (including queue)':'服务端首字（含排队）')))throw new Error('dialog server timing label/value lost')
-  await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-desktop.png`),fullPage:true})
+  await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-desktop.png`),fullPage:true,animations:'disabled'})
   await page.setViewportSize({width:390,height:844})
-  await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-mobile.png`),fullPage:true})
+  await page.screenshot({path:path.join(output,`${before?'before':'after'}-dialog-${lang}-mobile.png`),fullPage:true,animations:'disabled'})
   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'})
-  await page.screenshot({path:path.join(output,`${before?'before':'after'}-table-${lang}-mobile.png`),fullPage:true})
+  await page.screenshot({path:path.join(output,`${before?'before':'after'}-table-${lang}-mobile.png`),fullPage:true,animations:'disabled'})
   interactions.push({lang,passthroughText:text,dialogOpened:true,escapeClosed:true,desktopAndMobile:true})
   await page.setViewportSize({width:1440,height:1000})
  }
  if(errors.length||external.length)throw new Error(JSON.stringify({errors,external}))
  await fs.writeFile(path.join(output,`${before?'before':'after'}-verification.json`),JSON.stringify({head:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),synthetic:true,browserErrors:errors,externalRequests:external,interactions},null,2))
 } catch(error){
- await page.screenshot({path:path.join(output,`${before?'before':'after'}-failure.png`),fullPage:true})
+ await page.screenshot({path:path.join(output,`${before?'before':'after'}-failure.png`),fullPage:true,animations:'disabled'})
  await fs.writeFile(path.join(output,`${before?'before':'after'}-failure.txt`),String(error)+'\n'+JSON.stringify({errors,external})+'\n'+await page.locator('body').innerText());throw error
 } finally{await browser.close();await server.close()}
