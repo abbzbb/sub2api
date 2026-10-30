@@ -182,8 +182,13 @@ type UsageLog struct {
 	NativeCompactionV2 bool
 	DurationMs         *int
 	FirstTokenMs       *int
-	UserAgent          *string
-	IPAddress          *string
+	// QueueWaitMs is the request-arrival-to-forward wait measured by the
+	// gateway. It is kept separate so forward-scope consumers (priority
+	// scheduling, ops) remain comparable; UI may add it to FirstTokenMs for an
+	// end-to-end view. Nil means historical rows or no ingress clock.
+	QueueWaitMs *int
+	UserAgent   *string
+	IPAddress   *string
 	// SessionID is the explicit client-provided request correlation identifier
 	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
 	// valid session header. It is never derived from prompt_cache_key or content.

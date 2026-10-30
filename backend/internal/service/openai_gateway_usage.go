@@ -360,7 +360,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		billingType = BillingTypeSubscription
 	}
 
-	// Create usage log
+	// Create usage log. QueueWait is persisted separately: forward-scope
+	// Duration/FirstTokenMs keep their existing scheduling and ops semantics,
+	// while the usage UI can present first_token_ms + queue_wait_ms as the
+	// end-to-end wait.
+	queueWaitMs := 0
+	if result.QueueWait > 0 {
+		queueWaitMs = int(result.QueueWait.Milliseconds())
+	}
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
@@ -477,6 +484,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
+	if queueWaitMs > 0 {
+		usageLog.QueueWaitMs = &queueWaitMs
+	}
 	usageLog.CreatedAt = time.Now()
 	// 设置渠道信息
 	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)

@@ -3680,6 +3680,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 				turnStart := getTurnStart(turn)
+				// The forward result starts after account admission. Recover the
+				// wait between the client's response.create and that start so the
+				// usage log does not report a queued turn as a fast one. Keep the
+				// result's forward-scope Duration/FirstTokenMs untouched for
+				// scheduling and ops.
+				if result != nil && result.Duration > 0 && !turnStart.IsZero() {
+					if queueWait := time.Since(turnStart) - result.Duration; queueWait > 0 && queueWait <= time.Hour {
+						result.QueueWait = queueWait
+					}
+				}
 				cyberTurnContext := takeCyberTurnBody(turn)
 				cyberBlockBody := cyberTurnContext.body
 				// 每次 attempt 都清 cyber mark；failover 链结束前保留 recorded guard，

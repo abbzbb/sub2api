@@ -27,7 +27,7 @@ export default {
   "drilldown": "Drilldown",
   "account": "Account",
   "latency": "Usage and latency",
-  "latencyNote": "Maximum 31 days, inclusive start and exclusive end. TTFT uses legacy forward first_token_ms for streaming records with tokens or cost evidence; it is not pure provider network or end-to-end latency. Unknown values are not zero.",
+  "latencyNote": "Maximum 31 days, inclusive start and exclusive end. TTFT uses persisted first_token_ms (new rows include the pre-forward wait; older rows use forwarding scope) for streaming records with tokens or cost evidence. Unknown values are not zero.",
   "queried": "Read at",
   "latest": "Latest sample",
   "noUsage": "Query succeeded; no persisted usage in this scope.",

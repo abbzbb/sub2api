@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -285,8 +286,14 @@ type OpenAIForwardResult struct {
 	ResponseHeaders       http.Header
 	Duration              time.Duration
 	FirstTokenMs          *int
-	ClientDisconnect      bool
-	ImageCount            int
+	// QueueWait is the time between request arrival at this gateway and the
+	// start of the upstream forward attempt (auth, body read, routing, user and
+	// account admission). It is deliberately kept out of Duration/FirstTokenMs
+	// so scheduling and ops keep their forward-scope semantics; the usage log
+	// adds it back to expose the latency callers actually experienced.
+	QueueWait        time.Duration
+	ClientDisconnect bool
+	ImageCount       int
 	// ImageEndpoint 标记请求来自专用图片端点；分组 image_count_billing 开关
 	// 只对这类请求生效，混合 Responses/Chat/WS 请求仍按 token 计费。
 	ImageEndpoint      bool
@@ -316,6 +323,27 @@ type OpenAIForwardResult struct {
 	// Local stream-read timeout is not an observed upstream terminal event.
 	// Keep observed partial usage without reporting a successful generation.
 	streamReadIncomplete bool
+}
+
+const maxOpenAIQueueWait = time.Hour
+
+// openAIQueueWait returns the wait between request arrival and the start of the
+// upstream forward attempt. The logger middleware stores request arrival in
+// ctxkey.RequestStartTime; callers that do not have it (tests, internal jobs)
+// record zero rather than guessing.
+func openAIQueueWait(ctx context.Context, forwardStart time.Time) time.Duration {
+	if ctx == nil || forwardStart.IsZero() {
+		return 0
+	}
+	requestStart, ok := ctx.Value(ctxkey.RequestStartTime).(time.Time)
+	if !ok || requestStart.IsZero() || !forwardStart.After(requestStart) {
+		return 0
+	}
+	wait := forwardStart.Sub(requestStart)
+	if wait > maxOpenAIQueueWait {
+		wait = maxOpenAIQueueWait
+	}
+	return wait
 }
 
 // SucceededForScheduling reports whether this result is an upstream success

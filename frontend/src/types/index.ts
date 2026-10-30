@@ -2024,6 +2024,7 @@ export interface UsageLog {
     reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
     status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
   }
+  queue_wait_ms?: number | null
 
   // 图片生成字段
   image_count: number
