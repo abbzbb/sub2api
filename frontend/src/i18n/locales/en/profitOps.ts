@@ -57,7 +57,7 @@ export default {
   "duration": "Duration P90 (ms)",
   "samples": "Valid TTFT samples",
   "unknown": "Unknown",
-  "latencyNote": "Latency uses persisted forwarding TTFT for streamed rows with metered usage and a positive first-token time. It is not isolated upstream semantic latency. Duration uses duration_ms. No complete failed-request denominator exists, so request error rates are unavailable.",
+  "latencyNote": "Latency uses persisted first-token time (new rows include the wait between request arrival and the start of forwarding; older rows use forwarding scope) for streamed rows with metered usage and a positive first-token time. It is not isolated upstream semantic latency. Duration uses duration_ms and is queue-inclusive on new rows. No complete failed-request denominator exists, so request error rates are unavailable.",
   "previous": "Previous",
   "next": "Next",
   "accountBasis": "Per-account estimate sources",

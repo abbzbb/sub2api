@@ -27,7 +27,7 @@ export default {
   "drilldown": "下钻路径",
   "account": "账号",
   "latency": "用量与延迟",
-  "latencyNote": "窗口最长 31 天，左闭右开。TTFT 使用历史转发 first_token_ms，仅含有 token/费用证据的流式记录；不是纯上游网络或端到端延迟。未知值不计为零。",
+  "latencyNote": "窗口最长 31 天，左闭右开。TTFT 使用持久化 first_token_ms（新记录包含请求到达后的排队等待，旧记录为转发口径），仅含有 token/费用证据的流式记录；未知值不计为零。",
   "queried": "读取时间",
   "latest": "最新样本",
   "noUsage": "查询成功，此范围没有持久化用量。",

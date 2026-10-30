@@ -463,6 +463,20 @@ func (_c *UsageLogCreate) SetNillableFirstTokenMs(v *int) *UsageLogCreate {
 	return _c
 }
 
+// SetQueueWaitMs sets the "queue_wait_ms" field.
+func (_c *UsageLogCreate) SetQueueWaitMs(v int) *UsageLogCreate {
+	_c.mutation.SetQueueWaitMs(v)
+	return _c
+}
+
+// SetNillableQueueWaitMs sets the "queue_wait_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableQueueWaitMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetQueueWaitMs(*v)
+	}
+	return _c
+}
+
 // SetUserAgent sets the "user_agent" field.
 func (_c *UsageLogCreate) SetUserAgent(v string) *UsageLogCreate {
 	_c.mutation.SetUserAgent(v)
@@ -1082,6 +1096,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.FirstTokenMs(); ok {
 		_spec.SetField(usagelog.FieldFirstTokenMs, field.TypeInt, value)
 		_node.FirstTokenMs = &value
+	}
+	if value, ok := _c.mutation.QueueWaitMs(); ok {
+		_spec.SetField(usagelog.FieldQueueWaitMs, field.TypeInt, value)
+		_node.QueueWaitMs = &value
 	}
 	if value, ok := _c.mutation.UserAgent(); ok {
 		_spec.SetField(usagelog.FieldUserAgent, field.TypeString, value)
@@ -1863,6 +1881,30 @@ func (u *UsageLogUpsert) AddFirstTokenMs(v int) *UsageLogUpsert {
 // ClearFirstTokenMs clears the value of the "first_token_ms" field.
 func (u *UsageLogUpsert) ClearFirstTokenMs() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldFirstTokenMs)
+	return u
+}
+
+// SetQueueWaitMs sets the "queue_wait_ms" field.
+func (u *UsageLogUpsert) SetQueueWaitMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldQueueWaitMs, v)
+	return u
+}
+
+// UpdateQueueWaitMs sets the "queue_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateQueueWaitMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldQueueWaitMs)
+	return u
+}
+
+// AddQueueWaitMs adds v to the "queue_wait_ms" field.
+func (u *UsageLogUpsert) AddQueueWaitMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldQueueWaitMs, v)
+	return u
+}
+
+// ClearQueueWaitMs clears the value of the "queue_wait_ms" field.
+func (u *UsageLogUpsert) ClearQueueWaitMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldQueueWaitMs)
 	return u
 }
 
@@ -2817,6 +2859,34 @@ func (u *UsageLogUpsertOne) UpdateFirstTokenMs() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearFirstTokenMs() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearFirstTokenMs()
+	})
+}
+
+// SetQueueWaitMs sets the "queue_wait_ms" field.
+func (u *UsageLogUpsertOne) SetQueueWaitMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetQueueWaitMs(v)
+	})
+}
+
+// AddQueueWaitMs adds v to the "queue_wait_ms" field.
+func (u *UsageLogUpsertOne) AddQueueWaitMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddQueueWaitMs(v)
+	})
+}
+
+// UpdateQueueWaitMs sets the "queue_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateQueueWaitMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateQueueWaitMs()
+	})
+}
+
+// ClearQueueWaitMs clears the value of the "queue_wait_ms" field.
+func (u *UsageLogUpsertOne) ClearQueueWaitMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearQueueWaitMs()
 	})
 }
 
@@ -3973,6 +4043,34 @@ func (u *UsageLogUpsertBulk) UpdateFirstTokenMs() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearFirstTokenMs() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearFirstTokenMs()
+	})
+}
+
+// SetQueueWaitMs sets the "queue_wait_ms" field.
+func (u *UsageLogUpsertBulk) SetQueueWaitMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetQueueWaitMs(v)
+	})
+}
+
+// AddQueueWaitMs adds v to the "queue_wait_ms" field.
+func (u *UsageLogUpsertBulk) AddQueueWaitMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddQueueWaitMs(v)
+	})
+}
+
+// UpdateQueueWaitMs sets the "queue_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateQueueWaitMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateQueueWaitMs()
+	})
+}
+
+// ClearQueueWaitMs clears the value of the "queue_wait_ms" field.
+func (u *UsageLogUpsertBulk) ClearQueueWaitMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearQueueWaitMs()
 	})
 }
 

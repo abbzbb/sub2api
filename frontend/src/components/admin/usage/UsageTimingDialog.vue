@@ -92,8 +92,16 @@ const row = (name: string, value: string, health: TimingHealth = 'neutral'): Det
 const timed = (name: string, value: number | null | undefined, scale: TimingScale = 'stage') => row(name, ms(value), timingHealth(value, scale))
 const flag = (name: string, value: boolean | null | undefined, goodValue: boolean, negative: TimingHealth = 'warn') => row(name, yes(value ?? null), value == null ? 'neutral' : value === goodValue ? 'good' : negative)
 const statusHealth = (status: number): TimingHealth => status >= 500 ? 'critical' : status >= 400 ? 'warn' : status >= 200 && status < 300 ? 'good' : 'neutral'
+const queueWaitMs = computed(() => props.record?.queue_wait_ms ?? null)
+const endToEndFirstMs = computed(() => {
+  const first = props.record?.first_token_ms
+  const queue = props.record?.queue_wait_ms
+  return first == null || queue == null ? null : first + queue
+})
 const summaries = computed(() => [
   { label: t('requestTiming.legacyFirst'), value: props.record?.first_token_ms, scale: 'first' as const },
+  { label: t('requestTiming.queueWait'), value: queueWaitMs.value, scale: 'first' as const },
+  { label: t('requestTiming.endToEndFirst'), value: endToEndFirstMs.value, scale: 'first' as const },
   { label: t('requestTiming.legacyTotal'), value: props.record?.duration_ms, scale: 'total' as const },
   { label: t('requestTiming.requestTotal'), value: trace.value?.total_ms, scale: 'total' as const },
   { label: label('first_semantic'), value: trace.value?.events.first_semantic, scale: 'first' as const },

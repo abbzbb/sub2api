@@ -436,6 +436,7 @@ export default {
     duration: 'Duration',
     latency: 'Latency',
     latencyFirstToken: 'First',
+    latencyFirstTokenHint: 'First token = forward TTFT {first} + queue wait {queue}. Queue wait covers arrival at this gateway until forwarding starts; older rows have no queue field and show forward TTFT.',
     latencyDuration: 'Total',
     latencyTps: 'Avg TPS',
     latencyTpsHint: 'Average TPS = output tokens ÷ total duration (seconds). Includes waiting time and any reasoning tokens reported in output usage; not model generation speed.',

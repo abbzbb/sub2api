@@ -162,6 +162,16 @@ describe('admin UsageTable tooltip', () => {
     expect(wrapper.text()).toContain('Avg TPS')
   })
 
+  it('shows queue-inclusive first token and labels the queue portion', () => {
+    const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', output_tokens: 100, duration_ms: 20_000, first_token_ms: 2_000, queue_wait_ms: 30_000 }
+    const wrapper = mount(UsageTable, {
+      props: { data: [row], loading: false, columns: [{ key: 'latency', label: 'Latency' }] },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    expect(wrapper.text()).toContain('32.00s')
+    expect(wrapper.text()).toContain('+30.00s')
+  })
+
   beforeEach(() => {
     appStoreMocks.cachedPublicSettings = undefined
     locale = 'en'

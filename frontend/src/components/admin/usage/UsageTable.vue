@@ -247,7 +247,10 @@
               aria-hidden="true"
             ></span>
             <span class="col-start-2 row-start-1 text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
-            <span v-if="row.first_token_ms != null" class="col-start-3 row-start-1 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
+            <span v-if="firstTokenQueueInclusive(row) != null" class="col-start-3 row-start-1 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(firstTokenQueueInclusive(row) ?? 0)]" :title="firstTokenQueueTitle(row)">
+              {{ formatDuration(firstTokenQueueInclusive(row)) }}
+              <span v-if="row.queue_wait_ms" class="ml-1 text-[10px] font-normal text-amber-600 dark:text-amber-400">+{{ formatDuration(row.queue_wait_ms) }}</span>
+            </span>
             <span v-else class="col-start-3 row-start-1 text-gray-400 dark:text-gray-500">-</span>
             <span class="col-start-2 row-start-2 text-gray-400 dark:text-gray-500">{{ t('usage.latencyDuration') }}</span>
             <span class="col-start-3 row-start-2 font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
@@ -789,11 +792,23 @@ const LATENCY_BAR_COLORS: Record<LatencySeverity, string> = {
   critical: '#ef4444',
 }
 
+// New usage rows carry the pre-forward wait separately. Show the caller-visible
+// first token (forward TTFT + queue) and colour it by that total; legacy rows
+// have no queue_wait_ms and keep their existing forward value.
+const firstTokenQueueInclusive = (row: AdminUsageLog): number | null =>
+  row.first_token_ms == null ? null : row.first_token_ms + (row.queue_wait_ms ?? 0)
+const firstTokenQueueTitle = (row: AdminUsageLog): string =>
+  t('usage.latencyFirstTokenHint', {
+    first: formatDuration(row.first_token_ms),
+    queue: formatDuration(row.queue_wait_ms ?? 0),
+  })
+
 const latencySeverities = (row: AdminUsageLog) => {
   const duration = durationSeverity(row.duration_ms ?? 0)
   const tps = usageOutputTps(row)
+  const firstToken = firstTokenQueueInclusive(row)
   return {
-    first: row.first_token_ms != null ? firstTokenSeverity(row.first_token_ms) : duration,
+    first: firstToken != null ? firstTokenSeverity(firstToken) : duration,
     duration,
     tps: tps != null ? tpsSeverity(tps) : duration,
   }
