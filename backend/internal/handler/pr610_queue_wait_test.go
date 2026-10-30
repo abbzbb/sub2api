@@ -58,7 +58,7 @@ type pr610TimingScenario struct {
 	gated         map[string]bool
 	barriers      chan pr610Barrier
 	deltaRead     chan struct{}
-	cache         service.ConcurrencyCache
+	cache         *pr610SlotCache
 }
 
 func newPR610Scenario(t *testing.T, mode string) *pr610TimingScenario {
@@ -67,7 +67,9 @@ func newPR610Scenario(t *testing.T, mode string) *pr610TimingScenario {
 	raw := testutil.NewRedisConcurrencyCache(t)
 	q, ok := raw.(service.APIKeySlotQueueCache)
 	require.True(t, ok)
-	s.cache = &pr610SlotCache{ConcurrencyCache: raw, APIKeySlotQueueCache: q, s: s}
+	admission, ok := raw.(service.APIKeySlotAdmissionCache)
+	require.True(t, ok)
+	s.cache = &pr610SlotCache{ConcurrencyCache: raw, APIKeySlotQueueCache: q, admission: admission, s: s}
 	return s
 }
 func (s *pr610TimingScenario) now() time.Time {
@@ -134,7 +136,7 @@ func (s *pr610TimingScenario) block(phase string) {
 func (s *pr610TimingScenario) prepareTurn() {
 	turn := s.turn.Add(1)
 	if s.keyQueue {
-		q := s.cache.(service.APIKeySlotQueueCache)
+		q := s.cache
 		require.NoError(s.t, q.TrackAPIKeySlot(context.Background(), 1801, "pr610-key-holder"))
 	}
 	s.mu.Lock()
@@ -149,7 +151,7 @@ func (s *pr610TimingScenario) prepareTurn() {
 	}
 	go func() {
 		if s.keyQueue {
-			q := s.cache.(service.APIKeySlotQueueCache)
+			q := s.cache
 			require.Eventually(s.t, func() bool {
 				_, waiting, err := q.GetAPIKeyQueueStats(context.Background(), 1801)
 				return err == nil && waiting == 1
@@ -267,13 +269,14 @@ func (s *pr610TimingScenario) assertReleased() {
 }
 
 type pr610SlotCache struct {
+	admission service.APIKeySlotAdmissionCache
 	service.APIKeySlotQueueCache
 	service.ConcurrencyCache
 	s *pr610TimingScenario
 }
 
 func (c *pr610SlotCache) AcquireAPIKeySlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
-	return c.ConcurrencyCache.(service.APIKeySlotAdmissionCache).AcquireAPIKeySlot(ctx, id, limit, member)
+	return c.admission.AcquireAPIKeySlot(ctx, id, limit, member)
 }
 
 var _ service.APIKeySlotAdmissionCache = (*pr610SlotCache)(nil)
