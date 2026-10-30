@@ -1,6 +1,10 @@
 import { apiClient } from '../client'
 
 export interface LatencyGroup {
+  account_id?: number; model?: string
+  reasoning_samples?: number; text_samples?: number; byte_samples?: number
+  reasoning_first_avg_ms?: number | null; visible_text_first_avg_ms?: number | null; response_byte_first_avg_ms?: number | null
+  visible_text_p50_ms?: number | null; visible_text_p90_ms?: number | null; visible_text_p99_ms?: number | null
   body_bucket: string
   cache_bucket: string
   reasoning_effort: string

@@ -40,7 +40,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
 	if f.IncludeUnbilled {
 		connectionWhere := filterWhere("c", "started_at", "c.model")
 		unbilled = ` UNION ALL
- SELECT 'unbilled:'||c.trace_id::text,'unknown','unknown',c.detail,c.trace_id,
+ SELECT 'unbilled:'||c.trace_id::text,c.account_id,c.model,'unknown','unknown',c.detail,c.trace_id,
  CASE WHEN jsonb_typeof(c.detail->'body_bytes')='number' THEN (c.detail->>'body_bytes')::numeric END
  FROM request_connection_traces c WHERE c.source='application' AND ` + connectionWhere + `
  AND NOT EXISTS (SELECT 1 FROM request_timing_details d WHERE d.trace_id=c.trace_id)
@@ -48,7 +48,7 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  AND (u.request_id=c.request_id OR (c.client_request_id<>'' AND u.request_id='client:'||c.client_request_id)))`
 	}
 	return `WITH usage_traces AS (
- SELECT u.id::text id, COALESCE(NULLIF(u.reasoning_effort,''),'unknown') effort,
+ SELECT u.id::text id,u.account_id,COALESCE(NULLIF(u.requested_model,''),u.model) model, COALESCE(NULLIF(u.reasoning_effort,''),'unknown') effort,
  CASE WHEN u.input_tokens+u.cache_read_tokens<=0 THEN 'unknown'
  WHEN u.cache_read_tokens::numeric/(u.input_tokens::numeric+u.cache_read_tokens)<.8 THEN '<80%'
  WHEN u.cache_read_tokens::numeric/(u.input_tokens::numeric+u.cache_read_tokens)<.95 THEN '80-95%' ELSE '95%+' END cache,
@@ -64,14 +64,14 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  WHEN body<262144 THEN '64-256KiB' WHEN body<=1048576 THEN '256KiB-1MiB'
  WHEN body<=4194304 THEN '1-4MiB' ELSE '4MiB+' END body_bucket FROM traces
 ), trace_counts AS (
- SELECT body_bucket,cache,effort,COUNT(DISTINCT id) requests,COUNT(trace_id) traces,
+ SELECT body_bucket,cache,effort,account_id,model,COUNT(DISTINCT id) requests,COUNT(trace_id) traces,
  COUNT(*) FILTER (WHERE detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured') failover_samples,
  SUM(CASE WHEN detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured' THEN COALESCE((detail->'latency'->>'account_switches')::bigint,0) ELSE 0 END) switches,
  SUM(CASE WHEN detail->'latency'->>'large_body'='true' AND detail->'latency'->>'status'='measured' THEN COALESCE((detail->'latency'->>'same_account_retries')::bigint,0) ELSE 0 END) retries,
  COUNT(*) FILTER (WHERE detail->'latency'->>'cost_status'='measured_components') costs,
  SUM((detail->'latency'->>'extra_upload_component_ms')::float8) extra_upload,
  SUM((detail->'latency'->>'extra_wait_component_ms')::float8) extra_wait
- FROM grouped_traces GROUP BY body_bucket,cache,effort
+ FROM grouped_traces GROUP BY body_bucket,cache,effort,account_id,model
 ), attempts AS (
  SELECT t.*,a.value a FROM grouped_traces t CROSS JOIN LATERAL jsonb_array_elements(
  CASE WHEN jsonb_typeof(detail->'attempts')='array' THEN detail->'attempts' ELSE '[]'::jsonb END) a
@@ -83,22 +83,35 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  CASE WHEN jsonb_typeof(a->'events'->'request_written')='number' THEN (a->'events'->>'request_written')::numeric
  WHEN jsonb_typeof(a->'events'->'wrote_request')='number' THEN (a->'events'->>'wrote_request')::numeric END written,
  CASE WHEN jsonb_typeof(a->'events'->'first_semantic')='number' THEN (a->'events'->>'first_semantic')::numeric END semantic,
- CASE WHEN jsonb_typeof(a->'events'->'first_visible')='number' THEN (a->'events'->>'first_visible')::numeric END visible
+ CASE WHEN jsonb_typeof(a->'events'->'first_visible')='number' THEN (a->'events'->>'first_visible')::numeric END visible,
+ CASE WHEN jsonb_typeof(a->'events'->'first_reasoning')='number' THEN (a->'events'->>'first_reasoning')::numeric END reasoning,
+ CASE WHEN jsonb_typeof(a->'events'->'first_visible_text')='number' THEN (a->'events'->>'first_visible_text')::numeric END text_first,
+ CASE WHEN jsonb_typeof(a->'events'->'first_byte')='number' THEN (a->'events'->>'first_byte')::numeric END byte_first
  FROM attempts
 ), measured AS (
  SELECT *,CASE WHEN started>=0 AND headers>=started AND written>=headers AND ended>=written AND NOT (a->'events' ? 'request_write_failed') THEN written-headers END upload
  FROM boundaries
 ), samples AS (
- SELECT body_bucket,cache,effort,COUNT(*) attempts,COUNT(upload) uploads,AVG(upload)::float8 upload_avg,
+ SELECT body_bucket,cache,effort,account_id,model,COUNT(*) attempts,COUNT(upload) uploads,AVG(upload)::float8 upload_avg,
  COUNT(*) FILTER (WHERE upload IS NOT NULL AND semantic>=written AND ended>=semantic) waits,
  AVG(CASE WHEN upload IS NOT NULL AND semantic>=written AND ended>=semantic THEN semantic-written END)::float8 wait_avg,
  COUNT(*) FILTER (WHERE upload IS NOT NULL AND visible>=written AND ended>=visible) visibles,
- AVG(CASE WHEN upload IS NOT NULL AND visible>=written AND ended>=visible THEN visible-written END)::float8 visible_avg
- FROM measured GROUP BY body_bucket,cache,effort
+ AVG(CASE WHEN upload IS NOT NULL AND visible>=written AND ended>=visible THEN visible-written END)::float8 visible_avg,
+ COUNT(*) FILTER (WHERE reasoning>=started AND reasoning<=ended) reasonings,
+ AVG(CASE WHEN reasoning>=started AND reasoning<=ended THEN reasoning END)::float8 reasoning_avg,
+ COUNT(*) FILTER (WHERE text_first>=started AND text_first<=ended) texts,
+ AVG(CASE WHEN text_first>=started AND text_first<=ended THEN text_first END)::float8 text_avg,
+ COUNT(*) FILTER (WHERE byte_first>=started AND byte_first<=ended) bytes,
+ AVG(CASE WHEN byte_first>=started AND byte_first<=ended THEN byte_first END)::float8 byte_avg,
+ percentile_cont(.5) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p50,
+ percentile_cont(.9) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p90,
+ percentile_cont(.99) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p99
+ FROM measured GROUP BY body_bucket,cache,effort,account_id,model
 )
  SELECT c.body_bucket,c.cache,c.effort,c.requests,c.traces,COALESCE(s.attempts,0),COALESCE(s.uploads,0),COALESCE(s.waits,0),COALESCE(s.visibles,0),
- s.upload_avg,s.wait_avg,s.visible_avg,COALESCE(c.switches,0),c.failover_samples,COALESCE(c.retries,0),c.costs,c.extra_upload,c.extra_wait
- FROM trace_counts c LEFT JOIN samples s USING(body_bucket,cache,effort) ORDER BY c.body_bucket,c.cache,c.effort LIMIT 1000`, args
+ s.upload_avg,s.wait_avg,s.visible_avg,COALESCE(c.switches,0),c.failover_samples,COALESCE(c.retries,0),c.costs,c.extra_upload,c.extra_wait,c.account_id,c.model,
+ COALESCE(s.reasonings,0),s.reasoning_avg,COALESCE(s.texts,0),s.text_avg,COALESCE(s.bytes,0),s.byte_avg,s.text_p50,s.text_p90,s.text_p99
+ FROM trace_counts c LEFT JOIN samples s USING(body_bucket,cache,effort,account_id,model) ORDER BY c.body_bucket,c.cache,c.effort LIMIT 1000`, args
 }
 
 func readLatencyGroups(ctx context.Context, sql sqlExecutor, f service.LatencyReportFilter) ([]service.LatencyGroup, error) {
@@ -111,7 +124,7 @@ func readLatencyGroups(ctx context.Context, sql sqlExecutor, f service.LatencyRe
 	out := []service.LatencyGroup{}
 	for rows.Next() {
 		var v service.LatencyGroup
-		if err := rows.Scan(&v.BodyBucket, &v.CacheBucket, &v.ReasoningEffort, &v.Requests, &v.Traces, &v.Attempts, &v.UploadSamples, &v.WaitSamples, &v.VisibleSamples, &v.UploadAvgMS, &v.WaitAvgMS, &v.VisibleAvgMS, &v.LargeBodySwitches, &v.FailoverSamples, &v.LargeBodyRetries, &v.CostSamples, &v.ExtraUploadMS, &v.ExtraWaitMS); err != nil {
+		if err := rows.Scan(&v.BodyBucket, &v.CacheBucket, &v.ReasoningEffort, &v.Requests, &v.Traces, &v.Attempts, &v.UploadSamples, &v.WaitSamples, &v.VisibleSamples, &v.UploadAvgMS, &v.WaitAvgMS, &v.VisibleAvgMS, &v.LargeBodySwitches, &v.FailoverSamples, &v.LargeBodyRetries, &v.CostSamples, &v.ExtraUploadMS, &v.ExtraWaitMS, &v.AccountID, &v.Model, &v.ReasoningSamples, &v.ReasoningAvgMS, &v.TextSamples, &v.TextAvgMS, &v.ByteSamples, &v.ByteAvgMS, &v.TextP50MS, &v.TextP90MS, &v.TextP99MS); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

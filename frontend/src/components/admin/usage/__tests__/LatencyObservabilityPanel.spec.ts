@@ -33,3 +33,14 @@ describe('Issue603 latency observations', () => {
     w.unmount()
   })
 })
+
+it('Issue605 keeps reasoning capability and per-hop socket evidence explicitly unknown', async () => {
+  mocks.read.mockResolvedValue(result)
+  const w = mount(LatencyObservabilityPanel, { props: { ops: true }, global: { plugins: [createI18n({ legacy: false, locale: 'en', messages: { en: { latencyObservability: en } } })] } })
+  await flushPromises()
+  expect(w.get('[data-testid="reasoning-capability"]').text()).toContain('Unknown')
+  expect(w.get('[data-testid="socket-evidence"]').text()).toContain('source none')
+  expect(w.get('[data-testid="socket-evidence"]').text()).toContain('reverse proxy')
+  expect(w.text()).toContain(en.typedScope)
+  w.unmount()
+})

@@ -54,7 +54,7 @@ func TestIssue603CollectorNetworkFixturesAndUnknownBoundaries(t *testing.T) {
 	p := store.points[1]
 	require.InDelta(t, 1, *p.EgressMbps, .001)
 	require.InDelta(t, 1, *p.RetransPercent, .001)
-	require.Equal(t, "unsupported_unprivileged_collector", p.QdiscStatus)
+	require.Equal(t, "not_collected", p.QdiscStatus)
 	require.Nil(t, p.QdiscDrops)
 	require.NoError(t, c.collectNetwork(context.Background(), now.Add(2*time.Minute)))
 	require.Equal(t, 0.0, *store.points[2].EgressMbps, "measured idle zero is real")

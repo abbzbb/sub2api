@@ -5,6 +5,7 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 )
 
 type LatencyReportFilter struct {
@@ -20,6 +21,17 @@ type LatencyReportFilter struct {
 }
 
 type LatencyGroup struct {
+	AccountID         int64    `json:"account_id"`
+	Model             string   `json:"model"`
+	ReasoningSamples  int64    `json:"reasoning_samples"`
+	TextSamples       int64    `json:"text_samples"`
+	ByteSamples       int64    `json:"byte_samples"`
+	ReasoningAvgMS    *float64 `json:"reasoning_first_avg_ms"`
+	TextAvgMS         *float64 `json:"visible_text_first_avg_ms"`
+	ByteAvgMS         *float64 `json:"response_byte_first_avg_ms"`
+	TextP50MS         *float64 `json:"visible_text_p50_ms"`
+	TextP90MS         *float64 `json:"visible_text_p90_ms"`
+	TextP99MS         *float64 `json:"visible_text_p99_ms"`
 	BodyBucket        string   `json:"body_bucket"`
 	CacheBucket       string   `json:"cache_bucket"`
 	ReasoningEffort   string   `json:"reasoning_effort"`
@@ -41,13 +53,14 @@ type LatencyGroup struct {
 }
 
 type LatencyReport struct {
-	Groups             []LatencyGroup `json:"groups"`
-	EndToEndMS         *float64       `json:"end_to_end_ms"`
-	EndToEndStatus     string         `json:"end_to_end_status"`
-	EndToEndSource     string         `json:"end_to_end_source"`
-	ClientUploadMS     *float64       `json:"client_upload_ms"`
-	ClientUploadStatus string         `json:"client_upload_status"`
-	Scope              string         `json:"scope"`
+	ContentCapabilities requesttiming.ContentObservation `json:"content_capabilities"`
+	Groups              []LatencyGroup                   `json:"groups"`
+	EndToEndMS          *float64                         `json:"end_to_end_ms"`
+	EndToEndStatus      string                           `json:"end_to_end_status"`
+	EndToEndSource      string                           `json:"end_to_end_source"`
+	ClientUploadMS      *float64                         `json:"client_upload_ms"`
+	ClientUploadStatus  string                           `json:"client_upload_status"`
+	Scope               string                           `json:"scope"`
 }
 
 type latencyReportReader interface {
@@ -66,7 +79,7 @@ func readLatencyReport(ctx context.Context, reader any, f LatencyReportFilter) (
 	if err != nil {
 		return nil, err
 	}
-	return &LatencyReport{Groups: groups, EndToEndStatus: "not_collected", EndToEndSource: "none", ClientUploadStatus: "not_collected", Scope: "application_http_attempts_components_not_wall_time"}, nil
+	return &LatencyReport{ContentCapabilities: requesttiming.UnknownContentObservation(), Groups: groups, EndToEndStatus: "not_collected", EndToEndSource: "none", ClientUploadStatus: "not_collected", Scope: "application_http_attempts_components_not_wall_time"}, nil
 }
 
 func (s *UsageService) LatencyReport(ctx context.Context, f LatencyReportFilter) (*LatencyReport, error) {

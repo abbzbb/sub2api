@@ -22,6 +22,7 @@ const (
 )
 
 type priorityAttemptKey struct {
+	effort    string
 	accountID int64
 	model     string
 	endpoint  string
@@ -127,6 +128,7 @@ type priorityAttemptObservation struct {
 	finalized, reported, forcedFailure, disconnected bool
 }
 type priorityAttemptScope struct {
+	effort          string
 	ctx             context.Context
 	model, endpoint string
 	groupID         int64
@@ -145,6 +147,7 @@ func withPriorityAttemptScope(ctx context.Context, model, endpoint string) (cont
 		endpoint = identity.endpoint
 	}
 	scope := &priorityAttemptScope{ctx: ctx, model: identity.model, endpoint: endpoint, groupID: identity.groupID, hasGroup: identity.hasGroup}
+	scope.effort, _ = observationEffort(ctx)
 	return context.WithValue(ctx, priorityAttemptScopeContextKey{}, scope), scope
 }
 func (s *priorityAttemptScope) reportLocked(o *priorityAttemptObservation) {
@@ -206,7 +209,7 @@ func (s *OpenAIGatewayService) observePriorityAttempt(req *http.Request, account
 	s.initOpenAIAccountScheduler()
 	stats := s.openaiAccountStats
 	started := stats.currentTime()
-	key := priorityAttemptKey{accountID: account.ID, model: scope.model, endpoint: scope.endpoint, groupID: scope.groupID, hasGroup: scope.hasGroup}
+	key := priorityAttemptKey{accountID: account.ID, model: scope.model, endpoint: scope.endpoint, groupID: scope.groupID, hasGroup: scope.hasGroup, effort: scope.effort}
 	return func(resp *http.Response, err error) {
 		if err != nil {
 			var netErr net.Error

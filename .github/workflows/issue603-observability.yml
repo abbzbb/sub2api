@@ -95,13 +95,51 @@ jobs:
           grep -F -- '--- FAIL: TestIssue603RegisteredOpsNetworkRouteAndGlobalPermission' "$RUNNER_TEMP/issue603-network-routes-red.log"
           grep -F 'registered ops network route must reach its real handler' "$RUNNER_TEMP/issue603-network-routes-red.log"
           test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"
+      - name: RED - original mixed SSE scanner must omit typed reasoning observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/issue605-content-red"
+          git worktree add --detach "$old" "$SOURCE_HEAD"
+          trap 'git worktree remove --force "$old"' EXIT
+          file=backend/internal/service/openai_sse_json_documents.go
+          git -C "$old" restore --source=fb70cc126105f984a63c24f8db65fe0412dd856a -- "$file"
+          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "fb70cc126105f984a63c24f8db65fe0412dd856a:$file")"
+          set +e
+          (cd "$old/backend" && go test -tags=unit ./internal/service -run '^TestIssue605MixedSSERecordsTypedBoundaries$' -count=1 -v -timeout=5m) > "$RUNNER_TEMP/issue605-content-red.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/issue605-content-red.log"
+          test "$result" -ne 0
+          ! grep -Eq 'build failed|undefined:|no tests to run|panic:|setup failed' "$RUNNER_TEMP/issue605-content-red.log"
+          grep -F -- '--- FAIL: TestIssue605MixedSSERecordsTypedBoundaries' "$RUNNER_TEMP/issue605-content-red.log"
+          grep -F 'typed mixed SSE must observe reasoning' "$RUNNER_TEMP/issue605-content-red.log"
+      - name: RED - previous default feedback must mix distinct effort populations
+        shell: bash
+        run: |
+          set -euo pipefail
+          old="$RUNNER_TEMP/issue605-effort-red"
+          git worktree add --detach "$old" "$SOURCE_HEAD"
+          trap 'git worktree remove --force "$old"' EXIT
+          file=backend/internal/service/default_scheduler_feedback.go
+          git -C "$old" restore --source=fb70cc126105f984a63c24f8db65fe0412dd856a -- "$file"
+          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "fb70cc126105f984a63c24f8db65fe0412dd856a:$file")"
+          set +e
+          (cd "$old/backend" && go test -tags=unit ./internal/service -run '^TestIssue605DefaultAndAdvancedFeedbackEffortIsolation$' -count=1 -v -timeout=5m) > "$RUNNER_TEMP/issue605-effort-red.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/issue605-effort-red.log"
+          test "$result" -ne 0
+          ! grep -Eq 'build failed|undefined:|no tests to run|panic:|setup failed' "$RUNNER_TEMP/issue605-effort-red.log"
+          grep -F -- '--- FAIL: TestIssue605DefaultAndAdvancedFeedbackEffortIsolation' "$RUNNER_TEMP/issue605-effort-red.log"
+          grep -F 'default feedback must isolate effort populations' "$RUNNER_TEMP/issue605-effort-red.log"
       - name: GREEN - clean candidate real collector, scheduler, handlers, repository packages
         shell: bash
         run: |
           set -euo pipefail
           git diff --exit-code
           test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
-          (cd backend && go test -race -tags=unit ./internal/pkg/requesttiming ./internal/pkg/adminaccess ./internal/service ./internal/handler/admin ./internal/repository ./internal/server/routes -run '^TestIssue603' -count=1 -v -timeout=12m) 2>&1 | tee "$RUNNER_TEMP/issue603-behavior-green.log"
+          (cd backend && go test -race -tags=unit ./internal/pkg/requesttiming ./internal/pkg/adminaccess ./internal/service ./internal/handler/admin ./internal/repository ./internal/server/routes -run '^TestIssue60[35]' -count=1 -v -timeout=12m) 2>&1 | tee "$RUNNER_TEMP/issue603-behavior-green.log"
           grep -F -- '--- PASS: TestIssue603RealUsageAndOpsHandlers' "$RUNNER_TEMP/issue603-behavior-green.log"
           grep -F -- '--- PASS: TestIssue603DefaultSchedulerUsesScopedFeedback' "$RUNNER_TEMP/issue603-behavior-green.log"
           grep -F -- '--- PASS: TestIssue603CollectorNetworkFixturesAndUnknownBoundaries' "$RUNNER_TEMP/issue603-behavior-green.log"
@@ -111,9 +149,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd backend && go test -tags=integration ./internal/repository -run '^(TestIssue603|TestListSchedulableAccountLoadsMatchesListSchedulable)' -count=1 -v -timeout=12m) 2>&1 | tee "$RUNNER_TEMP/issue603-sql-green.log"
+          (cd backend && go test -tags=integration ./internal/repository -run '^(TestIssue60[35]|TestListSchedulableAccountLoadsMatchesListSchedulable)' -count=1 -v -timeout=12m) 2>&1 | tee "$RUNNER_TEMP/issue603-sql-green.log"
           grep -F -- '--- PASS: TestIssue603RealLatencyAggregationSQL' "$RUNNER_TEMP/issue603-sql-green.log"
           grep -F -- '--- PASS: TestIssue603NetworkMinuteStorageAndBodySQL' "$RUNNER_TEMP/issue603-sql-green.log"
+          grep -F -- '--- PASS: TestIssue605UsageContentBatchAndLayeredSQL' "$RUNNER_TEMP/issue603-sql-green.log"
       - name: GREEN - normal production packages and server
         shell: bash
         run: |
@@ -124,7 +163,9 @@ jobs:
         if: always()
         with:
           name: issue603-backend-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/issue603-*.log
+          path: |
+            ${{ runner.temp }}/issue603-*.log
+            ${{ runner.temp }}/issue605-*.log
           if-no-files-found: error
           retention-days: 14
   ui:
@@ -157,13 +198,13 @@ jobs:
           old="$RUNNER_TEMP/issue603-ui-red"
           git worktree add --detach "$old" "$SOURCE_HEAD"
           trap 'git worktree remove --force "$old"' EXIT
-          for file in frontend/src/views/admin/UsageView.vue frontend/src/i18n/locales/en/dashboard.ts frontend/src/i18n/locales/zh/dashboard.ts; do
+          for file in frontend/src/views/admin/UsageView.vue frontend/src/components/admin/usage/UsageTable.vue frontend/src/i18n/locales/en/dashboard.ts frontend/src/i18n/locales/zh/dashboard.ts; do
             git -C "$old" restore --source="$BASELINE" -- "$file"
             test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"
           done
           ln -s "$GITHUB_WORKSPACE/frontend/node_modules" "$old/frontend/node_modules"
           set +e
-          (cd "$old/frontend" && pnpm test:run src/views/admin/__tests__/UsageView.spec.ts src/components/admin/usage/__tests__/UsageTable.spec.ts -t Issue603) > "$RUNNER_TEMP/issue603-ui-red.log" 2>&1
+          (cd "$old/frontend" && pnpm test:run src/views/admin/__tests__/UsageView.spec.ts src/components/admin/usage/__tests__/UsageTable.spec.ts -t 'Issue60[35]') > "$RUNNER_TEMP/issue603-ui-red.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/issue603-ui-red.log"

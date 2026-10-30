@@ -219,6 +219,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		return
 	}
 
+	h.usageService.EnrichContentTiming(c.Request.Context(), records)
 	response.Paginated(c, adminUsageLogResponses(c, records), result.Total, page, pageSize)
 }
 

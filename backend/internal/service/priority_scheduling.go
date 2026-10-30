@@ -244,6 +244,7 @@ type PrioritySchedulingSignal struct {
 }
 
 type PrioritySchedulingQuery struct {
+	ObservationEffort  *string
 	LatencyPercentile  int
 	LatencyMeasurement string
 	TargetTTFTMs       int

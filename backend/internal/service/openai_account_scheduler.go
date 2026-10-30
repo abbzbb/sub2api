@@ -69,7 +69,9 @@ var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSch
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	priorityLatencyPool *priorityLatencyPool
+	ObservationEffort       string
+	ObservationEffortScoped bool
+	priorityLatencyPool     *priorityLatencyPool
 
 	GroupID                 *int64
 	Platform                string
@@ -755,7 +757,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		slog.Info("sticky_escape_triggered", "account_id", accountID, "reason", "priority_capacity_imbalance")
 		return nil, true, nil
 	}
-	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape && !req.DisableStickyEscape && !req.EncryptedReasoning {
+	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyForRequest(req, accountID, escapeCfg); shouldEscape && !req.DisableStickyEscape && !req.EncryptedReasoning {
 		slog.Info("sticky_escape_triggered",
 			"account_id", accountID,
 			"reason", reason,
@@ -1083,6 +1085,17 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		if s.stats != nil {
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
+			if req.ObservationEffortScoped {
+				e := s.stats.attempts.snapshot(priorityRequestAttemptKey(req, account.ID), s.stats.currentTime(), 10, 5)
+				errorRate, ttft, hasTTFT = 0, 0, false
+				if e.Successes+e.Failures >= 5 {
+					errorRate = e.SmoothedRate
+				}
+				if e.LatencySamples >= 5 {
+					ttft = e.LatencyTotalMS / float64(e.LatencySamples)
+					hasTTFT = true
+				}
+			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:   account,
@@ -2909,7 +2922,9 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForScheduler(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
 	}
 
+	effort, effortScoped := observationEffort(ctx)
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
+		ObservationEffort: effort, ObservationEffortScoped: effortScoped,
 		GroupID:                 groupID,
 		Platform:                platform,
 		SessionHash:             sessionHash,

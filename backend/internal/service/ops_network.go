@@ -45,8 +45,10 @@ type networkCounters struct {
 	at                   time.Time
 }
 type hostNetworkSampler struct {
-	readFile func(string) ([]byte, error)
-	previous *networkCounters
+	readQdisc     func() qdiscSnapshot
+	previousQdisc *qdiscSnapshot
+	readFile      func(string) ([]byte, error)
+	previous      *networkCounters
 }
 
 func networkReadStatus(err error) string {
@@ -130,6 +132,15 @@ func (s *hostNetworkSampler) sample(now time.Time, instance string) OpsNetworkPo
 	}
 	c := parseNetworkCounters(read, now)
 	p := OpsNetworkPoint{At: now, Instance: instance, EgressStatus: c.netStatus, TCPStatus: c.tcpStatus, QdiscStatus: "unsupported_unprivileged_collector"}
+	var q qdiscSnapshot
+	if s.readQdisc != nil {
+		q = s.readQdisc()
+	} else {
+		q = qdiscSnapshot{status: "not_collected"}
+	}
+	previousQ := s.previousQdisc
+	s.previousQdisc = &q
+	p.QdiscStatus = q.status
 	previous := s.previous
 	s.previous = &c
 	if c.netOK {
@@ -139,11 +150,17 @@ func (s *hostNetworkSampler) sample(now time.Time, instance string) OpsNetworkPo
 		p.TCPStatus = "initial_sample"
 	}
 	if previous == nil {
+		if q.status == "available" {
+			p.QdiscStatus = "initial_sample"
+		}
 		return p
 	}
 	seconds := now.Sub(previous.at).Seconds()
 	p.WindowSeconds = seconds
 	if seconds < 45 || seconds > 90 {
+		if q.status == "available" {
+			p.QdiscStatus = "uneven_window"
+		}
 		if c.netOK {
 			p.EgressStatus = "uneven_window"
 		}
@@ -151,6 +168,25 @@ func (s *hostNetworkSampler) sample(now time.Time, instance string) OpsNetworkPo
 			p.TCPStatus = "uneven_window"
 		}
 		return p
+	}
+	if q.status == "available" && previousQ != nil && previousQ.status == "available" {
+		valid := len(q.drops) == len(previousQ.drops)
+		var delta int64
+		for key, value := range q.drops {
+			old, ok := previousQ.drops[key]
+			if !ok || value < old {
+				valid = false
+				break
+			}
+			delta += int64(value - old)
+		}
+		p.QdiscStatus = "counter_reset_or_topology_change"
+		if valid {
+			p.QdiscDrops = &delta
+			p.QdiscStatus = "measured_root_egress_qdisc"
+		}
+	} else if q.status == "available" {
+		p.QdiscStatus = "initial_sample"
 	}
 	if c.netOK && previous.netOK {
 		p.EgressStatus = "counter_reset_or_topology_change"
@@ -192,7 +228,7 @@ func (c *OpsMetricsCollector) collectNetwork(ctx context.Context, now time.Time)
 		return nil
 	}
 	if c.networkSampler == nil {
-		c.networkSampler = &hostNetworkSampler{}
+		c.networkSampler = &hostNetworkSampler{readQdisc: readHostQdisc}
 	}
 	return store.InsertNetworkSample(ctx, c.networkSampler.sample(now, c.instanceID))
 }
