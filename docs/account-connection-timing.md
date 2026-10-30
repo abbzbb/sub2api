@@ -85,7 +85,7 @@ keepalive 停止并等待协程退出后才发最终事件。上游 body 仍由�
 
 - 先写生命周期回归，再实现；remote 在独立 baseline archive 中运行同一测试，要求是实际断言失败的 RED，不能以编译失败冒充 RED，不回滚交付 checkout。
 - 前端同一真实组件事件序列回归在独立 baseline archive 验证 RED；GREEN 使用当前 head。
-- `go test -race -tags=unit ./internal/service ./internal/handler/admin -run ...`：真实 packages 编译与 synthetic 用例，保留 API-key/OAuth 管理边界回归，并运行既有账号、图片、compact、BPS、Grok 等定向回归。
+- `go test -race -tags=unit ./internal/service ./internal/handler/admin ./internal/integration/accountconnectiontiming -run ...`：真实 packages 编译与 synthetic 用例，保留 API-key/OAuth 管理边界回归，并运行既有账号、图片、compact、BPS、Grok 等定向回归。
 - `go test -race ./internal/pkg/requesttiming`：全部 collector 测试；可控 clock 验证具体毫秒、首事件不覆盖、范围、分段累计和头时间不被正文准备覆盖。
 - `go test ./internal/service ./internal/handler/admin -run '^$'`：无 unit tag 的普通 packages 编译；不使用 file-list 伪装集成。
 - 真实 admin handler → service → repository HTTP transport → synthetic SSE：通道门控制 headers/content/terminal，无窄 sleep 范围断言；API-key/OAuth Responses、Chat、HTTP 拒绝、EOF、metadata-only、非流；可控取消/超时与真实客户端断开；同一服务实例的并发请求隔离。

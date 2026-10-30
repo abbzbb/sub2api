@@ -1,4 +1,6 @@
-package admin
+//go:build unit
+
+package accountconnectiontiming
 
 import (
 	"bufio"
@@ -6,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -32,7 +36,13 @@ type timingAccounts struct {
 }
 
 func (r timingAccounts) GetByID(context.Context, int64) (*service.Account, error) {
-	return r.account, nil
+	// Match accountRepository.GetByID: each request gets its own domain object.
+	// Account has lazy mapping/header caches, so returning the same mutable
+	// pointer would introduce a fixture-only race unrelated to the collector.
+	account := *r.account
+	account.Credentials = maps.Clone(r.account.Credentials)
+	account.Extra = maps.Clone(r.account.Extra)
+	return &account, nil
 }
 func (r timingAccounts) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
 
@@ -58,10 +68,18 @@ func timingRouter(account *service.Account, target *url.URL) *gin.Engine {
 	cfg := &config.Config{}
 	upstream := timingFixtureUpstream{delegate: repository.NewHTTPUpstream(cfg), target: target}
 	svc := service.NewAccountTestService(timingAccounts{account: account}, nil, nil, nil, nil, upstream, cfg, nil)
-	h := &AccountHandler{accountTestService: svc}
+	h := admin.NewAccountHandler(nil, nil, nil, nil, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.POST("/api/v1/admin/accounts/:id/test", h.Test)
 	return router
+}
+
+func timingFlush(w http.ResponseWriter) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		panic("synthetic server does not support flushing")
+	}
+	flusher.Flush()
 }
 
 func timingWait(t *testing.T, channel <-chan struct{}) {
@@ -79,7 +97,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			entered, headers, metadata, content, contentSeen, terminal := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				defer r.Body.Close()
+				defer func() { _ = r.Body.Close() }()
 				var payload map[string]any
 				if json.NewDecoder(r.Body).Decode(&payload) != nil {
 					return
@@ -102,7 +120,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = io.WriteString(w, ": heartbeat\n\ndata: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"   \"}\n\n")
-				w.(http.Flusher).Flush()
+				timingFlush(w)
 				close(metadata)
 				select {
 				case <-content:
@@ -118,7 +136,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 				} else {
 					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello synthetic\"}\n\n")
 				}
-				w.(http.Flusher).Flush()
+				timingFlush(w)
 				select {
 				case <-terminal:
 				case <-r.Context().Done():
@@ -152,7 +170,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 			client := &http.Client{Timeout: 15 * time.Second}
 			response, err := client.Post(downstream.URL+"/api/v1/admin/accounts/42/test", "application/json", strings.NewReader(`{"model_id":"synthetic-model"}`))
 			require.NoError(t, err)
-			defer response.Body.Close()
+			defer func() { _ = response.Body.Close() }()
 			timingWait(t, entered)
 			close(headers)
 			stream := scenario != "upstream-error" && scenario != "non-stream"
@@ -165,7 +183,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 			scanner := bufio.NewScanner(response.Body)
 			for scanner.Scan() {
 				line := scanner.Text()
-				raw.WriteString(line + "\n")
+				_, _ = raw.WriteString(line + "\n")
 				if !strings.HasPrefix(line, "data: ") {
 					continue
 				}
@@ -245,7 +263,7 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 					if phase == "body" {
 						w.Header().Set("Content-Type", "text/event-stream")
 						_, _ = io.WriteString(w, ": heartbeat\n\ndata: {\"type\":\"response.created\"}\n\n")
-						w.(http.Flusher).Flush()
+						timingFlush(w)
 					}
 					close(entered)
 					select {
@@ -259,7 +277,7 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 				account := &service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "synthetic-only", "base_url": "https://fixture.invalid"}, Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: true}}
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				var requestCtx context.Context = ctx
+				requestCtx := ctx
 				trigger := cancel
 				if outcome == "timeout" {
 					deadline := timingDeadlineContext{Context: context.Background(), done: make(chan struct{})}
@@ -309,7 +327,7 @@ func TestAccountConnectionTimingClientDisconnect(t *testing.T) {
 				if phase == "body" {
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello synthetic\"}\n\n")
-					w.(http.Flusher).Flush()
+					timingFlush(w)
 				}
 				close(entered)
 				select {
@@ -368,7 +386,7 @@ func TestAccountConnectionTimingConcurrentRequests(t *testing.T) {
 				results <- err
 				return
 			}
-			defer response.Body.Close()
+			defer func() { _ = response.Body.Close() }()
 			body, err := io.ReadAll(response.Body)
 			if err != nil {
 				results <- err
@@ -386,7 +404,7 @@ func TestAccountConnectionTimingConcurrentRequests(t *testing.T) {
 					return
 				}
 				if event.Type == "content" {
-					text.WriteString(event.Text)
+					_, _ = text.WriteString(event.Text)
 				}
 				if event.Timing != nil && event.Timing.FinishedAt != nil {
 					final = event.Timing
