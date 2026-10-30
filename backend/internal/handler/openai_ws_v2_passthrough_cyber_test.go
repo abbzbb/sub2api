@@ -42,8 +42,14 @@ func newOpenAIWSPassthroughHandlerHarness(t *testing.T, upstreamURL string, sett
 }
 
 func newOpenAIWSPassthroughHandlerHarnessWithOptions(t *testing.T, upstreamURL string, clientHeaders http.Header, extraSettings map[string]string, configure ...func(*service.Account, *config.Config, *service.HTTPUpstream, *service.AccountRepository)) *openAIWSPassthroughHandlerHarness {
+	return newOpenAIWSPassthroughHandlerHarnessWithCache(t, upstreamURL, clientHeaders, extraSettings, nil, configure...)
+}
+
+func newOpenAIWSPassthroughHandlerHarnessWithCache(t *testing.T, upstreamURL string, clientHeaders http.Header, extraSettings map[string]string, gatewayCache service.GatewayCache, configure ...func(*service.Account, *config.Config, *service.HTTPUpstream, *service.AccountRepository)) *openAIWSPassthroughHandlerHarness {
 	t.Helper()
-	gatewayCache := testutil.NewRedisGatewayCache(t)
+	if gatewayCache == nil {
+		gatewayCache = testutil.NewRedisGatewayCache(t)
+	}
 
 	settings := map[string]string{
 		service.SettingKeyRiskControlEnabled:          "true",

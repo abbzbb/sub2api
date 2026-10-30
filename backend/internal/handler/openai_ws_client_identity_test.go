@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,6 +105,12 @@ func (u *issue600Upstream) snapshot() ([][]byte, []http.Header) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([][]byte(nil), u.frames...), append([]http.Header(nil), u.headers...)
+}
+
+func (u *issue600Upstream) rejectedSnapshot() ([]http.Header, [][]byte) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]http.Header(nil), u.rejectedHeaders...), append([][]byte(nil), u.rejectedBodies...)
 }
 
 // The HTTP request builder deliberately omits thread-id. WS handshakes carry
@@ -203,7 +210,11 @@ func newIssue600NetworkHarness(t *testing.T, mode, namespace string, strict bool
 	if opts.disableCyber {
 		settings[service.SettingKeyCyberSessionBlockEnabled] = "false"
 	}
-	h := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstream.URL, headers, settings, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
+	var gatewayCache service.GatewayCache
+	if addr := os.Getenv("ISSUE600_REDIS_ADDR"); addr != "" {
+		gatewayCache = testutil.NewIsolatedRedisGatewayCache(t, addr)
+	}
+	h := newOpenAIWSPassthroughHandlerHarnessWithCache(t, upstream.URL, headers, settings, gatewayCache, func(a *service.Account, cfg *config.Config, up *service.HTTPUpstream, repo *service.AccountRepository) {
 		a.Extra["codex_fingerprint_mode"] = "off"
 		a.Extra["openai_apikey_responses_websockets_v2_mode"] = mode
 		if namespace != "none" {
@@ -401,10 +412,7 @@ func TestIssue600AccountSwitchBeforeGeneration(t *testing.T) {
 					issue600Finish(t, h, headers)
 					frames, outHeaders := up.snapshot()
 					require.Len(t, frames, 2, "only the replacement account generates, once per turn")
-					up.mu.Lock()
-					rejectedHeaders := append([]http.Header(nil), up.rejectedHeaders...)
-					rejectedBodies := append([][]byte(nil), up.rejectedBodies...)
-					up.mu.Unlock()
+					rejectedHeaders, rejectedBodies := up.rejectedSnapshot()
 					require.Len(t, rejectedHeaders, 1, "exactly one pre-generation refusal, no blind replay")
 					projected := issue600Thread(frames[0])
 					require.NotEqual(t, "fixture-client-thread", projected)
