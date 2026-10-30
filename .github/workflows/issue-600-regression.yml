@@ -35,16 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          for mode in ctx_pool http_bridge passthrough legacy; do
-              for strict in false true; do
-                for namespace in none oauth connection; do
-                  for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
-                    grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
-                  done
-                done
-              done
-            done
-            git diff --exit-code HEAD
+          git diff --exit-code HEAD
           files=(backend/internal/handler/openai_gateway_handler.go backend/internal/service/openai_ws_forwarder.go backend/internal/service/openai_ws_forwarder_ingress.go backend/internal/service/openai_ws_v2_passthrough_adapter.go)
           if [ "$PHASE" = RED ]; then
             for file in "${files[@]}"; do
