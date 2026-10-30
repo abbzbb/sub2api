@@ -80,8 +80,7 @@ func TestPR610MeasuredCohortPreservesLegacyOperations(t *testing.T) {
 	require.Equal(t, 4.0, money.Summary.Income)
 	require.Equal(t, 4.0, money.Summary.Cost)
 	require.Zero(t, money.Summary.Profit, "queue timing must not change profit provenance")
-	channel, err := f.repo.ReadChannelOperations(ctx, service.ChannelOperationsFilter{From: q.From, Until: q.Until, ChannelID: f.channel, AccountID: f.account, GroupID: f.group, Dimension: "account", ModelScope: "public", Page: 1, PageSize: 20})
-	require.NoError(t, err)
+	channel := f.repo.ReadChannelOperations(ctx, service.ChannelOperationsFilter{From: q.From, Until: q.Until, ChannelID: f.channel, AccountID: f.account, GroupID: f.group, Dimension: "account", ModelScope: "public", Page: 1, PageSize: 20})
 	require.Equal(t, "ready", channel.Usage.Status)
 	check(channel.Usage.Data)
 	var provenance map[string]any
@@ -101,15 +100,13 @@ func TestPR610Migrations320321322JointUpgradeIdempotencyAndLegacyRead(t *testing
 	ctx := context.Background()
 	for _, first := range []string{"fresh", "320_ops_network_minutes.sql", "321_usage_log_queue_wait.sql"} {
 		t.Run(first, func(t *testing.T) {
-			schema := fmt.Sprintf("pr610_%d", time.Now().UnixNano())
-			_, err := integrationDB.Exec(`CREATE SCHEMA ` + schema)
+			database := fmt.Sprintf("pr610_%d", time.Now().UnixNano())
+			_, err := integrationDB.Exec(`CREATE DATABASE ` + database)
 			require.NoError(t, err)
-			t.Cleanup(func() { _, _ = integrationDB.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) })
+			t.Cleanup(func() { _, _ = integrationDB.Exec(`DROP DATABASE ` + database) })
 			u, err := url.Parse(integrationPostgresDSN)
 			require.NoError(t, err)
-			params := u.Query()
-			params.Set("search_path", schema)
-			u.RawQuery = params.Encode()
+			u.Path = "/" + database
 			db, err := sql.Open("postgres", u.String())
 			require.NoError(t, err)
 			defer func() { _ = db.Close() }()

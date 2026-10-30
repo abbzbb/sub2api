@@ -1352,7 +1352,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	firstForwardAt := requesttiming.Now(ctx)
 	acceptedTurnForwardAt.Store(&firstForwardAt)
 	if hooks != nil {
-		arrival := hooks.InitialTurnStartedAt
+		arrival := hooks.InitialFrameArrivedAt
+		if arrival.IsZero() {
+			arrival = hooks.InitialTurnStartedAt
+		}
 		acceptedQueueArrival.Store(&arrival)
 	}
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)

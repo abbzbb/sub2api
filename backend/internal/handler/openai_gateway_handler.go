@@ -2894,7 +2894,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
 
 	firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
-	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
+	msgType, firstMessage, firstFrameArrivedAt, err := service.ReadOpenAIWSClientMessageWithArrival(
 		ctx,
 		wsConn,
 		firstMessageTimeout,
@@ -3476,6 +3476,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			ClientLifecycleContext:      clientLifecycleCtx,
 			InitialRequestModel:         reqModel,
 			InitialTurnStartedAt:        firstTurnStartedAt,
+			InitialFrameArrivedAt:       firstFrameArrivedAt,
 			MaxReasoningEffort:          maxReasoningEffort,
 			MaxReasoningEffortOverLimit: maxReasoningEffortOverLimit,
 			ReasoningEffortMappings:     reasoningEffortMappings,
@@ -3684,6 +3685,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				// never queue time. Preserve the current frame across account failover.
 				if turnErr != nil && turn > 1 && !turnStart.IsZero() {
 					firstTurnStartedAt = turnStart
+					firstFrameArrivedAt = turnStart
 				}
 				cyberTurnContext := takeCyberTurnBody(turn)
 				cyberBlockBody := cyberTurnContext.body

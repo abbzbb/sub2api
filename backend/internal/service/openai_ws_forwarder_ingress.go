@@ -1111,7 +1111,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	ctx = context.WithValue(ctx, openAIWSDisconnectKey{}, (<-chan struct{})(clientReader.done))
 	turnArrivedAt := time.Time{}
 	if hooks != nil {
-		turnArrivedAt = hooks.InitialTurnStartedAt
+		turnArrivedAt = hooks.InitialFrameArrivedAt
+		if turnArrivedAt.IsZero() {
+			turnArrivedAt = hooks.InitialTurnStartedAt
+		}
 		if hooks.TurnStarted != nil {
 			hooks.TurnStarted(1, turnArrivedAt)
 		}

@@ -268,10 +268,14 @@ func (c *pr610SlotCache) AcquireAccountSlot(ctx context.Context, id int64, limit
 
 type pr610AuthRepo struct {
 	service.APIKeyRepository
-	key *service.APIKey
+	key        *service.APIKey
+	beforeRead func()
 }
 
 func (r *pr610AuthRepo) GetByKeyForAuth(_ context.Context, key string) (*service.APIKey, error) {
+	if r.beforeRead != nil {
+		r.beforeRead()
+	}
 	if key != r.key.Key {
 		return nil, service.ErrAPIKeyNotFound
 	}
@@ -539,4 +543,28 @@ func TestPR610AuthenticatedRedisKeyQueueAcrossModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPR610PassthroughPreflightKeepsLegacyBaseline(t *testing.T) {
+	s := newPR610Scenario(t, service.OpenAIWSIngressModePassthrough)
+	var delayed atomic.Bool
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode,
+		authSetup: func(key *service.APIKey, cfg *config.Config) *service.APIKeyService {
+			key.User.Concurrency = 1
+			key.Group = &service.Group{ID: *key.GroupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true}
+			repo := &pr610AuthRepo{key: key, beforeRead: func() {
+				if s.turn.Load() == 2 && delayed.CompareAndSwap(false, true) {
+					s.advance(5 * time.Second)
+				}
+			}}
+			return service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+		}, firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`,
+		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`})
+	require.True(t, delayed.Load(), "follow-up payload preflight must read current auth")
+	row := got.logs[1]
+	require.NotNil(t, row.QueueTiming)
+	require.EqualValues(t, 35000, *row.QueueWaitMs, "new receipt scope includes payload preflight")
+	require.EqualValues(t, 32000, *row.FirstTokenMs, "legacy passthrough timer still starts after payload preflight")
+	require.EqualValues(t, 37000, *row.QueueTiming.ServerFirstTokenMs)
+	require.EqualValues(t, 2000, *row.QueueTiming.ForwardFirstTokenMs)
 }
