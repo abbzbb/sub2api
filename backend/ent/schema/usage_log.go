@@ -185,6 +185,8 @@ func (UsageLog) Fields() []ent.Field {
 		field.Bool("cache_ttl_overridden").
 			Default(false),
 
+		field.JSON("queue_timing", map[string]interface{}{}).Optional().Comment("Explicit measured server/forward boundaries; NULL means unknown"),
+
 		// 时间戳（只有 created_at，日志不可修改）
 		field.Time("created_at").
 			Default(time.Now).

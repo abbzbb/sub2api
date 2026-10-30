@@ -2918,7 +2918,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
 		return
 	}
-	firstTurnStartedAt := time.Now()
+	firstTurnStartedAt := requesttiming.Now(ctx)
 	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
 		return
@@ -3680,16 +3680,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 				turnStart := getTurnStart(turn)
-				// The forward result starts after account admission. Recover the
-				// wait between the client's response.create and that start so the
-				// usage log does not report a queued turn as a fast one. Keep the
-				// result's forward-scope Duration/FirstTokenMs untouched for
-				// scheduling and ops.
-				if result != nil && result.Duration > 0 && !turnStart.IsZero() {
-					result.QueueWaitMeasured = true
-					if queueWait := time.Since(turnStart) - result.Duration; queueWait > 0 && queueWait <= time.Hour {
-						result.QueueWait = queueWait
-					}
+				// Each ingress samples its own forward boundary. Callback cleanup is
+				// never queue time. Preserve the current frame across account failover.
+				if turnErr != nil && turn > 1 && !turnStart.IsZero() {
+					firstTurnStartedAt = turnStart
 				}
 				cyberTurnContext := takeCyberTurnBody(turn)
 				cyberBlockBody := cyberTurnContext.body

@@ -664,7 +664,8 @@ type UsageLog struct {
 	// QueueWaitMs is the pre-forward wait measured from request arrival. It is
 	// separate from FirstTokenMs so UI can show an end-to-end first-token value
 	// without changing forward-scope scheduling metrics.
-	QueueWaitMs *int `json:"queue_wait_ms"`
+	QueueWaitMs *int                 `json:"queue_wait_ms"`
+	QueueTiming *service.QueueTiming `json:"queue_timing"`
 
 	// 图片生成字段
 	ImageCount         int            `json:"image_count"`

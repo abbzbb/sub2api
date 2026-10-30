@@ -182,11 +182,10 @@ type UsageLog struct {
 	NativeCompactionV2 bool
 	DurationMs         *int
 	FirstTokenMs       *int
-	// QueueWaitMs is the request-arrival-to-forward wait measured by the
-	// gateway. It is kept separate so forward-scope consumers (priority
-	// scheduling, ops) remain comparable; UI may add it to FirstTokenMs for an
-	// end-to-end view. Nil means historical rows or no ingress clock.
+	// QueueWaitMs is nullable pre-forward elapsed time; QueueTiming carries the
+	// measured source and separate server/forward scopes.
 	QueueWaitMs *int
+	QueueTiming *QueueTiming
 	UserAgent   *string
 	IPAddress   *string
 	// SessionID is the explicit client-provided request correlation identifier

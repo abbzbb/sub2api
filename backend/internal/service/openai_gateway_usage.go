@@ -366,7 +366,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// end-to-end wait.
 	queueWaitMs := 0
 	if result.QueueWait > 0 {
-		queueWaitMs = int(result.QueueWait.Milliseconds())
+		queueWaitMs = int(min(result.QueueWait, maxOpenAIQueueWait).Milliseconds())
 	}
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
@@ -484,6 +484,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
+	usageLog.QueueTiming = result.QueueTiming
 	if result.QueueWaitMeasured {
 		usageLog.QueueWaitMs = &queueWaitMs
 	}

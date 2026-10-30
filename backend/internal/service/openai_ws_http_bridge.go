@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"io"
 	"net/http"
 	"slices"
@@ -552,7 +553,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		c.Set("openai_ws_http_bridge", true)
 	}
 
-	turnStart := time.Now()
+	turnStart := requesttiming.Now(ctx)
 	var forwardStart time.Time
 	rejectedFieldRetryState := newOpenAIResponsesRejectedFieldRetryState(body)
 	var resp *http.Response
@@ -579,9 +580,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			)
 			return nil, admissionErr
 		}
-		// Forward-scope timing starts here; turnStart keeps the pre-admission
-		// wait available as queue_wait_ms in the usage row.
-		forwardStart = time.Now()
+		// Freeze the first-send boundary. Rejected-field network attempts remain
+		// in forwarding and in the compatible helper-entry legacy timer.
+		if forwardStart.IsZero() {
+			forwardStart = requesttiming.Now(ctx)
+		}
 		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 		if err != nil {
 			if IsOpenAIRPMError(err) {
@@ -695,17 +698,6 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			mappedModelBytes = []byte(mappedModel)
 		}
 	}
-	forwardStartedAt := forwardStart
-	if forwardStartedAt.IsZero() {
-		forwardStartedAt = turnStart
-	}
-	queueWait := forwardStartedAt.Sub(turnStart)
-	if queueWait < 0 {
-		queueWait = 0
-	}
-	if queueWait > maxOpenAIQueueWait {
-		queueWait = maxOpenAIQueueWait
-	}
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
@@ -724,11 +716,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
-			Duration:                      time.Since(forwardStartedAt),
+			Duration:                      requesttiming.Now(ctx).Sub(turnStart),
 			FirstTokenMs:                  firstTokenMs,
-			QueueWait:                     queueWait,
-			QueueWaitMeasured:             true,
 		}
+		applyOpenAIQueueTiming(result, openAIWSQueueArrival(ctx), forwardStart, turnStart, "ws_frame_http_bridge", "first_forward_including_internal_retries")
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 			result.wsReplayInput = replayInput
 			result.wsReplayInputExists = true
@@ -830,7 +821,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if isOpenAIWSTokenEvent(eventType) {
 			tokenEventCount++
 			if firstTokenMs == nil {
-				ms := int(time.Since(forwardStartedAt).Milliseconds())
+				ms := int(requesttiming.Now(ctx).Sub(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
 		}

@@ -75,24 +75,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if regionalMeterAttemptFrom(meterCtx) != nil && c.Request != nil {
 		c.Request = c.Request.WithContext(meterCtx)
 	}
-	forwardStart := time.Now()
 	result, err := s.forwardAsChatCompletions(meterCtx, c, account, body, promptCacheKey, defaultMappedModel, false)
-	if result != nil {
-		// openAIQueueWait covers arrival -> wrapper entry; the remainder covers
-		// the inner admission/setup before its forward attempt actually starts.
-		queueWait, measured := openAIQueueWait(meterCtx, forwardStart)
-		if result.Duration > 0 {
-			if innerWait := time.Since(forwardStart) - result.Duration; innerWait > 0 {
-				queueWait += innerWait
-				measured = true
-			}
-		}
-		if queueWait > maxOpenAIQueueWait {
-			queueWait = maxOpenAIQueueWait
-		}
-		result.QueueWait = queueWait
-		result.QueueWaitMeasured = measured
-	}
 	if result != nil && c != nil {
 		result.AuthConnectionID = c.GetString("openai_auth_connection_id")
 	}
@@ -110,7 +93,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 	compatPromptCacheTenantIsolated bool,
-) (*OpenAIForwardResult, error) {
+) (result *OpenAIForwardResult, resultErr error) {
 	latest, admissionErr := s.admitOpenAITurn(
 		context.WithoutCancel(ctx),
 		c,
@@ -202,7 +185,12 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// Responses 端点）：走下方 Chat Completions ↔ Responses 转换链。
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
 
-	startTime := time.Now()
+	startTime := requesttiming.Now(ctx)
+	defer func() {
+		if result != nil && result.QueueTiming == nil {
+			applyOpenAIQueueTiming(result, openAIIngressStart(ctx), startTime, startTime, "http_ingress_chat_responses", "pre_final_forward")
+		}
+	}()
 
 	// 1. Parse Chat Completions request
 	var chatReq apicompat.ChatCompletionsRequest

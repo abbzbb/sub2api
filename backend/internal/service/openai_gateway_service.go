@@ -286,15 +286,13 @@ type OpenAIForwardResult struct {
 	ResponseHeaders       http.Header
 	Duration              time.Duration
 	FirstTokenMs          *int
-	// QueueWait is the time between request arrival at this gateway and the
-	// start of the upstream forward attempt (auth, body read, routing, user and
-	// account admission). It is deliberately kept out of Duration/FirstTokenMs
-	// so scheduling and ops keep their forward-scope semantics; the usage log
-	// adds it back to expose the latency callers actually experienced.
+	// QueueWait records pre-forward elapsed time. Legacy timers have protocol-specific
+	// overlap; consumers use QueueTiming instead of blindly adding it.
 	QueueWait time.Duration
 	// QueueWaitMeasured distinguishes a measured zero wait from a path without
 	// an ingress clock (historical/other endpoints), so usage rows can record
 	// 0 for new non-queued requests and NULL for unknown.
+	QueueTiming       *QueueTiming
 	QueueWaitMeasured bool
 	ClientDisconnect  bool
 	ImageCount        int

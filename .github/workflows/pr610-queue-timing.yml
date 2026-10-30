@@ -1,0 +1,40 @@
+name: PR610 queue timing acceptance
+on:
+  pull_request:
+    branches: [production]
+permissions:
+  contents: read
+concurrency:
+  group: pr610-queue-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+jobs:
+  generated:
+    if: github.head_ref == 'fix/queue-wait-ttft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+      SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Exact head and generated Ent verification
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          echo "exact_head=$SOURCE_HEAD"
+          (cd backend && go generate ./ent)
+          git diff --binary -- backend/ent > "$RUNNER_TEMP/ent-generated.patch"
+          git diff --exit-code -- backend/ent
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr610-ent-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/ent-generated.patch

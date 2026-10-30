@@ -125,11 +125,12 @@ const profitOperationsBase = `WITH ` + profitOperationsCohort + `, scoped AS (
  SELECT *,CASE WHEN cost_base>=0 AND cost_base<'Infinity'::numeric AND multiplier>=0 AND multiplier<'Infinity'::numeric THEN cost_base*multiplier END AS estimated,
  CASE WHEN total_cost>=0 AND total_cost<'Infinity'::numeric THEN total_cost END AS standard,
  CASE WHEN actual_cost>=0 AND actual_cost<'Infinity'::numeric THEN actual_cost END AS income,
- CASE WHEN stream AND first_token_ms>0 AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0 OR input_tokens>0 OR output_tokens>0 OR cache_read_tokens>0 OR cache_creation_tokens>0) THEN first_token_ms + COALESCE(queue_wait_ms,0) END AS ttft,
- CASE WHEN duration_ms>0 AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0 OR input_tokens>0 OR output_tokens>0 OR cache_read_tokens>0 OR cache_creation_tokens>0) THEN duration_ms + COALESCE(queue_wait_ms,0) END AS measured_duration
+ CASE WHEN stream AND first_token_ms>0 AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0 OR input_tokens>0 OR output_tokens>0 OR cache_read_tokens>0 OR cache_creation_tokens>0) THEN first_token_ms END AS ttft,
+ CASE WHEN duration_ms>0 AND (actual_cost>0 OR total_cost>0 OR account_stats_cost>0 OR input_tokens>0 OR output_tokens>0 OR cache_read_tokens>0 OR cache_creation_tokens>0) THEN duration_ms END AS measured_duration
  FROM scoped
 )`
-const profitOperationsAggregate = `count(*) AS requests,
+
+var profitOperationsAggregate = `count(*) AS requests,
  CASE WHEN count(*)=0 THEN 0 WHEN count(standard)=count(*) THEN sum(standard) END AS standard_charge,
  CASE WHEN count(*)=0 THEN 0 WHEN count(income)=count(*) THEN sum(income) END AS request_income,
  count(*) FILTER(WHERE standard IS NULL) AS unknown_standard_requests,
@@ -156,7 +157,7 @@ const profitOperationsAggregate = `count(*) AS requests,
  percentile_cont(.95) WITHIN GROUP(ORDER BY ttft) AS p95_ms,
  percentile_cont(.9) WITHIN GROUP(ORDER BY measured_duration) AS duration_p90_ms,
  max(created_at) AS latest_sample_at,min(config_updated_at) AS oldest_config_updated_at,max(config_updated_at) AS latest_config_updated_at,
- jsonb_agg(DISTINCT cost_basis) AS cost_bases`
+ jsonb_agg(DISTINCT cost_basis) AS cost_bases` + queueInclusiveOperationsAggregate("measured_duration")
 
 func (r *channelRepository) ReadProfitOperations(ctx context.Context, f service.UpstreamOperationsFilter) (*service.ProfitOperationsSnapshot, error) {
 	if err := service.NormalizeProfitOperationsFilter(&f); err != nil {
