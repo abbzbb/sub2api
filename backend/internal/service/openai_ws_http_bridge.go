@@ -553,6 +553,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 
 	turnStart := time.Now()
+	var forwardStart time.Time
 	rejectedFieldRetryState := newOpenAIResponsesRejectedFieldRetryState(body)
 	var resp *http.Response
 	for {
@@ -578,6 +579,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			)
 			return nil, admissionErr
 		}
+		// Forward-scope timing starts here; turnStart keeps the pre-admission
+		// wait available as queue_wait_ms in the usage row.
+		forwardStart = time.Now()
 		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 		if err != nil {
 			if IsOpenAIRPMError(err) {
@@ -691,6 +695,17 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			mappedModelBytes = []byte(mappedModel)
 		}
 	}
+	forwardStartedAt := forwardStart
+	if forwardStartedAt.IsZero() {
+		forwardStartedAt = turnStart
+	}
+	queueWait := forwardStartedAt.Sub(turnStart)
+	if queueWait < 0 {
+		queueWait = 0
+	}
+	if queueWait > maxOpenAIQueueWait {
+		queueWait = maxOpenAIQueueWait
+	}
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
@@ -709,8 +724,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
-			Duration:                      time.Since(turnStart),
+			Duration:                      time.Since(forwardStartedAt),
 			FirstTokenMs:                  firstTokenMs,
+			QueueWait:                     queueWait,
+			QueueWaitMeasured:             true,
 		}
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 			result.wsReplayInput = replayInput
@@ -813,7 +830,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if isOpenAIWSTokenEvent(eventType) {
 			tokenEventCount++
 			if firstTokenMs == nil {
-				ms := int(time.Since(turnStart).Milliseconds())
+				ms := int(time.Since(forwardStartedAt).Milliseconds())
 				firstTokenMs = &ms
 			}
 		}
