@@ -42,9 +42,12 @@ jobs:
           old="$RUNNER_TEMP/issue603-timing-red"
           git worktree add --detach "$old" "$SOURCE_HEAD"
           trap 'git worktree remove --force "$old"' EXIT
-          file=backend/internal/pkg/requesttiming/collector.go
-          git -C "$old" restore --source="$BASELINE" -- "$file"
-          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"
+          cp backend/internal/pkg/requesttiming/latency.go "$old/backend/internal/pkg/requesttiming/latency.go"
+          cp backend/internal/pkg/requesttiming/latency_test.go "$old/backend/internal/pkg/requesttiming/latency_test.go"
+          git -C "$old" restore --source="$BASELINE" -- backend/internal/pkg/requesttiming
+          cp backend/internal/pkg/requesttiming/latency.go "$old/backend/internal/pkg/requesttiming/latency.go"
+          cp backend/internal/pkg/requesttiming/latency_test.go "$old/backend/internal/pkg/requesttiming/latency_test.go"
+          test "$(git -C "$old" hash-object backend/internal/pkg/requesttiming/collector.go)" = "$(git rev-parse "$BASELINE:backend/internal/pkg/requesttiming/collector.go")"
           set +e
           (cd "$old/backend" && go test ./internal/pkg/requesttiming -run '^TestIssue603CollectorPublishesAttemptMetrics$' -count=1 -v) > "$RUNNER_TEMP/issue603-timing-red.log" 2>&1
           result=$?
@@ -54,7 +57,6 @@ jobs:
           ! grep -Eq 'build failed|undefined:|no tests to run|panic:|setup failed' "$RUNNER_TEMP/issue603-timing-red.log"
           grep -F -- '--- FAIL: TestIssue603CollectorPublishesAttemptMetrics' "$RUNNER_TEMP/issue603-timing-red.log"
           grep -F 'finished collector must publish attempt-derived observations' "$RUNNER_TEMP/issue603-timing-red.log"
-          test "$(git -C "$old" hash-object "$file")" = "$(git rev-parse "$BASELINE:$file")"
       - name: RED - original default selection must fail scoped feedback behavior
         shell: bash
         run: |
