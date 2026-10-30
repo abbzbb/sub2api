@@ -83,6 +83,19 @@ func (t *Trace) clientTrace() *httptrace.ClientTrace {
 		GotFirstResponseByte: func() { t.mark("first_byte") },
 	}
 }
+
+// Headers marks Client.Do returning complete headers, before any body wrapper
+// (notably gzip initialization) can wait for body bytes. Response preserves it.
+func (t *Trace) Headers(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	t.update(func(a *Attempt) {
+		if _, ok := a.Events["response_headers"]; !ok {
+			a.Events["response_headers"] = t.c.offset(t.c.now())
+		}
+	})
+}
 func (t *Trace) Response(resp *http.Response, err error) {
 	if t == nil {
 		return
@@ -94,7 +107,9 @@ func (t *Trace) Response(resp *http.Response, err error) {
 		if resp != nil {
 			a.Status = resp.StatusCode
 			a.Route.ResponseFormat = transportdiag.ResponseFormat(resp.Header)
-			a.Events["response_headers"] = t.c.offset(t.c.now())
+			if _, ok := a.Events["response_headers"]; !ok {
+				a.Events["response_headers"] = t.c.offset(t.c.now())
+			}
 		}
 		if err != nil || resp == nil || resp.Body == nil {
 			v := t.c.offset(t.c.now())

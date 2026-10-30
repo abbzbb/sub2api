@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,7 +142,7 @@ func TestAccountConnectionTimingHandlerHTTP(t *testing.T) {
 				account.Credentials = map[string]any{"access_token": "synthetic-only"}
 			}
 			if scenario == "apikey-chat" {
-				account.Extra = nil
+				account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
 			}
 			if scenario == "non-stream" {
 				account.Platform = service.PlatformTypeSafe
@@ -238,6 +240,8 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 				entered, stopped := make(chan struct{}), make(chan struct{})
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					defer close(stopped)
+					_, _ = io.Copy(io.Discard, r.Body)
+					_ = r.Body.Close()
 					if phase == "body" {
 						w.Header().Set("Content-Type", "text/event-stream")
 						_, _ = io.WriteString(w, ": heartbeat\n\ndata: {\"type\":\"response.created\"}\n\n")
@@ -258,10 +262,12 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 				var requestCtx context.Context = ctx
 				trigger := cancel
 				if outcome == "timeout" {
-					deadline := timingDeadlineContext{Context: ctx, done: make(chan struct{})}
+					deadline := timingDeadlineContext{Context: context.Background(), done: make(chan struct{})}
 					requestCtx = deadline
-					trigger = func() { close(deadline.done) }
+					var once sync.Once
+					trigger = func() { once.Do(func() { close(deadline.done) }) }
 				}
+				defer trigger()
 				recorder := httptest.NewRecorder()
 				request := httptest.NewRequest("POST", "/api/v1/admin/accounts/42/test", strings.NewReader(`{"model_id":"synthetic-model"}`)).WithContext(requestCtx)
 				done := make(chan struct{})
@@ -288,5 +294,112 @@ func TestAccountConnectionTimingCancellationAndTimeout(t *testing.T) {
 				require.NotContains(t, recorder.Body.String(), `"success":true`)
 			})
 		}
+	}
+}
+
+func TestAccountConnectionTimingClientDisconnect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, phase := range []string{"headers", "body"} {
+		t.Run(phase, func(t *testing.T) {
+			entered, stopped, handlerDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(stopped)
+				_, _ = io.Copy(io.Discard, r.Body)
+				_ = r.Body.Close()
+				if phase == "body" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello synthetic\"}\n\n")
+					w.(http.Flusher).Flush()
+				}
+				close(entered)
+				select {
+				case <-r.Context().Done():
+				case <-time.After(10 * time.Second):
+				}
+			}))
+			defer upstream.Close()
+			target, err := url.Parse(upstream.URL)
+			require.NoError(t, err)
+			account := &service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "synthetic-only", "base_url": "https://fixture.invalid"}, Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: true}}
+			router := timingRouter(account, target)
+			downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { defer close(handlerDone); router.ServeHTTP(w, r) }))
+			defer downstream.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			request, err := http.NewRequestWithContext(ctx, "POST", downstream.URL+"/api/v1/admin/accounts/42/test", strings.NewReader(`{"model_id":"synthetic-model"}`))
+			require.NoError(t, err)
+			response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+			require.NoError(t, err)
+			timingWait(t, entered)
+			cancel()
+			_ = response.Body.Close()
+			timingWait(t, handlerDone)
+			timingWait(t, stopped)
+		})
+	}
+}
+
+func TestAccountConnectionTimingConcurrentRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		data, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "delta": payload.Model})
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: {\"type\":\"response.completed\"}\n\n", data)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	account := &service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 8, Credentials: map[string]any{"api_key": "synthetic-only", "base_url": "https://fixture.invalid"}, Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: true}}
+	downstream := httptest.NewServer(timingRouter(account, target))
+	defer downstream.Close()
+	results := make(chan error, 8)
+	for i := range 8 {
+		go func() {
+			model := fmt.Sprintf("synthetic-%d", i)
+			response, err := (&http.Client{Timeout: 15 * time.Second}).Post(downstream.URL+"/api/v1/admin/accounts/42/test", "application/json", strings.NewReader(fmt.Sprintf(`{"model_id":%q}`, model)))
+			if err != nil {
+				results <- err
+				return
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				results <- err
+				return
+			}
+			var text strings.Builder
+			var final *requesttiming.AccountTestTiming
+			for _, line := range strings.Split(string(body), "\n") {
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				var event service.TestEvent
+				if err = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+					results <- err
+					return
+				}
+				if event.Type == "content" {
+					text.WriteString(event.Text)
+				}
+				if event.Timing != nil && event.Timing.FinishedAt != nil {
+					final = event.Timing
+				}
+			}
+			if text.String() != model || final == nil || final.Outcome != "success" || final.FirstContent.DurationMS == nil {
+				results <- fmt.Errorf("request %s lost its own content/timing", model)
+				return
+			}
+			results <- nil
+		}()
+	}
+	for range 8 {
+		require.NoError(t, <-results)
 	}
 }

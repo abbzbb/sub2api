@@ -13,7 +13,7 @@ export default {
   "segments": "累计 {count} 个编码片段",
   "missingFinal": "— 未取得服务端最终指标，不推算完成时间或耗时。",
   "delivery": {
-    "idle": "",
+    "idle": "尚未开始",
     "running": "等待服务端最终指标",
     "finished": "已取得服务端计时",
     "legacy": "此服务端未提供计时数据",

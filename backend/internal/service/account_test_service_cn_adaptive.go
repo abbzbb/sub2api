@@ -206,7 +206,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 		return s.sendErrorAndEnd(c, errMsg)
 	}
 
-	if err := s.processOpenAIStream(c, resp.Body); err != nil {
+	if err := s.processOpenAIStream(accountTestResponseContext(c, resp), resp.Body); err != nil {
 		return err
 	}
 	s.sendEvent(c, TestEvent{Type: "status", Text: "已通过原生 /responses 验证"})
@@ -296,7 +296,7 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 		return s.sendErrorAndEnd(c, errMsg)
 	}
 
-	return s.processClaudeStream(c, resp.Body)
+	return s.processClaudeStream(accountTestResponseContext(c, resp), resp.Body)
 }
 
 // cnAnthropicBaseURLMisconfigHint reports an actionable error when an

@@ -13,7 +13,7 @@ export default {
   "segments": "Sum of {count} encoding segments",
   "missingFinal": "— Final server measurements are unavailable; no completion time or duration is inferred.",
   "delivery": {
-    "idle": "",
+    "idle": "Not started",
     "running": "Waiting for final server measurements",
     "finished": "Server measurements received",
     "legacy": "Timing was not supplied by this server",

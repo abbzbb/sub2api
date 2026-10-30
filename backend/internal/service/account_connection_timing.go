@@ -60,6 +60,11 @@ func accountTestStream(c *gin.Context) func() {
 	return func() { requesttiming.Mark(c.Request.Context(), "account_stream_end") }
 }
 
+func accountTestResponseContext(c *gin.Context, resp *http.Response) *gin.Context {
+	c.Request = c.Request.WithContext(requesttiming.ResponseContext(c.Request.Context(), resp))
+	return c
+}
+
 func accountTestContent(c *gin.Context, text string) {
 	if strings.TrimSpace(text) == "" {
 		return

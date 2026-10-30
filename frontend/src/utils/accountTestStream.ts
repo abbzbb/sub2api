@@ -9,8 +9,10 @@ export async function consumeAccountTestStream(
   if (!reader) throw new Error('No response body')
   const decoder = new TextDecoder()
   let buffer = ''
+  let ended = false
   const cancel = () => { void reader.cancel?.().catch(() => {}) }
   signal.addEventListener('abort', cancel, { once: true })
+  if (signal.aborted) cancel()
   const line = (value: string) => {
     if (!value.startsWith('data:')) return
     try {
@@ -27,10 +29,11 @@ export async function consumeAccountTestStream(
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
       for (const value of lines) line(value)
-      if (done) { if (buffer) line(buffer); break }
+      if (done) { if (buffer) line(buffer); ended = true; break }
     }
   } finally {
     signal.removeEventListener('abort', cancel)
+    if (!ended) await reader.cancel?.().catch(() => {})
     reader.releaseLock?.()
   }
 }

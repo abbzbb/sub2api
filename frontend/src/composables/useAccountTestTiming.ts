@@ -35,9 +35,9 @@ export function useAccountTestTiming() {
   }
   function finish() {
     if (delivery.value !== 'running') return
-    delivery.value = timing.value?.finished_at ? 'finished' : terminal ? 'legacy' : 'incomplete'
+    delivery.value = timing.value?.finished_at ? 'finished' : terminal && !timing.value ? 'legacy' : 'incomplete'
   }
-  function cancel() { if (delivery.value === 'running') delivery.value = 'canceled' }
-  function fail() { if (delivery.value === 'running') delivery.value = 'error' }
+  function cancel() { if (delivery.value === 'running') delivery.value = timing.value?.finished_at ? 'finished' : 'canceled' }
+  function fail() { if (delivery.value === 'running') delivery.value = timing.value?.finished_at ? 'finished' : 'error' }
   return { timing, delivery, reset, begin, accept, finish, cancel, fail }
 }

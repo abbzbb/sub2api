@@ -28,9 +28,17 @@ func TestAccountConnectionTimingClockAndPrivacy(t *testing.T) {
 	hooks.WroteRequest(httptrace.WroteRequestInfo{})
 	now = start.Add(29 * time.Millisecond)
 	trace.Response(&http.Response{StatusCode: 200, Header: http.Header{}}, nil)
+	now = start.Add(30 * time.Millisecond)
+	encoding := Observe(ctx, "account_event_encode")
+	now = start.Add(35 * time.Millisecond)
+	encoding()
 	now = start.Add(40 * time.Millisecond)
 	Mode(ctx, "stream")
 	Mark(ctx, "account_first_content")
+	now = start.Add(45 * time.Millisecond)
+	encoding = Observe(ctx, "account_event_encode")
+	now = start.Add(50 * time.Millisecond)
+	encoding()
 	// A second observation cannot replace the true first content.
 	now = start.Add(70 * time.Millisecond)
 	Mark(ctx, "account_first_content")
@@ -53,6 +61,10 @@ func TestAccountConnectionTimingClockAndPrivacy(t *testing.T) {
 		require.Equal(t, tc.duration, *tc.metric.DurationMS)
 	}
 	require.Equal(t, start.Add(80*time.Millisecond), *result.FinishedAt)
+	require.Equal(t, 10.0, *result.LocalProcessing.DurationMS)
+	require.Equal(t, 30.0, *result.LocalProcessing.StartMS)
+	require.Equal(t, 50.0, *result.LocalProcessing.EndMS)
+	require.Equal(t, 2, result.LocalProcessing.Segments)
 	encoded, err := json.Marshal(result)
 	require.NoError(t, err)
 	for _, secret := range []string{"private.example", "secret", "87654321", "12345678", "route", "proxy", "trace_id", "account_id", "request_bytes"} {
@@ -80,4 +92,26 @@ func TestAccountConnectionTimingMissingAndRanges(t *testing.T) {
 	require.Equal(t, 0.0, *accountMetric(0, 0, 100).DurationMS)
 	// Reason codes are stable enums, never derived from provider error strings.
 	require.False(t, strings.Contains(AccountTestStarted(time.Now()).LocalProcessing.Reason, ":"))
+}
+
+func TestAccountConnectionTimingHeadersPrecedeBodySetup(t *testing.T) {
+	start := time.Now()
+	now := start
+	c := newCollector(start, 0, func() time.Time { return now })
+	req, _ := http.NewRequestWithContext(With(context.Background(), c), "POST", "https://fixture.invalid", nil)
+	req, trace := StartAttempt(req, 1, 0)
+	now = start.Add(5 * time.Millisecond)
+	httptrace.ContextClientTrace(req.Context()).WroteRequest(httptrace.WroteRequestInfo{})
+	resp := &http.Response{StatusCode: 200, Header: http.Header{}}
+	now = start.Add(10 * time.Millisecond)
+	trace.Headers(resp)
+	// Decompression initialization or other body setup can block after headers.
+	now = start.Add(70 * time.Millisecond)
+	trace.Response(resp, nil)
+	var result AccountTestTiming
+	c.WhenFinished(func(d Snapshot) { result = AccountTestProjection(d) })
+	now = start.Add(80 * time.Millisecond)
+	c.Finish(200, false)
+	require.Equal(t, 10.0, *result.ResponseHeaders.EndMS)
+	require.Equal(t, 5.0, *result.ResponseHeaders.DurationMS)
 }

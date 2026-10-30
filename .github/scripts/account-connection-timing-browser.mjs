@@ -1,0 +1,88 @@
+// Remote CI only. Real Vue modals; only captured synthetic handler SSE is used.
+import { createRequire } from 'node:module'
+import path from 'node:path'
+import fs from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+
+const root = process.cwd(), frontend = path.join(root, 'frontend')
+const requireFrontend = createRequire(path.join(frontend, 'package.json'))
+const { createServer } = requireFrontend('vite')
+const vueModule = requireFrontend('@vitejs/plugin-vue'), vue = vueModule.default || vueModule
+const tailwind = requireFrontend('tailwindcss'), autoprefixer = requireFrontend('autoprefixer')
+const { chromium } = createRequire(path.join(process.env.PLAYWRIGHT_ROOT, 'package.json'))('playwright')
+const output = process.env.ACCOUNT_TIMING_SCREENSHOT_DIR
+await fs.mkdir(output, { recursive: true })
+const fixture = `export const adminAPI={accounts:{getAvailableModels:async()=>[{id:'synthetic-model',display_name:'Synthetic model'}]}};`
+const html = `<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><div id="app"></div><script type="module">
+import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createI18n} from 'vue-i18n';
+import Account from '/src/components/account/AccountTestModal.vue';import Admin from '/src/components/admin/account/AccountTestModal.vue';
+import en from '/src/i18n/locales/en/index.ts';import zh from '/src/i18n/locales/zh/index.ts';import '/src/style.css';
+const params=new URLSearchParams(location.search),locale=params.get('locale')||'en';
+const account={id:42,name:'Synthetic timing fixture',platform:'openai',type:'apikey',status:'active',credentials:{},extra:{},concurrency:1,priority:1,proxy_id:null};
+createApp({render:()=>h(params.get('variant')==='admin'?Admin:Account,{show:true,account})}).use(createPinia()).use(createI18n({legacy:false,locale,messages:{en,zh}})).mount('#app');</script></html>`
+
+const server = await createServer({
+  root: frontend, configFile: false,
+  plugins: [vue(), {
+    name: 'account-timing-synthetic',
+    resolveId(id) { if (id === 'virtual:account-timing-api') return '\0' + id },
+    load(id) { if (id === '\0virtual:account-timing-api') return fixture },
+    configureServer(vite) {
+      vite.middlewares.use((req, res, next) => {
+        if (req.url?.split('?')[0] !== '/timing-fixture') return next()
+        res.setHeader('Content-Type', 'text/html')
+        void vite.transformIndexHtml('/timing-fixture', html).then(value => res.end(value))
+      })
+    }
+  }],
+  resolve: { alias: [{ find: /^@\/api\/admin$/, replacement: 'virtual:account-timing-api' }, { find: '@', replacement: path.join(frontend, 'src') }] },
+  define: { __INTLIFY_JIT_COMPILATION__: true },
+  css: { postcss: { plugins: [tailwind({ config: path.join(frontend, 'tailwind.config.js') }), autoprefixer()] } },
+  server: { host: '127.0.0.1', port: 4191, strictPort: true },
+  optimizeDeps: { noDiscovery: true, include: ['vue', 'vue-i18n', 'pinia'] }
+})
+await server.listen()
+const browser = await chromium.launch({ headless: true })
+const failures = [], observations = []
+try {
+  const sse = await fs.readFile(path.join(process.env.ACCOUNT_TIMING_FIXTURES_DIR, 'apikey-responses.sse'), 'utf8')
+  for (const variant of ['account', 'admin']) for (const locale of ['en', 'zh']) {
+    const context = await browser.newContext({ viewport: { width: 1360, height: 1000 }, timezoneId: 'Asia/Seoul' })
+    const page = await context.newPage()
+    page.on('pageerror', error => failures.push(error.message))
+    await page.route('**/*', async route => {
+      const url = new URL(route.request().url())
+      if (url.pathname === '/api/v1/admin/accounts/42/test') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse })
+      if (url.hostname === '127.0.0.1' && !url.pathname.startsWith('/api/')) return route.continue()
+      failures.push(`Unexpected request: ${url.origin}${url.pathname}`)
+      return route.abort()
+    })
+    await page.goto(`http://127.0.0.1:4191/timing-fixture?variant=${variant}&locale=${locale}`, { waitUntil: 'networkidle' })
+    const start = page.getByRole('button', { name: locale === 'en' ? 'Start Test' : '开始测试', exact: true })
+    await start.waitFor()
+    await page.screenshot({ path: path.join(output, `${variant}-${locale}-before-start.png`), fullPage: true })
+    await start.click()
+    const panel = page.getByTestId('account-test-timing')
+    await panel.getByText(locale === 'en' ? 'Server measurements received' : '已取得服务端计时', { exact: false }).waitFor()
+    if (await panel.locator('details[open]').count()) throw new Error('details must be collapsed by default')
+    if (!(await panel.textContent()).includes('UTC+09:00')) throw new Error('browser local timezone was not explicit')
+    await page.screenshot({ path: path.join(output, `${variant}-${locale}-desktop.png`), fullPage: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await panel.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: path.join(output, `${variant}-${locale}-mobile.png`), fullPage: true })
+    await panel.locator('summary').click()
+    const overflow = await page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="account-test-timing"]')
+      return { page: document.body.scrollWidth > innerWidth + 2, panel: panel.scrollWidth > panel.clientWidth + 2 }
+    })
+    if (overflow.page || overflow.panel) throw new Error(`${variant}/${locale}: mobile horizontal overflow`)
+    await page.screenshot({ path: path.join(output, `${variant}-${locale}-mobile-details.png`), fullPage: true })
+    observations.push({ variant, locale, mobileWidth: 390, defaultCollapsed: true, timezone: 'Asia/Seoul UTC+09:00', overflow })
+    await context.close()
+  }
+  if (failures.length) throw new Error(failures.join('; '))
+  await fs.writeFile(path.join(output, 'verification.json'), JSON.stringify({
+    exact_head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+    source: 'captured real admin handler synthetic HTTP/SSE fixture', liveProviderCalls: 0, browserErrors: failures, observations
+  }, null, 2))
+} finally { await browser.close(); await server.close() }

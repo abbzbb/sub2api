@@ -66,7 +66,7 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
       wrapper.unmount()
     })
 
-    it('cancels on unmount and prevents an old stream from updating a new test', async () => {
+    it('labels browser cancellation and releases the reader when closed', async () => {
       let resolveRead: (value: unknown) => void = () => {}
       const reader = { read: vi.fn(() => new Promise(resolve => { resolveRead = resolve })), cancel: vi.fn(async () => { resolveRead({ done: true }) }), releaseLock: vi.fn() }
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => reader } }))
@@ -79,6 +79,40 @@ for (const [name, component] of [['account', AccountModal], ['admin', AdminModal
       expect(reader.cancel).toHaveBeenCalled()
       expect(reader.releaseLock).toHaveBeenCalledOnce()
       wrapper.unmount()
+    })
+
+    it('isolates a restarted request from a late event on the old stream', async () => {
+      let resolveRead: (value: unknown) => void = () => {}
+      const oldReader = {
+        read: vi.fn(() => new Promise(resolve => { resolveRead = resolve })),
+        cancel: vi.fn(async () => { resolveRead({ done: false, value: new TextEncoder().encode('data: {"type":"error","error":"stale-error"}\n\n') }) }), releaseLock: vi.fn()
+      }
+      const fresh = responseStream(legacy)
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, body: { getReader: () => oldReader } }).mockResolvedValueOnce(fresh.response))
+      const wrapper = mountModal(component)
+      await wrapper.setProps({ show: true }); await flushPromises()
+      const oldRequest = (wrapper.vm as any).startTest(); await flushPromises()
+      const freshRequest = (wrapper.vm as any).startTest()
+      await Promise.all([oldRequest, freshRequest]); await flushPromises()
+      expect(wrapper.text()).not.toContain('stale-error')
+      expect(wrapper.text()).toContain('hello synthetic')
+      expect(oldReader.releaseLock).toHaveBeenCalledOnce()
+      expect(fresh.reader.releaseLock).toHaveBeenCalledOnce()
+      wrapper.unmount()
+    })
+
+    it('aborts an active stream when the actual component unmounts', async () => {
+      let finishRead: (value: unknown) => void = () => {}
+      const reader = { read: vi.fn(() => new Promise(resolve => { finishRead = resolve })), cancel: vi.fn(async () => { finishRead({ done: true }) }), releaseLock: vi.fn() }
+      const fetch = vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => reader } })
+      vi.stubGlobal('fetch', fetch)
+      const wrapper = mountModal(component)
+      await wrapper.setProps({ show: true }); await flushPromises()
+      const request = (wrapper.vm as any).startTest(); await flushPromises()
+      wrapper.unmount(); await request
+      expect(fetch.mock.calls[0][1].signal.aborted).toBe(true)
+      expect(reader.cancel).toHaveBeenCalled()
+      expect(reader.releaseLock).toHaveBeenCalledOnce()
     })
 
     describe.skipIf(!fixtureDirectory)('captured real handler → service → synthetic HTTP/SSE → UI', () => {
