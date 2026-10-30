@@ -98,7 +98,8 @@ keepalive 停止并等待协程退出后才发最终事件。上游 body 仍由�
 ## 8. Agent 披露与交付
 
 Hermes 协调模型 gpt-6.1-sol；推理强度不适用（工具未提供）。
-Codex 是唯一实现者，无子 Agent。本次 session `01a18d6e-f0f1-72c1-8e3e-84c145366772` 的
+Codex 是唯一实现者，未派生子 Agent。Hermes 另有独立验收子 agent，模型 gpt-6.1-sol，推理强度未知（runtime 未提供），参与独立静态与远端 raw 验收。
+本次 Codex session `01a18d6e-f0f1-72c1-8e3e-84c145366772` 的
 turn_context.model=`gpt-6.1-sol`、effort=`xhigh` 已从本机 session 元数据核实，cwd 匹配隔离工作树；不公开原始 session。
 分支允许且已执行 commit/push/create Draft；PR 保持 Draft，不 merge、不 release、不 deploy。
 完整 8 节 PR 正文持续更新实际结果、失败修复、未覆盖项及当前 exact head 证据。

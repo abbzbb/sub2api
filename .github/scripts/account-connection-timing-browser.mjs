@@ -14,12 +14,15 @@ const output = process.env.ACCOUNT_TIMING_SCREENSHOT_DIR
 await fs.mkdir(output, { recursive: true })
 const fixture = `export const adminAPI={accounts:{getAvailableModels:async()=>[{id:'synthetic-model',display_name:'Synthetic model'}]}};`
 const html = `<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><div id="app"></div><script type="module">
-import {createApp,h} from 'vue';import {createPinia} from 'pinia';import {createI18n} from 'vue-i18n';
+import {createApp,h,ref} from 'vue';import {createPinia} from 'pinia';import {createI18n} from 'vue-i18n';
 import Account from '/src/components/account/AccountTestModal.vue';import Admin from '/src/components/admin/account/AccountTestModal.vue';
 import en from '/src/i18n/locales/en/index.ts';import zh from '/src/i18n/locales/zh/index.ts';import '/src/style.css';
 const params=new URLSearchParams(location.search),locale=params.get('locale')||'en';
 const account={id:42,name:'Synthetic timing fixture',platform:'openai',type:'apikey',status:'active',credentials:{},extra:{},concurrency:1,priority:1,proxy_id:null};
-createApp({render:()=>h(params.get('variant')==='admin'?Admin:Account,{show:true,account})}).use(createPinia()).use(createI18n({legacy:false,locale,messages:{en,zh}})).mount('#app');</script></html>`
+createApp({setup(){const show=ref(false);return()=>h('div',[
+h('button',{'data-testid':'open-timing-modal',onClick:()=>{show.value=true}},'Open timing fixture'),
+h(params.get('variant')==='admin'?Admin:Account,{show:show.value,account,onClose:()=>{show.value=false}})
+])}}).use(createPinia()).use(createI18n({legacy:false,locale,messages:{en,zh}})).mount('#app');</script></html>`
 
 const server = await createServer({
   root: frontend, configFile: false,
@@ -58,8 +61,12 @@ try {
       return route.abort()
     })
     await page.goto(`http://127.0.0.1:4191/timing-fixture?variant=${variant}&locale=${locale}`, { waitUntil: 'networkidle' })
+    // Both real modals load models on the closed → open transition.
+    await page.getByTestId('open-timing-modal').click()
+    await page.getByText('Synthetic model', { exact: true }).waitFor()
     const start = page.getByRole('button', { name: locale === 'en' ? 'Start Test' : '开始测试', exact: true })
     await start.waitFor()
+    await page.waitForFunction(element => element instanceof HTMLButtonElement && !element.disabled, await start.elementHandle())
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-before-start.png`), fullPage: true })
     await start.click()
     const panel = page.getByTestId('account-test-timing')
@@ -77,7 +84,7 @@ try {
     })
     if (overflow.page || overflow.panel) throw new Error(`${variant}/${locale}: mobile horizontal overflow`)
     await page.screenshot({ path: path.join(output, `${variant}-${locale}-mobile-details.png`), fullPage: true })
-    observations.push({ variant, locale, mobileWidth: 390, defaultCollapsed: true, timezone: 'Asia/Seoul UTC+09:00', overflow })
+    observations.push({ variant, locale, openedFromClosed: true, modelLoaded: true, startEnabled: true, mobileWidth: 390, defaultCollapsed: true, timezone: 'Asia/Seoul UTC+09:00', overflow })
     await context.close()
   }
   if (failures.length) throw new Error(failures.join('; '))
