@@ -43,6 +43,12 @@ func (u issue600LocalTransport) local(req *http.Request) (*http.Request, error) 
 	return cloned, nil
 }
 func (u issue600LocalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The test client also uses http.DefaultClient for its downstream handshake.
+	// Loopback requests keep their own destination; only the fixed OAuth host
+	// needs redirecting into the synthetic upstream.
+	if host := req.URL.Hostname(); host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return u.transport.RoundTrip(req)
+	}
 	local, err := u.local(req)
 	if err != nil {
 		return nil, err

@@ -58,7 +58,7 @@ jobs:
           result=$?
           set -e
           cat "$RUNNER_TEMP/issue600-$PHASE.log"
-          if grep -E 'build failed|no tests to run|--- SKIP:|panic:|failed to get access token|stable original client identity must admit turn 1' "$RUNNER_TEMP/issue600-$PHASE.log"; then
+          if grep -E 'build failed|no tests to run|--- SKIP:|panic:|unexpected fixture destination|failed to WebSocket dial|failed to get access token|stable original client identity must admit turn 1' "$RUNNER_TEMP/issue600-$PHASE.log"; then
             echo 'Invalid test evidence: compile, fixture, panic, skip or missing tests'
             exit 1
           fi
@@ -112,7 +112,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git diff --exit-code HEAD
-          go test -race -tags=unit ./internal/handler ./internal/service -run '^(TestIssue600|TestOpenAIWSRevalidation|TestOpenAIWS.*Pricing|TestOpenAIWS.*Key|TestOpenAIResponsesWebSocket_|TestRefreshOpenAIWSTurnBilling|TestBuildCyberSessionBlockedOpsEntry|TestOpenAIWSRateLimit|TestOpenAIAuth|TestIssue594|TestOpenAIWSNextAttempt|TestWSAPIKeySlot|TestWSUserSlot|TestWSHTTPBridge|TestPassthroughIngress|TestOpenAIRPMPassthrough|TestOpenAIResponsesWebSocketV2|TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient|TestProxyOpenAIWSHTTPBridge|TestOpenAIWSHTTPBridge|TestCodexRequestBodyIdentity|TestBuildOpenAIWSHeadersNamespaces|Test.*Codex.*Tool)' -count=1 -v -timeout=20m | tee "$RUNNER_TEMP/issue600-contracts.log"
+          go test -race -tags=unit ./internal/handler ./internal/service -run '^(TestIssue600|TestOpenAIWSRevalidation|TestOpenAIWS.*Pricing|TestOpenAIWS.*Key|TestOpenAIResponsesWebSocket_|TestRefreshOpenAIWSTurnBilling|TestBuildCyberSessionBlockedOpsEntry|TestOpenAIWSRateLimit|TestOpenAIAuth|TestIssue594|TestRegional.*WS|TestOpenAIWSNextAttempt|TestWSAPIKeySlot|TestWSUserSlot|TestWSHTTPBridge|TestPassthroughIngress|TestOpenAIRPMPassthrough|TestOpenAIResponsesWebSocketV2|TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient|TestProxyOpenAIWSHTTPBridge|TestOpenAIWSHTTPBridge|TestCodexRequestBodyIdentity|TestBuildOpenAIWSHeadersNamespaces|Test.*Codex.*Tool)' -count=1 -v -timeout=20m | tee "$RUNNER_TEMP/issue600-contracts.log"
           if grep -E -- '--- SKIP:|no tests to run' "$RUNNER_TEMP/issue600-contracts.log"; then exit 1; fi
           git diff --exit-code HEAD
       - name: PostgreSQL and Redis persistence, queue and session fixtures
