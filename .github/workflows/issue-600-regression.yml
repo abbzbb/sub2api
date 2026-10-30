@@ -1,0 +1,70 @@
+name: Issue 600 WS client identity
+on:
+  push:
+    branches: [fix/issue600-ws-client-identity]
+  pull_request:
+    branches: [production]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/issue-600-regression.yml'
+permissions:
+  contents: read
+jobs:
+  network:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [RED, GREEN]
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      PHASE: ${{ matrix.phase }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Prove source and run real handler network regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --exit-code HEAD
+          files=(backend/internal/handler/openai_gateway_handler.go backend/internal/service/openai_ws_forwarder.go backend/internal/service/openai_ws_forwarder_ingress.go backend/internal/service/openai_ws_v2_passthrough_adapter.go)
+          if [ "$PHASE" = RED ]; then
+            for file in "${files[@]}"; do
+              git show "77455cf755fa0f119367b911704f11df88e7917e:$file" > "$file"
+            done
+          fi
+          {
+            echo "candidate=$EXPECTED_HEAD phase=$PHASE baseline=77455cf755fa0f119367b911704f11df88e7917e"
+            for file in "${files[@]}"; do
+              echo "$file blob=$(git hash-object "$file") candidate=$(git rev-parse "$EXPECTED_HEAD:$file") baseline=$(git rev-parse "77455cf755fa0f119367b911704f11df88e7917e:$file")"
+            done
+          } | tee "$RUNNER_TEMP/issue600-source-$PHASE.log"
+          set +e
+          (cd backend && go test -tags=unit ./internal/handler -run '^TestIssue600ClientIdentityNetwork$' -count=1 -v -timeout=8m) > "$RUNNER_TEMP/issue600-$PHASE.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/issue600-$PHASE.log"
+          ! grep -E 'build failed|no tests to run|--- SKIP:' "$RUNNER_TEMP/issue600-$PHASE.log"
+          if [ "$PHASE" = RED ]; then
+            test "$result" -ne 0
+            grep -q -- '--- FAIL: TestIssue600ClientIdentityNetwork/' "$RUNNER_TEMP/issue600-$PHASE.log"
+            grep -q 'stable original client identity must admit turn 2' "$RUNNER_TEMP/issue600-$PHASE.log"
+          else
+            test "$result" -eq 0
+            grep -q -- '--- PASS: TestIssue600ClientIdentityNetwork ' "$RUNNER_TEMP/issue600-$PHASE.log"
+            git diff --exit-code HEAD
+          fi
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: issue600-${{ matrix.phase }}-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/issue600-*.log
