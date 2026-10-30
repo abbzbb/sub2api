@@ -1642,12 +1642,19 @@ func TestOpenAIQueueWaitUsesIngressStart(t *testing.T) {
 	requestStart := time.Now().Add(-3 * time.Second)
 	ctx := context.WithValue(context.Background(), ctxkey.RequestStartTime, requestStart)
 
-	wait := openAIQueueWait(ctx, time.Now())
+	wait, measured := openAIQueueWait(ctx, time.Now())
+	require.True(t, measured)
 	require.GreaterOrEqual(t, wait, 2900*time.Millisecond)
 	require.LessOrEqual(t, wait, 3100*time.Millisecond)
 
-	require.Zero(t, openAIQueueWait(context.Background(), time.Now()))
-	require.Zero(t, openAIQueueWait(ctx, requestStart.Add(-time.Second)))
+	zero, zeroMeasured := openAIQueueWait(ctx, requestStart)
+	require.True(t, zeroMeasured)
+	require.Zero(t, zero)
+
+	_, missingMeasured := openAIQueueWait(context.Background(), time.Now())
+	require.False(t, missingMeasured)
+	_, futureMeasured := openAIQueueWait(ctx, requestStart.Add(-time.Second))
+	require.False(t, futureMeasured)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_PersistsQueueWaitSeparately(t *testing.T) {
@@ -1657,12 +1664,13 @@ func TestOpenAIGatewayServiceRecordUsage_PersistsQueueWaitSeparately(t *testing.
 
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
-			RequestID:    "queue_wait_ttft",
-			Model:        "gpt-5.1",
-			Usage:        OpenAIUsage{InputTokens: 20, OutputTokens: 10},
-			Duration:     2 * time.Second,
-			FirstTokenMs: &firstToken,
-			QueueWait:    5 * time.Second,
+			RequestID:         "queue_wait_ttft",
+			Model:             "gpt-5.1",
+			Usage:             OpenAIUsage{InputTokens: 20, OutputTokens: 10},
+			Duration:          2 * time.Second,
+			FirstTokenMs:      &firstToken,
+			QueueWait:         5 * time.Second,
+			QueueWaitMeasured: true,
 		},
 		APIKey:  &APIKey{ID: 10, GroupID: i64p(11), Group: &Group{ID: 11, RateMultiplier: 1.2}},
 		User:    &User{ID: 20},
@@ -1685,11 +1693,12 @@ func TestOpenAIGatewayServiceRecordUsage_QueueWaitKeepsMissingFirstToken(t *test
 
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
-			RequestID: "queue_wait_non_stream",
-			Model:     "gpt-5.1",
-			Usage:     OpenAIUsage{InputTokens: 20, OutputTokens: 10},
-			Duration:  2 * time.Second,
-			QueueWait: 5 * time.Second,
+			RequestID:         "queue_wait_non_stream",
+			Model:             "gpt-5.1",
+			Usage:             OpenAIUsage{InputTokens: 20, OutputTokens: 10},
+			Duration:          2 * time.Second,
+			QueueWait:         5 * time.Second,
+			QueueWaitMeasured: true,
 		},
 		APIKey:  &APIKey{ID: 10, GroupID: i64p(11), Group: &Group{ID: 11, RateMultiplier: 1.2}},
 		User:    &User{ID: 20},

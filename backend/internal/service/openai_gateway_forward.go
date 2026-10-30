@@ -173,7 +173,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// forward-scope Duration/FirstTokenMs used by scheduling and ops.
 	defer func() {
 		if result != nil {
-			result.QueueWait = openAIQueueWait(ctx, startTime)
+			result.QueueWait, result.QueueWaitMeasured = openAIQueueWait(ctx, startTime)
 		}
 	}()
 	// 固定渠道映射后的请求级 canonical body；账号 normalize/strip 不得改写跨 failover hint。

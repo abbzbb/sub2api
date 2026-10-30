@@ -3686,6 +3686,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				// result's forward-scope Duration/FirstTokenMs untouched for
 				// scheduling and ops.
 				if result != nil && result.Duration > 0 && !turnStart.IsZero() {
+					result.QueueWaitMeasured = true
 					if queueWait := time.Since(turnStart) - result.Duration; queueWait > 0 && queueWait <= time.Hour {
 						result.QueueWait = queueWait
 					}
