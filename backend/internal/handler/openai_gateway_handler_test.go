@@ -3136,7 +3136,6 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
 
 	h := &OpenAIGatewayHandler{
-		maxAccountSwitches:  2,
 		cfg:                 cfg,
 		compositeResolver:   tc.compositeResolver,
 		gatewayService:      gatewaySvc,
@@ -3145,6 +3144,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(concurrencyCache), SSEPingFormatNone, time.Second),
 	}
 
+	if tc.timing != nil && tc.timing.failover {
+		h.maxAccountSwitches = 2
+	}
 	if tc.timing != nil && tc.timing.keyQueue {
 		h.concurrencyHelper.concurrencyService.SetAPIKeyQueuePolicy(service.APIKeyQueuePolicy{MaxWaiting: 4, Timeout: 10 * time.Second})
 	}

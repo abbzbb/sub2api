@@ -37,6 +37,8 @@ type pr610TimingScenario struct {
 	base          time.Time
 	offset        atomic.Int64
 	turn          atomic.Int32
+	invalidClock  bool
+	beyondHour    bool
 	keyQueue      bool
 	failover      bool
 	failedSwitch  atomic.Bool
@@ -150,6 +152,12 @@ func (s *pr610TimingScenario) prepareTurn() {
 					s.t.Errorf("barrier order: got %s want %s", b.phase, phase)
 				}
 				d := 10 * time.Second
+				if phase == "user" && s.invalidClock {
+					s.advance(-2 * time.Hour)
+				}
+				if phase == "user" && s.beyondHour {
+					d = 2 * time.Hour
+				}
 				if phase == "account" {
 					d = 20 * time.Second
 				}
@@ -249,6 +257,13 @@ type pr610SlotCache struct {
 	service.ConcurrencyCache
 	s *pr610TimingScenario
 }
+
+func (c *pr610SlotCache) AcquireAPIKeySlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
+	return c.ConcurrencyCache.(service.APIKeySlotAdmissionCache).AcquireAPIKeySlot(ctx, id, limit, member)
+}
+
+var _ service.APIKeySlotAdmissionCache = (*pr610SlotCache)(nil)
+var _ service.APIKeySlotQueueCache = (*pr610SlotCache)(nil)
 
 func (c *pr610SlotCache) AcquireUserSlot(ctx context.Context, id int64, limit int, member string) (bool, error) {
 	if ctx.Value(pr610HolderKey{}) != true {
@@ -507,8 +522,8 @@ func TestPR610AuthenticatedFollowupAccountSwitchKeepsFrameStart(t *testing.T) {
 	s.failover = true
 	s.longFirst = true
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: s.mode, authSetup: pr610Auth,
-		firstPayload:  `{"type":"response.create","model":"gpt-5.4","stream":true}`,
-		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`})
+		firstPayload:  `{"type":"response.create","model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"portable synthetic request"}]}]}`,
+		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"portable synthetic request"}]}]}`})
 	require.Len(t, got.logs, 2)
 	require.True(t, s.failedSwitch.Load(), "real synthetic 429 must switch the current turn's account")
 	require.EqualValues(t, 9901, got.logs[0].AccountID)
@@ -567,4 +582,33 @@ func TestPR610PassthroughPreflightKeepsLegacyBaseline(t *testing.T) {
 	require.EqualValues(t, 32000, *row.FirstTokenMs, "legacy passthrough timer still starts after payload preflight")
 	require.EqualValues(t, 37000, *row.QueueTiming.ServerFirstTokenMs)
 	require.EqualValues(t, 2000, *row.QueueTiming.ForwardFirstTokenMs)
+}
+
+func TestPR610ProtocolClockValidityAndClamp(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough} {
+		for _, invalid := range []bool{false, true} {
+			name := "clamp"
+			if invalid {
+				name = "future_ingress"
+			}
+			t.Run(mode+"/"+name, func(t *testing.T) {
+				s := newPR610Scenario(t, mode)
+				s.invalidClock = invalid
+				s.beyondHour = !invalid
+				got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{timing: s, ingressMode: mode, authSetup: pr610Auth, firstPayload: `{"type":"response.create","model":"gpt-5.4","stream":true}`})
+				row := got.log
+				if invalid {
+					require.Nil(t, row.QueueWaitMs, "future ingress must remain unknown, not a measured zero")
+					require.Nil(t, row.QueueTiming)
+					return
+				}
+				require.NotNil(t, row.QueueWaitMs)
+				require.EqualValues(t, 3600000, *row.QueueWaitMs)
+				require.NotNil(t, row.QueueTiming)
+				require.True(t, row.QueueTiming.QueueClamped)
+				require.Greater(t, *row.QueueTiming.ServerFirstTokenMs, int64(7200000), "queue cap must not truncate actual server elapsed time")
+				require.EqualValues(t, 2000, *row.QueueTiming.ForwardFirstTokenMs)
+			})
+		}
+	}
 }
