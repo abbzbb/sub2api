@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -283,7 +283,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	}
 
 	// 8. Forward response
-	var result *OpenAIForwardResult
 	var forwardErr error
 	if clientStream {
 		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
@@ -393,7 +392,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					usage = *u
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
-					elapsed := int(requesttiming.Now(ctx).Sub(startTime).Milliseconds())
+					elapsed := int(requesttiming.Now(c.Request.Context()).Sub(startTime).Milliseconds())
 					firstTokenMs = &elapsed
 				}
 			}
@@ -428,7 +427,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			ReasoningEffort:               reasoningEffort,
 			ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
 			Stream:                        true,
-			Duration:                      requesttiming.Now(ctx).Sub(startTime),
+			Duration:                      requesttiming.Now(c.Request.Context()).Sub(startTime),
 			FirstTokenMs:                  firstTokenMs,
 		}
 	}
@@ -601,7 +600,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		ReasoningEffort:               reasoningEffort,
 		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
 		Stream:                        false,
-		Duration:                      requesttiming.Now(ctx).Sub(startTime),
+		Duration:                      requesttiming.Now(c.Request.Context()).Sub(startTime),
 	}, nil
 }
 

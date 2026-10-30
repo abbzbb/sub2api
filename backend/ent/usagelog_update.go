@@ -974,6 +974,18 @@ func (_u *UsageLogUpdate) SetNillableCacheTTLOverridden(v *bool) *UsageLogUpdate
 	return _u
 }
 
+// SetQueueTiming sets the "queue_timing" field.
+func (_u *UsageLogUpdate) SetQueueTiming(v map[string]interface{}) *UsageLogUpdate {
+	_u.mutation.SetQueueTiming(v)
+	return _u
+}
+
+// ClearQueueTiming clears the value of the "queue_timing" field.
+func (_u *UsageLogUpdate) ClearQueueTiming() *UsageLogUpdate {
+	_u.mutation.ClearQueueTiming()
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *UsageLogUpdate) SetUser(v *User) *UsageLogUpdate {
 	return _u.SetUserID(v.ID)
@@ -1416,6 +1428,12 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.QueueTiming(); ok {
+		_spec.SetField(usagelog.FieldQueueTiming, field.TypeJSON, value)
+	}
+	if _u.mutation.QueueTimingCleared() {
+		_spec.ClearField(usagelog.FieldQueueTiming, field.TypeJSON)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -2524,6 +2542,18 @@ func (_u *UsageLogUpdateOne) SetNillableCacheTTLOverridden(v *bool) *UsageLogUpd
 	return _u
 }
 
+// SetQueueTiming sets the "queue_timing" field.
+func (_u *UsageLogUpdateOne) SetQueueTiming(v map[string]interface{}) *UsageLogUpdateOne {
+	_u.mutation.SetQueueTiming(v)
+	return _u
+}
+
+// ClearQueueTiming clears the value of the "queue_timing" field.
+func (_u *UsageLogUpdateOne) ClearQueueTiming() *UsageLogUpdateOne {
+	_u.mutation.ClearQueueTiming()
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *UsageLogUpdateOne) SetUser(v *User) *UsageLogUpdateOne {
 	return _u.SetUserID(v.ID)
@@ -2996,6 +3026,12 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.QueueTiming(); ok {
+		_spec.SetField(usagelog.FieldQueueTiming, field.TypeJSON, value)
+	}
+	if _u.mutation.QueueTimingCleared() {
+		_spec.ClearField(usagelog.FieldQueueTiming, field.TypeJSON)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{

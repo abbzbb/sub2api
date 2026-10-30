@@ -181,14 +181,16 @@ describe('admin UsageTable tooltip', () => {
   })
 
   it('shows queue-inclusive first token and labels the queue portion', () => {
-    const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', output_tokens: 100, duration_ms: 20_000, first_token_ms: 2_000, queue_wait_ms: 30_000 }
+    const row = { ...baseImageRow, image_count: 0, billing_mode: 'token', output_tokens: 100, duration_ms: 20_000, first_token_ms: 2_000, queue_wait_ms: 30_000,
+      queue_timing: { status: 'measured', source: 'ws_frame_ctx_pool', scope: 'pre_final_forward', queue_clamped: false,
+        server_first_token_ms: 32_000, server_duration_ms: 50_000, forward_first_token_ms: 2_000, forward_duration_ms: 20_000 } }
     const wrapper = mount(UsageTable, {
       props: { data: [row], loading: false, columns: [{ key: 'latency', label: 'Latency' }] },
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
     })
     expect(wrapper.text()).toContain('32.00s')
     expect(wrapper.text()).toContain('50.00s')
-    expect(wrapper.text()).toContain('+30.00s')
+    expect(wrapper.text()).toContain('30.00s')
   })
 
   beforeEach(() => {

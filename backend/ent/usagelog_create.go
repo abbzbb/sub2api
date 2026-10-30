@@ -637,6 +637,12 @@ func (_c *UsageLogCreate) SetNillableCacheTTLOverridden(v *bool) *UsageLogCreate
 	return _c
 }
 
+// SetQueueTiming sets the "queue_timing" field.
+func (_c *UsageLogCreate) SetQueueTiming(v map[string]interface{}) *UsageLogCreate {
+	_c.mutation.SetQueueTiming(v)
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *UsageLogCreate) SetCreatedAt(v time.Time) *UsageLogCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -1148,6 +1154,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
 		_node.CacheTTLOverridden = value
+	}
+	if value, ok := _c.mutation.QueueTiming(); ok {
+		_spec.SetField(usagelog.FieldQueueTiming, field.TypeJSON, value)
+		_node.QueueTiming = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(usagelog.FieldCreatedAt, field.TypeTime, value)
@@ -2121,6 +2131,24 @@ func (u *UsageLogUpsert) SetCacheTTLOverridden(v bool) *UsageLogUpsert {
 // UpdateCacheTTLOverridden sets the "cache_ttl_overridden" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdateCacheTTLOverridden() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldCacheTTLOverridden)
+	return u
+}
+
+// SetQueueTiming sets the "queue_timing" field.
+func (u *UsageLogUpsert) SetQueueTiming(v map[string]interface{}) *UsageLogUpsert {
+	u.Set(usagelog.FieldQueueTiming, v)
+	return u
+}
+
+// UpdateQueueTiming sets the "queue_timing" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateQueueTiming() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldQueueTiming)
+	return u
+}
+
+// ClearQueueTiming clears the value of the "queue_timing" field.
+func (u *UsageLogUpsert) ClearQueueTiming() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldQueueTiming)
 	return u
 }
 
@@ -3139,6 +3167,27 @@ func (u *UsageLogUpsertOne) SetCacheTTLOverridden(v bool) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateCacheTTLOverridden() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheTTLOverridden()
+	})
+}
+
+// SetQueueTiming sets the "queue_timing" field.
+func (u *UsageLogUpsertOne) SetQueueTiming(v map[string]interface{}) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetQueueTiming(v)
+	})
+}
+
+// UpdateQueueTiming sets the "queue_timing" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateQueueTiming() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateQueueTiming()
+	})
+}
+
+// ClearQueueTiming clears the value of the "queue_timing" field.
+func (u *UsageLogUpsertOne) ClearQueueTiming() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearQueueTiming()
 	})
 }
 
@@ -4323,6 +4372,27 @@ func (u *UsageLogUpsertBulk) SetCacheTTLOverridden(v bool) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdateCacheTTLOverridden() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheTTLOverridden()
+	})
+}
+
+// SetQueueTiming sets the "queue_timing" field.
+func (u *UsageLogUpsertBulk) SetQueueTiming(v map[string]interface{}) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetQueueTiming(v)
+	})
+}
+
+// UpdateQueueTiming sets the "queue_timing" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateQueueTiming() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateQueueTiming()
+	})
+}
+
+// ClearQueueTiming clears the value of the "queue_timing" field.
+func (u *UsageLogUpsertBulk) ClearQueueTiming() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearQueueTiming()
 	})
 }
 

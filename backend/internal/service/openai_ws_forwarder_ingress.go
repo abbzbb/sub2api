@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -401,7 +401,10 @@ func openAIWSGetIngressReader(c *gin.Context, conn *coderws.Conn) *openAIWSIngre
 	}
 	r := &openAIWSIngressReader{conn: conn, frames: make(chan openAIWSClientRead, openAIWSIngressReaderFrameLimit), done: make(chan struct{})}
 	c.Set(openAIWSIngressReaderKey, r)
-	clockCtx := c.Request.Context()
+	clockCtx := context.Background()
+	if c.Request != nil {
+		clockCtx = c.Request.Context()
+	}
 	go func() {
 		defer close(r.done)
 		for {
