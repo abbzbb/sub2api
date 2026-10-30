@@ -99,7 +99,7 @@ func DeriveContentObservation(s Snapshot) ContentObservation {
 	}
 	read := func(key string) *float64 {
 		v, ok := a.Events[key]
-		if !ok || !finite(v) || v < a.StartMS || a.EndMS == nil || v > *a.EndMS {
+		if !ok || !finite(v) || !finite(a.StartMS) || a.StartMS < 0 || v < a.StartMS || a.EndMS == nil || !finite(*a.EndMS) || v > *a.EndMS {
 			return nil
 		}
 		return &v

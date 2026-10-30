@@ -50,3 +50,5 @@ Issue 研究是作者单实例的观察，不是普遍因果，也不用于自�
 | 603-6 qdisc 补强 | 当前固定 unsupported，父审要求研究安全读取 | 依据 Linux UAPI 的只读 RTM_GETQDISC dump，限定无特权、超时和payload上限，解析 root egress qdisc queue drops；无权限/不支持/截断/reset 显式状态，不调用 tc 或修改配置 | 注入 netlink fixture + collector→storage→handler→UI；远端合成隔离CI，待实现 |
 
 追加生产增量：typed Content 识别已接真实 SSE scanner/native/passthrough，usage page 批量 repository 读取与 DTO 三边界；分组 SQL 增加 account/public model 与 typed 样本/可见文本分位数；默认/高级普通/priority history 的真实观测链增加 effort（公开模型与策略后请求 effort，max/xhigh 保留独立）key。默认未知 capability/source 与分 hop socket 未采集 envelope 已实现。qdisc root dump 与 fixture/collector delta 测试已实现。上述 #605 与 qdisc 增量等待远端完整 RED/GREEN，不使用前一 SHA 绿灯代替。
+
+#605 typed 分组与列表仅选择最终物理 HTTP attempt，且分组要求其账号与用量/trace 账号匹配；前面切换的失败账号不被归入最终账号的 reasoning/text 分位数。旧首字上传组件保留全 attempt 诊断语义。已补真实 loopback HTTP/SSE native handler 的 first_byte→typed reasoning→output_text 顺序和 mixed-account PG 分位数隔离回归。

@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,8 +15,50 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIssue605NativeLoopbackSSETypedContentAndByte(t *testing.T) {
+	wire := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_synthetic605\",\"created_at\":1}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\"}}\n\n" +
+		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"summary\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_synthetic605\",\"created_at\":1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, wire)
+	}))
+	defer server.Close()
+	collector := requesttiming.New(time.Now(), 0)
+	ctx := requesttiming.With(context.Background(), collector)
+	req, err := http.NewRequestWithContext(ctx, "POST", server.URL, strings.NewReader("synthetic"))
+	require.NoError(t, err)
+	req, _ = requesttiming.StartAttempt(req, 605, 0)
+	req, tr := requesttiming.StartTransport(req)
+	resp, err := server.Client().Do(req)
+	tr.Response(resp, err)
+	require.NoError(t, err)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	_, err = svc.handleStreamingResponse(req.Context(), resp, c, &Account{ID: 605, Platform: PlatformOpenAI}, time.Now(), "fixture", "fixture")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	collector.Finish(200, false)
+	collector.WhenFinished(func(s requesttiming.Snapshot) {
+		v := requesttiming.DeriveContentObservation(s)
+		require.NotNil(t, v.ResponseByteFirstMS)
+		require.NotNil(t, v.ReasoningFirstMS, "native mixed SSE must record the typed reasoning item")
+		require.NotNil(t, v.VisibleTextFirstMS)
+		require.LessOrEqual(t, *v.ResponseByteFirstMS, *v.ReasoningFirstMS)
+		require.LessOrEqual(t, *v.ReasoningFirstMS, *v.VisibleTextFirstMS)
+		require.Equal(t, "unknown", v.ReasoningStreamingCapability)
+		require.Contains(t, c.Writer.Header().Get("Content-Type"), "text/event-stream")
+	})
+}
 
 func TestIssue605MixedSSERecordsTypedBoundaries(t *testing.T) {
 	preamble := "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}\n\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n"

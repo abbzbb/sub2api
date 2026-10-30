@@ -11,7 +11,12 @@ import (
 // Read-only NETLINK_ROUTE dump, no elevated capability request and no shell.
 // The kernel may deny it: preserve capability/permission status without probes.
 func readHostQdisc() qdiscSnapshot {
-	failed := func(err error) qdiscSnapshot { return qdiscSnapshot{status: networkReadStatus(err)} }
+	failed := func(err error) qdiscSnapshot {
+		if err == syscall.EAGAIN || err == syscall.ETIMEDOUT {
+			return qdiscSnapshot{status: "timeout"}
+		}
+		return qdiscSnapshot{status: networkReadStatus(err)}
+	}
 	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, syscall.NETLINK_ROUTE)
 	if err != nil {
 		return failed(err)

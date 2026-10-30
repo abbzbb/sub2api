@@ -59,6 +59,25 @@ func TestIssue605UsageContentBatchAndLayeredSQL(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, signals[a.ID].Samples)
 	require.Equal(t, 100.0, signals[a.ID].P90TTFTMs, "different effort must not enter the priority history latency population")
+	// A failed earlier attempt on another account must not enter the billed
+	// account's typed latency population, even though upload components remain.
+	mixed := requesttiming.Snapshot{Attempts: []requesttiming.Attempt{
+		{Kind: "http", AccountID: a.ID + 99, StartMS: 0, EndMS: &end, Events: map[string]float64{"first_reasoning": 900, "first_visible_text": 950}},
+		{Kind: "http", AccountID: a.ID, StartMS: 0, EndMS: &end, Events: map[string]float64{"first_byte": 10, "first_reasoning": 100, "first_visible_text": 200}},
+	}}
+	payload, err := json.Marshal(mixed)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `UPDATE request_timing_details SET detail=$2::jsonb WHERE usage_log_id=$1`, ids[0], string(payload))
+	require.NoError(t, err)
+	groups, err = repo.ReadLatencyReport(ctx, service.LatencyReportFilter{Start: now.Add(-time.Minute), End: now.Add(time.Minute), UserID: u.ID})
+	require.NoError(t, err)
+	for _, g := range groups {
+		if g.ReasoningEffort == "xhigh" {
+			require.EqualValues(t, 1, g.TextSamples)
+			require.Equal(t, 200.0, *g.TextP90MS, "only final matching-account content can enter account/model/effort quantiles")
+		}
+	}
+
 	_, err = tx.ExecContext(ctx, `INSERT INTO request_timing_details(usage_log_id,trace_id,detail)VALUES($1,$2,'{}'::jsonb)`, ids[0], uuid.NewString())
 	require.NoError(t, err)
 	items, err = repo.ReadUsageContentTimings(ctx, ids)

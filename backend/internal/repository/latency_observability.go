@@ -73,8 +73,8 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  SUM((detail->'latency'->>'extra_wait_component_ms')::float8) extra_wait
  FROM grouped_traces GROUP BY body_bucket,cache,effort,account_id,model
 ), attempts AS (
- SELECT t.*,a.value a FROM grouped_traces t CROSS JOIN LATERAL jsonb_array_elements(
- CASE WHEN jsonb_typeof(detail->'attempts')='array' THEN detail->'attempts' ELSE '[]'::jsonb END) a
+ SELECT t.*,a.value a,a.n=CASE WHEN jsonb_typeof(detail->'attempts')='array' THEN jsonb_array_length(detail->'attempts') ELSE 0 END AS final_attempt FROM grouped_traces t CROSS JOIN LATERAL jsonb_array_elements(
+ CASE WHEN jsonb_typeof(detail->'attempts')='array' THEN detail->'attempts' ELSE '[]'::jsonb END) WITH ORDINALITY a(value,n)
  WHERE a.value->>'kind'='http'
 ), boundaries AS (
  SELECT *,CASE WHEN jsonb_typeof(a->'start_ms')='number' THEN (a->>'start_ms')::numeric END started,
@@ -97,15 +97,15 @@ func latencyReportSQL(f service.LatencyReportFilter) (string, []any) {
  AVG(CASE WHEN upload IS NOT NULL AND semantic>=written AND ended>=semantic THEN semantic-written END)::float8 wait_avg,
  COUNT(*) FILTER (WHERE upload IS NOT NULL AND visible>=written AND ended>=visible) visibles,
  AVG(CASE WHEN upload IS NOT NULL AND visible>=written AND ended>=visible THEN visible-written END)::float8 visible_avg,
- COUNT(*) FILTER (WHERE reasoning>=started AND reasoning<=ended) reasonings,
- AVG(CASE WHEN reasoning>=started AND reasoning<=ended THEN reasoning END)::float8 reasoning_avg,
- COUNT(*) FILTER (WHERE text_first>=started AND text_first<=ended) texts,
- AVG(CASE WHEN text_first>=started AND text_first<=ended THEN text_first END)::float8 text_avg,
- COUNT(*) FILTER (WHERE byte_first>=started AND byte_first<=ended) bytes,
- AVG(CASE WHEN byte_first>=started AND byte_first<=ended THEN byte_first END)::float8 byte_avg,
- percentile_cont(.5) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p50,
- percentile_cont(.9) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p90,
- percentile_cont(.99) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE text_first>=started AND text_first<=ended) text_p99
+ COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=ended) reasonings,
+ AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND reasoning>=started AND reasoning<=ended THEN reasoning END)::float8 reasoning_avg,
+ COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) texts,
+ AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended THEN text_first END)::float8 text_avg,
+ COUNT(*) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND byte_first>=started AND byte_first<=ended) bytes,
+ AVG(CASE WHEN final_attempt AND a->>'account_id'=account_id::text AND byte_first>=started AND byte_first<=ended THEN byte_first END)::float8 byte_avg,
+ percentile_cont(.5) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p50,
+ percentile_cont(.9) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p90,
+ percentile_cont(.99) WITHIN GROUP (ORDER BY text_first) FILTER (WHERE final_attempt AND a->>'account_id'=account_id::text AND text_first>=started AND text_first<=ended) text_p99
  FROM measured GROUP BY body_bucket,cache,effort,account_id,model
 )
  SELECT c.body_bucket,c.cache,c.effort,c.requests,c.traces,COALESCE(s.attempts,0),COALESCE(s.uploads,0),COALESCE(s.waits,0),COALESCE(s.visibles,0),
