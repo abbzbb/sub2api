@@ -22,8 +22,8 @@ const channelOperationsUsageBase = `WITH base AS (
  AND ($5::bigint=0 OR u.account_id=$5) AND ($6::bigint=0 OR u.group_id=$6)
  AND ($7='' OR CASE $8 WHEN 'public' THEN COALESCE(NULLIF(u.requested_model,''),u.model) WHEN 'recorded' THEN u.model WHEN 'upstream' THEN u.upstream_model END=$7)
 ), measured AS (
- SELECT *, CASE WHEN stream AND measured AND first_token_ms>0 THEN first_token_ms + COALESCE(queue_wait_ms,0) END AS ttft,
- CASE WHEN measured AND duration_ms>0 THEN duration_ms + COALESCE(queue_wait_ms,0) END AS duration
+ SELECT *, CASE WHEN stream AND measured AND first_token_ms>0 THEN first_token_ms END AS ttft,
+ CASE WHEN measured AND duration_ms>0 THEN duration_ms END AS duration
  FROM base
 )`
 
@@ -109,7 +109,7 @@ func (r *channelRepository) ReadChannelOperations(ctx context.Context, f service
  percentile_cont(.9) WITHIN GROUP(ORDER BY duration) AS duration_p90_ms,max(created_at) AS latest_sample_at` + queueInclusiveOperationsAggregate("duration")
 	out.Usage = r.operationsSection(ctx, channelOperationsUsageBase+`, buckets AS (SELECT `+dimension+` AS dimension_id,`+aggregate+` FROM measured GROUP BY `+dimension+`), summary AS (SELECT `+aggregate+` FROM measured), lineage AS (
  SELECT public_model,model AS recorded_model,upstream_model,model_mapping_chain,count(*) AS samples FROM measured GROUP BY public_model,model,upstream_model,model_mapping_chain
- ) SELECT jsonb_build_object('source','usage_logs.channel_id / persisted first_token_ms + queue_wait_ms','attribution','current_operational_membership','latency_measurement','queue_inclusive_stream_ttft','summary',(SELECT to_jsonb(s) FROM summary s),'total',(SELECT count(*) FROM buckets),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (SELECT b.*,`+names+` AS name FROM buckets b ORDER BY b.requests DESC,b.dimension_id LIMIT $9 OFFSET $10)x),'[]'::jsonb),'lineage',COALESCE((SELECT jsonb_agg(to_jsonb(l)) FROM (SELECT * FROM lineage ORDER BY samples DESC,public_model,recorded_model,upstream_model,model_mapping_chain LIMIT 50)l),'[]'::jsonb),'lineage_total',(SELECT count(*) FROM lineage),'error_rate',NULL,'error_scope','no_complete_request_failure_denominator')`, args...)
+ ) SELECT jsonb_build_object('source','usage_logs.channel_id / persisted first_token_ms','attribution','current_operational_membership','latency_measurement','legacy_forward_stream_ttft','summary',(SELECT to_jsonb(s) FROM summary s),'total',(SELECT count(*) FROM buckets),'rows',COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (SELECT b.*,`+names+` AS name FROM buckets b ORDER BY b.requests DESC,b.dimension_id LIMIT $9 OFFSET $10)x),'[]'::jsonb),'lineage',COALESCE((SELECT jsonb_agg(to_jsonb(l)) FROM (SELECT * FROM lineage ORDER BY samples DESC,public_model,recorded_model,upstream_model,model_mapping_chain LIMIT 50)l),'[]'::jsonb),'lineage_total',(SELECT count(*) FROM lineage),'error_rate',NULL,'error_scope','no_complete_request_failure_denominator')`, args...)
 	if f.Model != "" && f.ModelScope != "upstream" {
 		out.Quality = service.ChannelOperationsSection{Status: "unsupported_scope", Data: json.RawMessage("null"), Error: "质量模型是探测模型，不能推断公开或已记录模型别名", QueriedAt: time.Now().UTC()}
 	} else {

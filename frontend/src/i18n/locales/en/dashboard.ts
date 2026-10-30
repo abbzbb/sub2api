@@ -437,7 +437,7 @@ export default {
     latency: 'Latency',
     latencyFirstToken: 'Server TTFT (incl. pre-forward wait)',
     queuePortion: 'incl. pre-forward wait',
-    latencyFirstTokenHint: 'Server TTFT includes pre-forward elapsed time {queue}; forward TTFT {first}. Pre-forward wait includes admission queueing and earlier failed attempts in the documented scope. Uses sampled boundaries, never client E2E. Rows without a measured source show their legacy timer.',
+    latencyFirstTokenHint: 'Server TTFT includes pre-forward elapsed time {queue}; forward TTFT {first}. Pre-forward wait includes admission queueing and earlier failed attempts in the documented scope. Pre-forward wait includes admission queueing and earlier failed attempts in the documented scope. Uses sampled boundaries, never client E2E. Rows without a measured source show their legacy timer.',
     latencyDurationHint: 'Server duration includes pre-forward elapsed time {queue}; forward duration {forward}. Internal retries remain in their documented scope. Average TPS uses the unchanged legacy duration.',
     latencyDuration: 'Server total (incl. pre-forward wait)',
     latencyTps: 'Avg TPS',
