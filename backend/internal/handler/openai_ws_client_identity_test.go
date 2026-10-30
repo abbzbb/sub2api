@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/testutil"
 	coderws "github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -462,6 +463,41 @@ func TestIssue600DisabledSessionBlockKeepsIdentityPolicy(t *testing.T) {
 			issue600Finish(t, h, headers)
 			frames, _ := up.snapshot()
 			require.Len(t, frames, 2, "disabled session blocking must not acquire a new identity gate")
+		})
+	}
+}
+
+func TestIssue600InheritedIdentityStillChecksSessionBlock(t *testing.T) {
+	first := `{"type":"response.create","model":"gpt-5.1","client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}`
+	omitted := `{"type":"response.create","model":"gpt-5.1","input":"fixture-followup"}`
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModeHTTPBridge, service.OpenAIWSIngressModePassthrough, "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, strict := range []bool{false, true} {
+				t.Run(strconv.FormatBool(strict), func(t *testing.T) {
+					headers := http.Header{"Session_id": []string{"fixture-static-session"}}
+					h, up := newIssue600NetworkHarness(t, mode, "oauth", strict, headers)
+					issue600Send(t, h, first, 1, false)
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(first))
+					c.Request.Header = headers.Clone()
+					key := service.CyberSessionExplicitBlockKey(h.apiKey.ID, c, []byte(first))
+					require.NotEmpty(t, key)
+					store, ok := h.gatewayCache.(service.CyberSessionBlockStore)
+					require.True(t, ok)
+					require.NoError(t, store.SetCyberSessionBlocked(context.Background(), "", []string{key}, time.Minute))
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					require.NoError(t, h.clientConn.Write(ctx, coderws.MessageText, []byte(omitted)))
+					_, event, err := h.clientConn.Read(ctx)
+					require.NoError(t, err)
+					require.Equal(t, "session_blocked_by_cyber_policy", gjson.GetBytes(event, "error.code").String(), "omitted body must inherit the trusted thread instead of static session header")
+					_, _, err = h.clientConn.Read(ctx)
+					require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(err))
+					issue600Finish(t, h, headers)
+					frames, _ := up.snapshot()
+					require.Len(t, frames, 1, "newly blocked inherited session must generate zero extra upstream work")
+				})
+			}
 		})
 	}
 }
