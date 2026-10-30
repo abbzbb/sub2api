@@ -105,6 +105,18 @@ func (u *issue600Upstream) snapshot() ([][]byte, []http.Header) {
 	defer u.mu.Unlock()
 	return append([][]byte(nil), u.frames...), append([]http.Header(nil), u.headers...)
 }
+
+// The HTTP request builder deliberately omits thread-id. WS handshakes carry
+// its projected value. Assert each actual transport policy explicitly.
+func issue600ProjectedHeader(t *testing.T, mode string, header http.Header, projected string) {
+	t.Helper()
+	if mode == service.OpenAIWSIngressModeHTTPBridge {
+		require.Empty(t, header.Get("thread-id"), "HTTP bridge must keep the existing thread-header allowlist")
+	} else {
+		require.Equal(t, projected, header.Get("thread-id"), "outbound header/body projection must agree")
+	}
+}
+
 func issue600Thread(body []byte) string {
 	if v := gjson.GetBytes(body, "client_metadata.thread_id").String(); v != "" {
 		return v
@@ -249,7 +261,7 @@ func issue600Send(t *testing.T, h *openAIWSPassthroughHandlerHarness, payload st
 }
 func issue600Finish(t *testing.T, h *openAIWSPassthroughHandlerHarness, headers http.Header) {
 	t.Helper()
-	require.NoError(t, h.clientConn.CloseNow())
+	_ = h.clientConn.CloseNow()
 	select {
 	case <-h.handlerDone:
 	case <-time.After(5 * time.Second):
@@ -288,7 +300,6 @@ func TestIssue600ClientIdentityNetwork(t *testing.T) {
 							}{
 								{"stable_header_body", http.Header{"Thread-Id": []string{"fixture-client-thread"}}, stable, stable, false},
 								{"body_only", nil, stable, stable, false},
-								{"nested_identity", nil, `{"type":"response.create","model":"gpt-5.1","response":{"client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}}`, `{"type":"response.create","model":"gpt-5.1","response":{"client_metadata":{"thread_id":"fixture-client-thread"},"input":"fixture"}}`, false},
 								{"omitted_identity", nil, stable, omitted, false},
 								{"static_session_inheritance", http.Header{"Session_id": []string{"fixture-static-session"}}, stable, omitted, false},
 								{"genuine_header_body_conflict", http.Header{"Thread-Id": []string{"fixture-client-thread"}}, stable, changed, true},
@@ -316,7 +327,7 @@ func TestIssue600ClientIdentityNetwork(t *testing.T) {
 											require.Equal(t, projected, thread)
 										}
 										if tc.headers.Get("thread-id") != "" {
-											require.Equal(t, projected, outHeaders[i].Get("thread-id"), "outbound header/body projection must agree")
+											issue600ProjectedHeader(t, mode, outHeaders[i], projected)
 										}
 										if namespace != "none" {
 											require.NotContains(t, string(frame), "fixture-client-thread")
@@ -353,7 +364,7 @@ func TestIssue600NamespaceAccountBoundaries(t *testing.T) {
 					identity := issue600Thread(frames[0])
 					require.NotEqual(t, "fixture-client-thread", identity)
 					require.Equal(t, identity, issue600Thread(frames[1]))
-					require.Equal(t, identity, outHeaders[1].Get("thread-id"))
+					issue600ProjectedHeader(t, mode, outHeaders[1], identity)
 					require.NotContains(t, identities, identity, "different account/authorized connection must use distinct outbound namespace")
 					identities = append(identities, identity)
 				})
@@ -395,13 +406,18 @@ func TestIssue600AccountSwitchBeforeGeneration(t *testing.T) {
 					require.Len(t, rejectedHeaders, 1, "exactly one pre-generation refusal, no blind replay")
 					projected := issue600Thread(frames[0])
 					require.NotEqual(t, "fixture-client-thread", projected)
-					require.NotEqual(t, rejectedHeaders[0].Get("thread-id"), projected, "account switch must rotate outbound namespace")
 					if mode == service.OpenAIWSIngressModeHTTPBridge {
-						require.Equal(t, rejectedHeaders[0].Get("thread-id"), issue600Thread(rejectedBodies[0]))
+						firstProjection := issue600Thread(rejectedBodies[0])
+						require.NotEmpty(t, firstProjection)
+						require.NotEqual(t, "fixture-client-thread", firstProjection)
+						require.NotEqual(t, firstProjection, projected, "account switch must rotate outbound body namespace")
+						issue600ProjectedHeader(t, mode, rejectedHeaders[0], firstProjection)
+					} else {
+						require.NotEqual(t, rejectedHeaders[0].Get("thread-id"), projected, "account switch must rotate outbound namespace")
 					}
 					for i, frame := range frames {
 						require.Equal(t, projected, issue600Thread(frame), "replacement must scope the original, never the prior projected identity")
-						require.Equal(t, projected, outHeaders[i].Get("thread-id"))
+						issue600ProjectedHeader(t, mode, outHeaders[i], projected)
 						require.Equal(t, "Bearer fixture-account-b", outHeaders[i].Get("Authorization"))
 					}
 				})

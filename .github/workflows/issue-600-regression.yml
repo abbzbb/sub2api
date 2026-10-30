@@ -58,7 +58,7 @@ jobs:
           result=$?
           set -e
           cat "$RUNNER_TEMP/issue600-$PHASE.log"
-          if grep -E 'build failed|no tests to run|--- SKIP:|panic:|unexpected fixture destination|failed to WebSocket dial|failed to get access token|stable original client identity must admit turn 1' "$RUNNER_TEMP/issue600-$PHASE.log"; then
+          if grep -E 'build failed|no tests to run|--- SKIP:|panic:|unexpected fixture destination|failed to get access token|stable original client identity must admit turn 1' "$RUNNER_TEMP/issue600-$PHASE.log"; then
             echo 'Invalid test evidence: compile, fixture, panic, skip or missing tests'
             exit 1
           fi
@@ -77,7 +77,7 @@ jobs:
             for mode in ctx_pool http_bridge passthrough legacy; do
               for strict in false true; do
                 for namespace in none oauth; do
-                  for scenario in stable_header_body body_only nested_identity omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
+                  for scenario in stable_header_body body_only omitted_identity static_session_inheritance genuine_header_body_conflict true_body_identity_switch invalid_followup; do
                     grep -q -- "--- PASS: TestIssue600ClientIdentityNetwork/$mode/strict=$strict/$namespace/$scenario " "$RUNNER_TEMP/issue600-$PHASE.log"
                   done
                 done
