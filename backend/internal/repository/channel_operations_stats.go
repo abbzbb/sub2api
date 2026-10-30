@@ -23,7 +23,7 @@ const channelOperationsUsageBase = `WITH base AS (
  AND ($7='' OR CASE $8 WHEN 'public' THEN COALESCE(NULLIF(u.requested_model,''),u.model) WHEN 'recorded' THEN u.model WHEN 'upstream' THEN u.upstream_model END=$7)
 ), measured AS (
  SELECT *, CASE WHEN stream AND measured AND first_token_ms>0 THEN first_token_ms + COALESCE(queue_wait_ms,0) END AS ttft,
- CASE WHEN measured AND duration_ms>0 THEN duration_ms END AS duration
+ CASE WHEN measured AND duration_ms>0 THEN duration_ms + COALESCE(queue_wait_ms,0) END AS duration
  FROM base
 )`
 

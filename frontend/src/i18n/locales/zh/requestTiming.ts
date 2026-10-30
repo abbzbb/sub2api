@@ -21,6 +21,7 @@ export default {
   "legacyTotal": "转发总耗时（服务端）",
   "queueWait": "排队等待（到达至开始转发）",
   "endToEndFirst": "端到端首字（转发+排队）",
+  "endToEndTotal": "端到端总耗时（转发+排队）",
   "requestTotal": "完整请求耗时",
   "inbound": "客户端 → Sub2API",
   "internal": "Sub2API 内部",

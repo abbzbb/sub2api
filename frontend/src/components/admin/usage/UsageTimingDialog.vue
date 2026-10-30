@@ -98,11 +98,17 @@ const endToEndFirstMs = computed(() => {
   const queue = props.record?.queue_wait_ms
   return first == null || queue == null ? null : first + queue
 })
+const endToEndTotalMs = computed(() => {
+  const duration = props.record?.duration_ms
+  const queue = props.record?.queue_wait_ms
+  return duration == null || queue == null ? null : duration + queue
+})
 const summaries = computed(() => [
   { label: t('requestTiming.legacyFirst'), value: props.record?.first_token_ms, scale: 'first' as const },
   { label: t('requestTiming.queueWait'), value: queueWaitMs.value, scale: 'first' as const },
   { label: t('requestTiming.endToEndFirst'), value: endToEndFirstMs.value, scale: 'first' as const },
   { label: t('requestTiming.legacyTotal'), value: props.record?.duration_ms, scale: 'total' as const },
+  { label: t('requestTiming.endToEndTotal'), value: endToEndTotalMs.value, scale: 'total' as const },
   { label: t('requestTiming.requestTotal'), value: trace.value?.total_ms, scale: 'total' as const },
   { label: label('first_semantic'), value: trace.value?.events.first_semantic, scale: 'first' as const },
   { label: label('first_visible'), value: trace.value?.events.first_visible, scale: 'first' as const },

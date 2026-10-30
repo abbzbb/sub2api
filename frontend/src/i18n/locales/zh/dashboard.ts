@@ -442,6 +442,7 @@ export default {
     latency: '延迟',
     latencyFirstToken: '首字',
     latencyFirstTokenHint: '首字 = 转发首字 {first} + 排队等待 {queue}。排队等待是请求到达网关后、开始转发前的等待；旧记录没有排队字段，按转发首字显示。',
+    latencyDurationHint: '总耗时 = 转发耗时 {forward} + 排队等待 {queue}；旧记录没有排队字段，按转发耗时显示。平均 TPS 仍按转发耗时计算。',
     latencyDuration: '总耗时',
     latencyTps: '平均 TPS',
     latencyTpsHint: '平均 TPS = 输出 Token ÷ 总耗时(秒). 包含等待时间及上游计入输出用量的推理 Token, 不代表模型实际生成速度.',

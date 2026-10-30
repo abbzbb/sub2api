@@ -21,6 +21,7 @@ export default {
   "legacyTotal": "Forward duration (server-side)",
   "queueWait": "Queue wait (arrival to forward start)",
   "endToEndFirst": "End-to-end TTFT (forward + queue)",
+  "endToEndTotal": "End-to-end duration (forward + queue)",
   "requestTotal": "Full request duration",
   "inbound": "Client → Sub2API",
   "internal": "Inside Sub2API",
