@@ -2030,12 +2030,6 @@ export interface UsageLog {
     reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
     status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
   }
-  queue_wait_ms?: number | null
-  queue_timing?: {
-    status: string; source: string; scope: string; queue_clamped: boolean
-    server_first_token_ms: number | null; server_duration_ms: number
-    forward_first_token_ms: number | null; forward_duration_ms: number
-  } | null
 
   // 图片生成字段
   image_count: number
