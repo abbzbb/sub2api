@@ -1198,6 +1198,18 @@ export default {
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
       },
+      openaiResponseHeaderTimeout: {
+        title: 'OpenAI 响应头超时',
+        description:
+          '控制 OpenAI/Codex 上游等待响应头的最长时间；超时后提前 failover，避免一直等上游返回 429。',
+        enabled: '启用响应头超时',
+        enabledHint: '关闭后不设 OpenAI 专用响应头超时（等价于 0）',
+        seconds: '超时时间（秒）',
+        secondsHint:
+          '范围 1–600 秒，建议 20 秒。只约束响应头，不影响流式内容和首 token 生成。',
+        saved: 'OpenAI 响应头超时设置保存成功',
+        saveFailed: '保存 OpenAI 响应头超时设置失败'
+      },
       rectifier: {
         title: '请求整流器',
         description: '当上游返回特定错误时，自动修正请求参数并重试，提高请求成功率',

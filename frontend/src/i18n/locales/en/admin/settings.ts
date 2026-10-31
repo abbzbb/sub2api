@@ -1204,6 +1204,18 @@ export default {
         saved: 'Stream timeout settings saved',
         saveFailed: 'Failed to save stream timeout settings'
       },
+      openaiResponseHeaderTimeout: {
+        title: 'OpenAI response header timeout',
+        description:
+          'Bounds how long an OpenAI/Codex upstream may wait before sending response headers; fail over instead of waiting for the upstream 429.',
+        enabled: 'Enable response header timeout',
+        enabledHint: 'Disabled means no OpenAI-specific response header timeout (equivalent to 0)',
+        seconds: 'Timeout (seconds)',
+        secondsHint:
+          '1–600 seconds; 20s recommended. Only the response-header wait is bounded; streaming and first-token generation are unaffected.',
+        saved: 'OpenAI response header timeout settings saved',
+        saveFailed: 'Failed to save OpenAI response header timeout settings'
+      },
       rectifier: {
         title: 'Request Rectifier',
         description: 'Automatically fix request parameters and retry when upstream returns specific errors',
