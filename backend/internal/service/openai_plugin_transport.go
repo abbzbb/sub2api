@@ -29,7 +29,7 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 	}
 	var phaseGuard *openAIHTTPPhaseGuard
 	request, phaseGuard = s.guardOpenAIHTTPRequest(request, account)
-	request, finishHeaderTimeout := guardOpenAIResponseHeaderTimeout(request)
+	request, finishHeaderTimeout := guardOpenAIResponseHeaderTimeout(request, account)
 	defer func() {
 		if result != nil && result.Request == nil {
 			result.Request = request

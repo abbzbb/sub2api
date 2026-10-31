@@ -586,7 +586,7 @@
               </div>
               <div v-else-if="openAIResponseHeaderTimeoutLoadFailed" role="alert">
                 {{ t("admin.settings.openaiResponseHeaderTimeout.loadFailed") }}
-                <button type="button" @click="loadOpenAIResponseHeaderTimeoutSettings" class="btn btn-secondary btn-sm">{{ t("common.retry") }}</button>
+                <button type="button" @click="loadOpenAIResponseHeaderTimeoutSettings" class="btn btn-secondary btn-sm">{{ t("common.refresh") }}</button>
               </div>
               <template v-else>
                 <div class="flex items-center justify-between">

@@ -21,6 +21,17 @@ type pr612SettingRepo struct {
 	value string
 }
 
+func TestPR612NilSettingsProviderUsesStaticTimeout(t *testing.T) {
+	for _, seconds := range []int{0, 45} {
+		cfg := &config.Config{}
+		cfg.Gateway.OpenAIResponseHeaderTimeout = seconds
+		cfg.Gateway.ResponseHeaderTimeout = 600
+		s, ok := ProvideHTTPUpstream(cfg, nil).(*httpUpstreamService)
+		require.True(t, ok)
+		require.Equal(t, time.Duration(seconds)*time.Second, s.applyProfilePoolSettings(poolSettings{}, service.HTTPUpstreamProfileOpenAI).responseHeaderTimeout)
+	}
+}
+
 func (r *pr612SettingRepo) GetValue(context.Context, string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

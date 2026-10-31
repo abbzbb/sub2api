@@ -204,11 +204,12 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 // timeout provider. Tests and lightweight callers can keep using
 // NewHTTPUpstream, which falls back to the static config.
 func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService) service.HTTPUpstream {
-	if settings != nil {
-		// Warm the cache before the first OpenAI request; the transport reads it
-		// synchronously when it builds a client pool.
-		go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
+	if settings == nil {
+		return NewHTTPUpstream(cfg)
 	}
+	// Warm the cache before the first OpenAI request; the transport reads it
+	// synchronously when it builds a client pool.
+	go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
 	return newHTTPUpstream(cfg, settings)
 }
 

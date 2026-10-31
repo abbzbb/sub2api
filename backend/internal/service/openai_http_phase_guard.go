@@ -102,7 +102,10 @@ func (e *openAIHTTPPhaseTimeout) Unwrap() error {
 // and reuse the terminal phase-error path across every HTTP gateway adapter.
 // The transport's explicit header-timeout diagnostic is also a veto when a
 // custom transport does not emit standard trace callbacks.
-func guardOpenAIResponseHeaderTimeout(req *http.Request) (*http.Request, func(*http.Response, error) error) {
+func guardOpenAIResponseHeaderTimeout(req *http.Request, account *Account) (*http.Request, func(*http.Response, error) error) {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return req, func(_ *http.Response, err error) error { return err }
+	}
 	var submitted atomic.Bool
 	trace := &httptrace.ClientTrace{
 		WroteHeaders: func() { submitted.Store(true) },
