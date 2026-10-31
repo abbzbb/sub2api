@@ -22,6 +22,12 @@ const (
 
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
 func (a *Account) isRateLimitActiveForKey(key string) bool {
+	if a != nil {
+		limits, _ := a.Extra[modelRateLimitsKey].(map[string]any)
+		if IsQualityModelCooldown(limits[key]) {
+			return true
+		}
+	}
 	resetAt := a.modelRateLimitResetAt(key)
 	return resetAt != nil && time.Now().Before(*resetAt)
 }
@@ -41,6 +47,12 @@ func (a *Account) getRateLimitRemainingForKey(key string) time.Duration {
 
 func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedModel string) bool {
 	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if ctx.Value(qualityProbeContextKey{}) == true {
+			limits, _ := a.Extra[modelRateLimitsKey].(map[string]any)
+			if IsQualityModelCooldown(limits[key]) {
+				continue
+			}
+		}
 		if a.isRateLimitActiveForKey(key) {
 			return true
 		}
@@ -223,8 +235,9 @@ func (a *Account) modelRateLimitReason(scope string) string {
 	return reason
 }
 
-// modelCapabilityRejected reports only an unexpired, explicit upstream model
-// rejection. Ordinary quota/capacity cooldowns and unknown reasons stay faults.
+// modelCapabilityRejected identifies an unexpired upstream observation for
+// scheduling/admission. It is not authoritative configured support: availability
+// diagnostics must not use it to manufacture a new downstream model_not_found.
 func (a *Account) modelCapabilityRejected(scope string) bool {
 	if !a.isRateLimitActiveForKey(scope) {
 		return false

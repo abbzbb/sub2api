@@ -1925,7 +1925,7 @@ func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, accou
 	if len(updates) == 0 {
 		return
 	}
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+	if _, err := persistCodexUsageUpdates(ctx, s.accountRepo, account.ID, updates); err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
 		return
 	}
@@ -2759,6 +2759,13 @@ const tempUnschedMessageMaxBytes = 2048
 // the model.
 func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, account *Account, requestedModel string, statusCode int, responseBody []byte) bool {
 	if s == nil || account == nil || s.accountRepo == nil {
+		return false
+	}
+	// A pool relay owns its member/model availability. Its observation must not
+	// become a local 30-minute negative cache by bypassing the generic pool
+	// policy through the OpenAI fastpath. Explicit error-code policy remains
+	// authoritative; administrator temporary rules run at the caller below.
+	if account.IsPoolMode() && !account.IsCustomErrorCodesEnabled() {
 		return false
 	}
 	if !account.ShouldHandleErrorCode(statusCode) {

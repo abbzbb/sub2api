@@ -1,6 +1,7 @@
 .PHONY: build build-backend build-frontend test test-backend test-frontend test-frontend-critical test-frontend-all
 
 FRONTEND_CRITICAL_VITEST := \
+	src/components/account/__tests__/OpenAIAuthConnections.spec.ts \
 	src/views/admin/__tests__/RiskControlView.spec.ts \
 	src/i18n/__tests__/riskControlLocales.spec.ts \
 	src/components/common/__tests__/PlatformTypeBadge.openaiPlans.spec.ts \
@@ -54,7 +55,15 @@ FRONTEND_CRITICAL_VITEST := \
 	src/stores/__tests__/accountQuality.spec.ts \
 	src/api/__tests__/observerUsage.spec.ts \
 	src/views/admin/__tests__/UsageView.spec.ts \
+	src/components/common/__tests__/DateRangePicker.rolling24h.spec.ts \
+	src/components/common/__tests__/DateRangePicker.spec.ts \
+	src/components/common/__tests__/DateRangePicker.dismiss.spec.ts \
+	src/components/common/__tests__/DateRangePicker.midnight.spec.ts \
+	src/components/admin/usage/__tests__/UsageStatsCards.spec.ts \
+	src/components/admin/usage/__tests__/UsageCleanupDialog.spec.ts \
 	src/views/user/__tests__/UsageView.spec.ts \
+	src/components/usage/__tests__/TrafficPanel.spec.ts \
+	src/api/__tests__/traffic.spec.ts \
 	src/views/user/__tests__/UsageEntryView.spec.ts \
 	src/components/admin/usage/__tests__/UsageFilters.spec.ts \
 	src/components/admin/usage/__tests__/UsageTimingDialog.spec.ts \
@@ -89,6 +98,8 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/admin/user/__tests__/UserPlatformQuotaModal.spec.ts \
 	src/components/admin/user/__tests__/UserEditModal.spec.ts \
 	src/components/admin/moderation/__tests__/ModerationUsers.spec.ts \
+	src/components/admin/moderation/__tests__/ModerationUserQuickEnable.spec.ts \
+	src/api/__tests__/admin.users.spec.ts \
 	src/views/user/__tests__/KeysView.spec.ts \
 	src/api/__tests__/channelMonitorV2.spec.ts \
 	src/utils/__tests__/embedded-url.spec.ts \

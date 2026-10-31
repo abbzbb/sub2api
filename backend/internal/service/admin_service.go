@@ -275,6 +275,7 @@ type CreateGroupInput struct {
 	// Explicit API choice wins over platform defaults, including false.
 	AllowImageGenerationExplicit *bool
 	AllowBatchImageGeneration    bool
+	ImageCountBilling            bool
 	ImageRateIndependent         bool
 	ImageRateMultiplier          *float64
 	BatchImageDiscountMultiplier *float64
@@ -360,6 +361,7 @@ type UpdateGroupInput struct {
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         *bool
 	AllowBatchImageGeneration    *bool
+	ImageCountBilling            *bool
 	ImageRateIndependent         *bool
 	ImageRateMultiplier          *float64
 	BatchImageDiscountMultiplier *float64
@@ -429,6 +431,7 @@ type UpdateGroupInput struct {
 }
 
 type CreateAccountInput struct {
+	ProxyMode            string             // 受限写入在验权后选择代理。
 	InitialOpenAITwoFA   bool               `json:"-"`
 	InitialAdmissionPlan *ScheduledTestPlan `json:"-"`
 	InitialQualityPlan   *ScheduledTestPlan `json:"-"`
@@ -466,6 +469,7 @@ type ShadowOptions struct {
 }
 
 type UpdateAccountInput struct {
+	ProxyMode           string // 受限写入在验权后选择代理。
 	Name                string
 	Notes               *string
 	Type                string // Account type: oauth, setup-token, apikey

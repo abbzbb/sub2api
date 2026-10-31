@@ -793,7 +793,7 @@ func TestReadOpenAICompatBufferedTerminalGrokBareAccountErrors(t *testing.T) {
 			svc := &OpenAIGatewayService{accountRepo: repo}
 			resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: " + tt.event + tt.suffix))}
 
-			_, _, _, err := svc.readOpenAICompatBufferedTerminal(resp, c, account, "grok buffered test", "req_buffered")
+			_, _, _, _, err := svc.readOpenAICompatBufferedTerminal(resp, c, account, "grok buffered test", "req_buffered")
 
 			var failoverErr *UpstreamFailoverError
 			require.ErrorAs(t, err, &failoverErr)

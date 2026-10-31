@@ -888,6 +888,11 @@ func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, r
 	if isOpenAIRequestBodyTooLargeError(statusCode, "", responseBody) {
 		return true
 	}
+	// A definite missing model cools only this account/model pair. Let the
+	// handler try another candidate before committing a passthrough 404.
+	if account != nil && account.IsOpenAICompatible() && isUpstreamModelNotFoundError(statusCode, responseBody) {
+		return true
+	}
 	if account != nil && account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode) {
 		return true
 	}
@@ -1431,12 +1436,32 @@ func openAIStreamFailedEventErrorCode(payload []byte) string {
 // 上游在容量紧张时会把请求丢进降载路径：HTTP 200 之后立刻推 event: error
 // （code=server_is_overloaded / slow_down）并以 response.failed 收尾。
 func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {
-	switch openAIStreamFailedEventErrorCode(payload) {
-	case "server_is_overloaded", "slow_down":
-		return true
+	// Explicit quota, credential and safety rejections outrank capacity wording.
+	// A relay may include that wording in an otherwise authoritative rejection.
+	for _, path := range []string{"response.error.type", "error.type"} {
+		value := strings.ToLower(gjson.GetBytes(payload, path).String())
+		for _, marker := range []string{"usage_limit", "quota", "authentication", "permission", "policy", "safety"} {
+			if strings.Contains(value, marker) {
+				return false
+			}
+		}
 	}
-	for _, path := range []string{"response.error.message", "error.message", "message"} {
-		if isOpenAICapacityShedMessage(gjson.GetBytes(payload, path).String()) {
+	for _, path := range []string{"response.error.resets_at", "error.resets_at"} {
+		if gjson.GetBytes(payload, path).Exists() {
+			return false
+		}
+	}
+	switch openAIStreamFailedEventErrorCode(payload) {
+	case "server_is_overloaded", "slow_down", OpenAIUpstreamCapacityCode:
+		return true
+	case "", "server_error", "upstream_error", "rate_limit_exceeded":
+		// Generic codes need an explicit capacity message below.
+	default:
+		return false
+	}
+	for _, path := range []string{"response.error.message", "error.message", "message", "detail"} {
+		value := gjson.GetBytes(payload, path)
+		if value.Type == gjson.String && isOpenAICapacityShedMessage(value.String()) {
 			return true
 		}
 	}
@@ -2538,6 +2563,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 				openAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
 				return resultWithUsage(), newOpenAIResponsesEmptyCompletedFailoverError(c, account, upstreamRequestID)
 			}
+			if requesttiming.From(ctx) != nil && gjson.Valid(trimmedData) {
+				requesttiming.Stage(ctx, "sse_parsed_first")
+				if openAIStreamDataStartsVisibleOutput(trimmedData, eventType) {
+					requesttiming.Stage(ctx, "sse_visible_first")
+				}
+			}
+			requesttiming.Content(ctx, []byte(trimmedData), eventType)
 			requesttiming.Output(ctx, openAIStreamDataStartsSemanticTTFT(trimmedData, eventType), openAIStreamDataStartsVisibleOutput(trimmedData, eventType), timingTerminal(eventType))
 			if firstTokenMs == nil && openAIStreamDataStartsTTFT(trimmedData, eventType, forceFlushFailedEvent, ttftMode) {
 				ms := int(time.Since(startTime).Milliseconds())

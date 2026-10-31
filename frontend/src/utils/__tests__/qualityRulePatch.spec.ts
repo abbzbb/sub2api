@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildQualityRulePatch, copyQualityRuleConfig, qualityBPSError, qualityBPSForm, qualityBPSPayload, type QualityRuleDraft } from '../qualityRulePatch'
+import { buildQualityRulePatch, copyQualityRuleConfig, qualityBPSError, qualityBPSForm, qualityBPSPayload, qualityJudgeConfigured, qualityRuleFieldValue, type QualityRuleDraft } from '../qualityRulePatch'
 import type { QualityBPSPolicy, ScheduledTestPlan } from '@/types'
 
 const draft = (): QualityRuleDraft => ({
@@ -29,6 +29,21 @@ const probePlan = () => {
 }
 
 describe('quality rule copy inputs', () => {
+  it('retains Jev choice in copy and bulk patches without importing arbitrary fields', () => {
+    const source = draft()
+    source.pelican_config.quality.judge = { kind: 'jev', group_id: 0, model_id: '', prompt: 'Compare values' }
+    Object.assign(source.pelican_config.quality.judge, { api_key: 'synthetic-secret', base_url: 'https://example.com?key=secret' })
+    const copy = copyQualityRuleConfig(source.pelican_config)
+    expect(copy.quality.judge).toEqual({ kind: 'jev', group_id: 0, model_id: '', prompt: 'Compare values' })
+    expect(qualityJudgeConfigured(copy.quality.judge)).toBe(true)
+    const patch = buildQualityRulePatch(plan(), source, ['test'])
+    expect(patch.pelican_config!.quality!.judge).toEqual(copy.quality.judge)
+    expect(JSON.stringify(patch)).not.toContain('synthetic-secret')
+    expect(qualityRuleFieldValue({ ...plan(), pelican_config: copy }, 'test')).not.toEqual(qualityRuleFieldValue(plan(), 'test'))
+    expect(qualityJudgeConfigured({ kind: 'jev', group_id: 21, model_id: 'chat', prompt: 'grade' })).toBe(false)
+    expect(qualityJudgeConfigured({ group_id: 21, model_id: 'chat', prompt: 'grade' })).toBe(true)
+    expect(qualityJudgeConfigured({ kind: 'llm', group_id: 0, model_id: '', prompt: 'grade' })).toBe(false)
+  })
   it('accepts null group and BPS model arrays returned by normalized observation and BPS rules', () => {
     const source = plan().pelican_config!
     source.quality!.action = 'enable_bps'
@@ -259,5 +274,33 @@ describe('composed model isolation', () => {
     expect(() => buildQualityRulePatch(plan(), input, ['action'])).toThrow('qualityOps.selectGroups')
     input.pelican_config.quality.remove_group_ids = [21]
     expect(() => buildQualityRulePatch(probePlan(), input, ['action'])).toThrow('qualityOps.isolationRequiresCandy')
+  })
+})
+
+
+describe('complete template selected fields', () => {
+  it('imports retention and 5xx trigger only with their explicit bulk checkboxes', () => {
+    const source = { ...draft(), max_results: 173 }
+    source.pelican_config.quality.trigger_on_upstream_5xx = true
+    const untouched = buildQualityRulePatch(plan(), source, ['enabled'])
+    expect(untouched).toEqual({ enabled: false })
+    const retention = buildQualityRulePatch(plan(), source, ['retention'])
+    expect(retention).toEqual({ max_results: 173 })
+    const triggered = buildQualityRulePatch(plan(), source, ['trigger'])
+    expect(triggered.pelican_config!.quality!.trigger_on_upstream_5xx).toBe(true)
+    expect(triggered.pelican_config!.quality!.action).toBe(plan().pelican_config!.quality!.action)
+    expect(triggered).not.toHaveProperty('max_results')
+  })
+  it('rejects retention too small for the targets existing samples when only retention is selected', () => {
+    const target = plan(); target.pelican_config!.model_ids = ['first', 'second']; target.pelican_config!.parallel_count = 3
+    expect(() => buildQualityRulePatch(target, { ...draft(), max_results: 5 }, ['retention'])).toThrow('qualityOps.retentionTooSmall')
+    expect(buildQualityRulePatch(target, { ...draft(), max_results: 6 }, ['retention'])).toEqual({ max_results: 6 })
+  })
+  it('never inherits a punitive action for old presets and removes hidden restrictions', () => {
+    const source = draft().pelican_config
+    delete (source.quality as any).action
+    const copied = copyQualityRuleConfig(source)
+    expect(copied.quality.action).toBe('observe_only'); expect(copied.quality.remove_group_ids).toEqual([]); expect(copied.quality.auto_restore).toBe(false)
+    expect(copied.quality.remove_models).toBeUndefined(); expect(copied.quality.bps).toBeUndefined()
   })
 })

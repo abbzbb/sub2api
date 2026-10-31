@@ -963,8 +963,9 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
+	svc.scopedAdminKeyRepo = scopedKeys
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
@@ -1361,6 +1362,9 @@ func ProvideAccountTokenGuardV2Service(repo AccountTokenGuardV2Repository, setti
 	cfg *config.Config,
 ) *AccountTokenGuardV2Service {
 	svc := NewAccountTokenGuardV2Service(repo, settings, admin, openAIGateway, reauth)
+	if recorder, ok := repo.(CredentialOperationRefreshRecorder); ok && reauth != nil && reauth.oauth != nil {
+		reauth.oauth.SetRefreshFailureRecorder(recorder)
+	}
 	startBackgroundService(cfg, svc)
 	return svc
 }

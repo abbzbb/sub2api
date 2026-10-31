@@ -807,8 +807,12 @@ export default {
         title: '自定义菜单页面',
         description: '添加自定义 iframe 页面到侧边栏导航。每个页面可以设置为普通用户或管理员可见。',
         itemLabel: '菜单项 #{n}',
-        name: '菜单名称',
-        namePlaceholder: '如：帮助中心',
+        nameZh: '中文名称',
+        nameZhPlaceholder: '如：帮助中心',
+        nameEn: '英文名称',
+        nameEnPlaceholder: 'e.g. Help Center',
+        fallbackName: '旧版本名称回退',
+        fallbackNamePlaceholder: '留空时自动使用中文名称，其次使用英文名称',
         url: '页面 URL',
         urlPlaceholder: 'https://example.com/page',
         hideOpenButton: '隐藏“新窗口打开”按钮',
@@ -1195,6 +1199,19 @@ export default {
         thresholdWindowMinutesHint: '超时计数的时间窗口（1-60分钟）',
         saved: '流超时设置保存成功',
         saveFailed: '保存流超时设置失败'
+      },
+      openaiResponseHeaderTimeout: {
+        title: 'OpenAI 响应头超时',
+        description:
+          '限制 OpenAI/Codex HTTP 上传完成后的响应头等待。超时后切到下一个账号；第一次尝试可能已在上游计费，成功请求会按 1:1 追加一次费用。已收到响应头的正文流、原生上游 WebSocket 使用各自时限。',
+        enabled: '启用响应头超时',
+        enabledHint: '关闭后不设 OpenAI 专用响应头超时（等价于 0）',
+        seconds: '超时时间（秒）',
+        secondsHint:
+          '范围 1–600 秒，默认 20 秒。慢非流式响应及 SSE 响应头可能在首 token 前超时；已收到响应头的正文流、原生上游 WebSocket 使用各自时限。',
+        saved: 'OpenAI 响应头超时设置保存成功',
+        saveFailed: '保存 OpenAI 响应头超时设置失败',
+        loadFailed: '无法加载已保存的超时设置，请重新加载后编辑。'
       },
       rectifier: {
         title: '请求整流器',

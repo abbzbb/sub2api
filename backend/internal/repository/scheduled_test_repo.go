@@ -29,6 +29,9 @@ type planRowQuerier interface {
 
 // insertScheduledTestPlan is shared with group rules, which insert inside their own transaction.
 func insertScheduledTestPlan(ctx context.Context, q planRowQuerier, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
+	if err := validateQualityGroupReferences(ctx, q, plan.PelicanConfig); err != nil {
+		return nil, err
+	}
 	row := q.QueryRowContext(ctx, `
 		INSERT INTO scheduled_test_plans (account_id, model_id, cron_expression, enabled, max_results, auto_recover, next_run_at, created_at, updated_at, pelican_config)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8)
@@ -106,6 +109,27 @@ func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.
 	if err = checkQualityIsolationScope(updated, &state); err != nil {
 		return nil, err
 	}
+	if hasQualityCooldownOwnership(&state) {
+		account := &service.Account{}
+		var credentials, extra []byte
+		// Use the persisted account ID, never the caller's copy. This follows
+		// detection's plan -> account lock order and fences concurrent remapping.
+		if err = tx.QueryRowContext(ctx, `SELECT platform,type,COALESCE(credentials,'{}'::jsonb),COALESCE(extra,'{}'::jsonb) FROM accounts WHERE id=$1 FOR UPDATE`, updated.AccountID).Scan(&account.Platform, &account.Type, &credentials, &extra); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(credentials, &account.Credentials); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(extra, &account.Extra); err != nil {
+			return nil, err
+		}
+		if err = checkQualityCooldownTargets(updated, account, &state); err != nil {
+			return nil, err
+		}
+	}
+	if err = validateQualityGroupReferences(ctx, tx, updated.PelicanConfig); err != nil {
+		return nil, err
+	}
 	if !plan.PreserveQualityState && updated.PelicanConfig != nil && updated.PelicanConfig.Quality != nil && updated.PelicanConfig.Quality.Action == service.QualityActionObserveOnly {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM account_quality_states WHERE plan_id=$1`, plan.ID); err != nil {
 			return nil, err
@@ -143,9 +167,35 @@ func deleteScheduledTestPlan(ctx context.Context, tx *sql.Tx, id int64) (bool, e
 	if err != nil {
 		return false, err
 	}
-	if state.Action == service.QualityActionIsolateModels {
+	if state.Action == service.QualityActionIsolateModels || state.Models != nil || state.Groups != nil {
 		return false, service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
 	}
+	if hasQualityCooldownOwnership(&state) {
+		return false, service.QualityScopeConflict("restore this rule's cooled models and concurrency before deleting it")
+	}
+	// Revalidate live ownership as well as durable snapshots. A stale/cleared
+	// snapshot must not let deletion leave a marker pointing at a missing rule.
+	var liveIsolation, liveCooldowns []byte
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(extra->'quality_model_isolation','{}'::jsonb),COALESCE(extra->'model_rate_limits','{}'::jsonb) FROM accounts WHERE id=(SELECT account_id FROM scheduled_test_plans WHERE id=$1) FOR UPDATE`, id).Scan(&liveIsolation, &liveCooldowns)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	for _, live := range [][]byte{liveIsolation, liveCooldowns} {
+		if len(live) == 0 {
+			continue
+		}
+		var entries map[string]json.RawMessage
+		if json.Unmarshal(live, &entries) != nil {
+			return false, service.QualityScopeConflict("review unreadable model ownership before deleting this rule")
+		}
+		for _, raw := range entries {
+			owner, _ := qualityEntryOwner(raw, id)
+			if owner == "this_rule" {
+				return false, service.QualityScopeConflict("review remaining model ownership before deleting this rule")
+			}
+		}
+	}
+
 	if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
 		return false, err
 	}

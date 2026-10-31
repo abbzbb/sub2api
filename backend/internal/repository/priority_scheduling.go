@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -30,7 +31,11 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
 	if err := service.ValidatePrioritySchedulingConfig(cfg); err != nil {
 		return nil, fmt.Errorf("priority signal query: %w", err)
 	}
-	rows, err := r.sql.QueryContext(ctx, `
+	qualityModel := query.QualityModel
+	if qualityModel == "" {
+		qualityModel = query.Model
+	}
+	querySQL := `
  WITH base_usage AS (
   SELECT id, account_id, created_at, stream, first_token_ms, actual_cost,
    COALESCE(account_stats_cost,total_cost) AS base_cost
@@ -96,17 +101,27 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
  ), usage AS (
   SELECT account_id,
    COUNT(*) FILTER (WHERE stream AND latency_ms>0) AS samples,
-   percentile_cont(ARRAY[.5,.7,.9,.95]) WITHIN GROUP (ORDER BY latency_ms)
+   percentile_cont(ARRAY[.5,.7,.9,.95,.99]) WITHIN GROUP (ORDER BY latency_ms)
     FILTER (WHERE stream AND latency_ms>0) AS quantiles,
    MAX(created_at) FILTER (WHERE stream AND latency_ms>0) AS latest_latency_at,
    MAX(created_at) FILTER (WHERE stream AND latency_ms>$8) AS latest_bad_latency_at,
    COUNT(*) FILTER (WHERE stream AND (latency_ms IS NULL OR latency_ms<=0)) AS unknown_samples,
    COUNT(*) FILTER (WHERE stream AND experience_ms>0) AS experience_samples,
    percentile_cont(.9) WITHIN GROUP (ORDER BY experience_ms) FILTER (WHERE stream AND experience_ms>0) AS experience_p90,
+   COUNT(*) FILTER (WHERE stream AND latency_ms>$8) AS slow_samples,
    COUNT(*) FILTER (WHERE actual_cost>=0 AND base_cost>=0 AND actual_cost+base_cost>0) AS profit_samples,
    SUM(actual_cost) FILTER (WHERE actual_cost>=0 AND base_cost>=0 AND actual_cost+base_cost>0) AS revenue,
    SUM(base_cost) FILTER (WHERE actual_cost>=0 AND base_cost>=0 AND actual_cost+base_cost>0) AS base_cost
   FROM measured GROUP BY account_id
+ ), errors AS (
+  SELECT account_id,
+   COUNT(DISTINCT COALESCE(NULLIF(client_request_id,''), NULLIF(request_id,''), id::text)) AS error_samples
+  FROM ops_error_logs
+  WHERE account_id=ANY($1) AND created_at >= $3 AND created_at <= $9
+   AND COALESCE(NULLIF(requested_model,''),model)=$2
+   AND group_id IS NOT DISTINCT FROM $5::bigint
+   AND error_phase='upstream'
+  GROUP BY account_id
  ), rounds AS (
   SELECT p.account_id, r.quality_round_id, MAX(r.created_at) AS observed_at,
    bool_or(r.quality_judgment->>'verdict'='incorrect' AND r.status='failed'
@@ -114,7 +129,7 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
    bool_and(COALESCE(r.quality_judgment->>'verdict'='correct' AND r.status='success',false)) AS passed
   FROM scheduled_test_plans p JOIN scheduled_test_results r ON r.plan_id=p.id
   WHERE p.account_id=ANY($1) AND p.enabled
-   AND COALESCE(NULLIF(r.pelican_config->>'model_id',''),p.model_id)=$2
+   AND COALESCE(NULLIF(r.pelican_config->>'model_id',''),p.model_id)=$10
    AND jsonb_typeof(p.pelican_config->'quality')='object' AND r.quality_round_id<>''
    AND r.created_at >= $4 AND r.created_at >= p.updated_at AND r.created_at <= NOW()
    AND r.quality_action<>'' AND r.quality_action<>'stale_run'
@@ -134,13 +149,23 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
  )
  SELECT ids.id, COALESCE(u.samples,0),COALESCE(u.quantiles[3],0),COALESCE(q.passed,0),COALESCE(q.samples,0),
  COALESCE(u.profit_samples,0),COALESCE(u.revenue,0),COALESCE(u.base_cost,0),lq.passed,u.latest_latency_at,
- COALESCE(u.quantiles[1],0), COALESCE(u.quantiles[2],0), COALESCE(u.quantiles[4],0),
- u.quantiles[CASE $6::int WHEN 50 THEN 1 WHEN 70 THEN 2 WHEN 90 THEN 3 WHEN 95 THEN 4 END],
- u.latest_bad_latency_at, COALESCE(u.unknown_samples,0), COALESCE(u.experience_samples,0), COALESCE(u.experience_p90,0)
+ COALESCE(u.quantiles[1],0), COALESCE(u.quantiles[2],0), COALESCE(u.quantiles[4],0), COALESCE(u.quantiles[5],0),
+ u.quantiles[CASE $6::int WHEN 50 THEN 1 WHEN 70 THEN 2 WHEN 90 THEN 3 WHEN 95 THEN 4 WHEN 99 THEN 5 END],
+ u.latest_bad_latency_at, COALESCE(u.unknown_samples,0), COALESCE(u.experience_samples,0), COALESCE(u.experience_p90,0),
+ COALESCE(u.slow_samples,0), COALESCE(e.error_samples,0)
  FROM unnest($1::bigint[]) ids(id)
- LEFT JOIN usage u ON u.account_id=ids.id LEFT JOIN quality q ON q.account_id=ids.id
+ LEFT JOIN usage u ON u.account_id=ids.id
+ LEFT JOIN errors e ON e.account_id=ids.id
+ LEFT JOIN quality q ON q.account_id=ids.id
  LEFT JOIN latest_quality lq ON lq.account_id=ids.id
- `, pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil)
+ `
+	args := []any{pq.Array(query.AccountIDs), query.Model, query.UsageSince, query.QualitySince, query.GroupID, query.LatencyPercentile, query.LatencyMeasurement, query.TargetTTFTMs, query.UsageUntil, qualityModel}
+	if query.ObservationEffort != nil {
+		// Exact effort population; no max/xhigh inference or cross-effort fallback.
+		querySQL = strings.Replace(querySQL, "AND group_id IS NOT DISTINCT FROM $5::bigint", "AND group_id IS NOT DISTINCT FROM $5::bigint AND COALESCE(reasoning_effort,'')=$11", 1)
+		args = append(args, *query.ObservationEffort)
+	}
+	rows, err := r.sql.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,10 +174,13 @@ func (r *usageLogRepository) ReadPrioritySchedulingSignals(ctx context.Context, 
 	for rows.Next() {
 		var id int64
 		var signal service.PrioritySchedulingSignal
-		if err := rows.Scan(&id, &signal.Samples, &signal.P90TTFTMs, &signal.QualityPassed, &signal.QualitySamples, &signal.ProfitSamples, &signal.Revenue, &signal.BaseCost, &signal.LatestQualityPassed, &signal.LatestLatencyAt, &signal.P50TTFTMs, &signal.P70TTFTMs, &signal.P95TTFTMs, &signal.SelectedTTFTMs, &signal.LatestBadLatencyAt, &signal.LatencyUnknownSamples, &signal.ExperienceSamples, &signal.ExperienceP90Ms); err != nil {
+		if err := rows.Scan(&id, &signal.Samples, &signal.P90TTFTMs, &signal.QualityPassed, &signal.QualitySamples, &signal.ProfitSamples, &signal.Revenue, &signal.BaseCost, &signal.LatestQualityPassed, &signal.LatestLatencyAt, &signal.P50TTFTMs, &signal.P70TTFTMs, &signal.P95TTFTMs, &signal.P99TTFTMs, &signal.SelectedTTFTMs, &signal.LatestBadLatencyAt, &signal.LatencyUnknownSamples, &signal.ExperienceSamples, &signal.ExperienceP90Ms, &signal.SlowSamples, &signal.ErrorSamples); err != nil {
 			return nil, err
 		}
 		signal.LatencyPercentile, signal.LatencyMeasurement, signal.LatencyEvidenceVersion = query.LatencyPercentile, query.LatencyMeasurement, 1
+		if denom := signal.Samples + signal.ErrorSamples; denom > 0 {
+			signal.UpstreamErrorRate = float64(signal.ErrorSamples) / float64(denom)
+		}
 		out[id] = signal
 	}
 	return out, rows.Err()

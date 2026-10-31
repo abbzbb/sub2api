@@ -73,6 +73,8 @@ type RelayExit struct {
 }
 
 type RelayOptions struct {
+	BeforeUpstreamWrite             func(msgType coderws.MessageType, payload []byte)
+	BeforeWriteUpstream             func(msgType coderws.MessageType, payload []byte) error
 	WriteTimeout                    time.Duration
 	IdleTimeout                     time.Duration
 	UpstreamDrainTimeout            time.Duration
@@ -228,6 +230,14 @@ func Relay(
 			// still be returning after the client has received its terminal.
 			turnWroteDownstream = &atomic.Bool{}
 			state.turnWroteDownstream.Store(turnWroteDownstream)
+		}
+		if options.BeforeUpstreamWrite != nil {
+			options.BeforeUpstreamWrite(msgType, payload)
+		}
+		if options.BeforeWriteUpstream != nil {
+			if err := options.BeforeWriteUpstream(msgType, payload); err != nil {
+				return err
+			}
 		}
 		err := writeUpstream(msgType, payload)
 		if err != nil && isResponseCreate {

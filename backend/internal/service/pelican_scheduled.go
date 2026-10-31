@@ -179,7 +179,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	var allowed []string
 	var catalogErr error
 	if plan.PelicanConfig.Quality != nil {
-		allowed, _, catalogErr = s.scheduledSvc.supportedQualityModels(runCtx, plan)
+		allowed, _, catalogErr = s.scheduledSvc.eligibleQualityModels(runCtx, plan)
 	}
 	var wg sync.WaitGroup
 	workers := len(results)
@@ -207,7 +207,10 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 				}
 				_, excluded := unsupported.Load(samplePlan.ModelID)
 				if plan.PelicanConfig.Quality != nil && (catalogErr != nil || excluded || !containsString(allowed, samplePlan.ModelID)) {
-					reason := "model_unsupported"
+					reason := "model_unavailable"
+					if excluded {
+						reason = "model_unsupported"
+					}
 					if catalogErr != nil {
 						reason = "model_catalog_unavailable"
 					}
@@ -236,7 +239,7 @@ func (s *ScheduledTestRunnerService) runPelicanPlan(ctx context.Context, plan *S
 	saveCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
 	if plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.UsesModelResults() {
-		plan.QualityModelOutcomes = qualityModelOutcomes(results, QualityModels(plan))
+		plan.QualityModelOutcomes = qualityPlanModelOutcomes(plan, results)
 	}
 	qualityAction := ""
 	if plan.PelicanConfig.Quality != nil {
@@ -345,7 +348,9 @@ func (s *ScheduledTestRunnerService) runPelicanSample(ctx context.Context, plan 
 		}
 		applyQualityJudgment(result, judgment)
 		result.FinishedAt = time.Now()
-		result.LatencyMs = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
+		if judgment == nil || judgment.Kind != "jev" {
+			result.LatencyMs = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
+		}
 	}
 	return result
 }
