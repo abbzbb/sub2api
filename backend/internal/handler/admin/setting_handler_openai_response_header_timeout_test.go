@@ -1,19 +1,29 @@
 package admin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
+type pr612AdminSettingRepo struct{ settingHandlerRepoStub }
+
+func (r *pr612AdminSettingRepo) Set(_ context.Context, key, value string) error {
+	r.values[key] = value
+	return nil
+}
+
 func TestOpenAIResponseHeaderTimeoutAdminValidationAndDisable(t *testing.T) {
-	h, _ := newStepUpSwitchTestHandler(t, map[string]string{})
+	repo := &pr612AdminSettingRepo{settingHandlerRepoStub{values: map[string]string{}}}
+	h := NewSettingHandler(service.NewSettingService(repo, nil), nil, nil, nil, nil, nil, nil)
 	put := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)

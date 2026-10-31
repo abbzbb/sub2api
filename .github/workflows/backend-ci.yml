@@ -193,20 +193,20 @@ jobs:
           git fetch --no-tags --depth=1 origin "$original"
           if [ "$DEFECT" = safety ]; then
             target=backend/internal/service/openai_plugin_transport.go
-            package=./internal/handler
+            packages=(./internal/handler)
             regression='^TestPR612DelayedHeadersNeverReplaySubmittedPOST$'
             diagnostic='submitted POST was replayed'
           else
             target=backend/internal/service/setting_openai_response_header_timeout.go
-            package=./internal/service
-            regression='^TestOpenAIResponseHeaderTimeoutStaleRefreshCannotUndoDisable$'
-            diagnostic='old refresh must return the newer disable|neither success nor error refresh may republish'
+            packages=(./internal/service ./internal/repository)
+            regression='^(TestOpenAIResponseHeaderTimeoutStaleRefreshCannotUndoDisable|TestPR612StaleReaderDisableControlsNextHTTPRequest)$'
+            diagnostic='old refresh must return the newer disable|neither success nor error refresh may republish|disabled next-request transport must have timeout 0'
           fi
           git rev-parse "$original:$target"
           git show "$original:$target" > "$target"
           git diff --stat
           set +e
-          (cd backend && go test -tags=unit "$package" -run "$regression" -count=1 -v -timeout=2m) > "$RUNNER_TEMP/pr612-red.log" 2>&1
+          (cd backend && go test -tags=unit "${packages[@]}" -run "$regression" -count=1 -v -timeout=2m) > "$RUNNER_TEMP/pr612-red.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/pr612-red.log"

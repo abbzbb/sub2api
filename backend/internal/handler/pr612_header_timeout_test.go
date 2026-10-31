@@ -174,3 +174,62 @@ func TestPR612WSHTTPBridgeDelayedHeadersNeverReplay(t *testing.T) {
 	}
 	require.Equal(t, int32(1), submissions.Load(), "bridge must submit exactly once")
 }
+
+func TestPR612NativeUpstreamWSIgnoresHTTPHeaderTimeout(t *testing.T) {
+	var submissions atomic.Int32
+	upstreamDone := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		// Both the upstream WS upgrade headers and first WS response exceed the
+		// configured one-second HTTP header timer. This path uses its WS limits.
+		select {
+		case <-time.After(1200 * time.Millisecond):
+		case <-ctx.Done():
+			upstreamDone <- ctx.Err()
+			return
+		}
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			upstreamDone <- err
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		_, _, err = conn.Read(ctx)
+		if err != nil {
+			upstreamDone <- err
+			return
+		}
+		submissions.Add(1)
+		select {
+		case <-time.After(1200 * time.Millisecond):
+		case <-ctx.Done():
+			upstreamDone <- ctx.Err()
+			return
+		}
+		upstreamDone <- conn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_pr612_native_ws","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`))
+	}))
+	defer server.Close()
+	harness := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, server.URL, nil, nil,
+		func(_ *service.Account, cfg *config.Config, _ *service.HTTPUpstream, _ *service.AccountRepository) {
+			cfg.Gateway.OpenAIResponseHeaderTimeout = 1
+			cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 5
+			cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
+		})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	require.NoError(t, harness.clientConn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":"synthetic"}`)))
+	_, payload, err := harness.clientConn.Read(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "response.completed", gjson.GetBytes(payload, "type").String())
+	require.Equal(t, "resp_pr612_native_ws", gjson.GetBytes(payload, "response.id").String())
+	require.GreaterOrEqual(t, time.Since(started), 2*time.Second)
+	select {
+	case err := <-upstreamDone:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("native upstream WS did not finish its response")
+	}
+	require.Equal(t, int32(1), submissions.Load())
+}
