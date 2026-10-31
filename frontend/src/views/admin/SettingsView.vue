@@ -584,23 +584,27 @@
                 <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
                 {{ t("common.loading") }}
               </div>
+              <div v-else-if="openAIResponseHeaderTimeoutLoadFailed" role="alert">
+                {{ t("admin.settings.openaiResponseHeaderTimeout.loadFailed") }}
+                <button type="button" @click="loadOpenAIResponseHeaderTimeoutSettings" class="btn btn-secondary btn-sm">{{ t("common.retry") }}</button>
+              </div>
               <template v-else>
                 <div class="flex items-center justify-between">
                   <div>
                     <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openaiResponseHeaderTimeout.enabled") }}</label>
                     <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiResponseHeaderTimeout.enabledHint") }}</p>
                   </div>
-                  <Toggle v-model="openAIResponseHeaderTimeoutForm.enabled" />
+                  <Toggle v-model="openAIResponseHeaderTimeoutForm.enabled" data-testid="openai-header-timeout-enabled" />
                 </div>
                 <div v-if="openAIResponseHeaderTimeoutForm.enabled">
                   <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                     {{ t("admin.settings.openaiResponseHeaderTimeout.seconds") }}
                   </label>
-                  <input v-model.number="openAIResponseHeaderTimeoutForm.seconds" type="number" min="1" max="600" class="input w-32" />
+                  <input data-testid="openai-header-timeout-seconds" v-model.number="openAIResponseHeaderTimeoutForm.seconds" type="number" min="1" max="600" class="input w-32" />
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiResponseHeaderTimeout.secondsHint") }}</p>
                 </div>
                 <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
-                  <button type="button" @click="saveOpenAIResponseHeaderTimeoutSettings" :disabled="openAIResponseHeaderTimeoutSaving" class="btn btn-primary btn-sm">
+                  <button data-testid="openai-header-timeout-save" type="button" @click="saveOpenAIResponseHeaderTimeoutSettings" :disabled="openAIResponseHeaderTimeoutSaving" class="btn btn-primary btn-sm">
                     <svg v-if="openAIResponseHeaderTimeoutSaving" class="mr-1 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -9738,6 +9742,7 @@ const streamTimeoutForm = reactive({
 
 // OpenAI Response Header Timeout 状态
 const openAIResponseHeaderTimeoutLoading = ref(true);
+const openAIResponseHeaderTimeoutLoadFailed = ref(false);
 const openAIResponseHeaderTimeoutSaving = ref(false);
 const openAIResponseHeaderTimeoutForm = reactive({
   enabled: true,
@@ -12960,11 +12965,12 @@ async function saveStreamTimeoutSettings() {
 // OpenAI Response Header Timeout 方法
 async function loadOpenAIResponseHeaderTimeoutSettings() {
   openAIResponseHeaderTimeoutLoading.value = true;
+  openAIResponseHeaderTimeoutLoadFailed.value = false;
   try {
     const settings = await adminAPI.settings.getOpenAIResponseHeaderTimeoutSettings();
     Object.assign(openAIResponseHeaderTimeoutForm, settings);
   } catch (_error: unknown) {
-    // Silent fail - settings will use defaults
+    openAIResponseHeaderTimeoutLoadFailed.value = true;
   } finally {
     openAIResponseHeaderTimeoutLoading.value = false;
   }

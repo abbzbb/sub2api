@@ -1201,14 +1201,15 @@ export default {
       openaiResponseHeaderTimeout: {
         title: 'OpenAI 响应头超时',
         description:
-          '控制 OpenAI/Codex 上游等待响应头的最长时间；超时后提前 failover，避免一直等上游返回 429。',
+          '限制 OpenAI/Codex HTTP 上传完成后的响应头等待。已提交请求超时后终止且不自动重放；上游可能继续执行和计费。',
         enabled: '启用响应头超时',
         enabledHint: '关闭后不设 OpenAI 专用响应头超时（等价于 0）',
         seconds: '超时时间（秒）',
         secondsHint:
-          '范围 1–600 秒，建议 20 秒。只约束响应头，不影响流式内容和首 token 生成。',
+          '范围 1–600 秒，默认 20 秒。慢非流式响应及 SSE 响应头可能在首 token 前超时；已收到响应头的正文流、原生上游 WebSocket 使用各自时限。',
         saved: 'OpenAI 响应头超时设置保存成功',
-        saveFailed: '保存 OpenAI 响应头超时设置失败'
+        saveFailed: '保存 OpenAI 响应头超时设置失败',
+        loadFailed: '无法加载已保存的超时设置，请重新加载后编辑。'
       },
       rectifier: {
         title: '请求整流器',

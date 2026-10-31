@@ -22,7 +22,7 @@ const (
 )
 
 // OpenAIResponseHeaderTimeoutSettings controls how long an OpenAI/Codex HTTP
-// upstream may take to send response headers before the request fails over.
+// upstream may take to send response headers before a terminal timeout.
 // The setting is DB-backed so it can be changed from the admin UI; the zero
 // value of Seconds means "use the default".
 type OpenAIResponseHeaderTimeoutSettings struct {
@@ -101,9 +101,14 @@ func (s *SettingService) SetOpenAIResponseHeaderTimeoutSettings(ctx context.Cont
 	if err != nil {
 		return fmt.Errorf("marshal OpenAI response header timeout settings: %w", err)
 	}
+	// Serialize saves and cache publication, but never hold this lock during a
+	// refresh read: an old DB snapshot must not block a newer admin save.
+	s.openAIResponseHeaderTimeoutMu.Lock()
+	defer s.openAIResponseHeaderTimeoutMu.Unlock()
 	if err := s.settingRepo.Set(ctx, SettingKeyOpenAIResponseHeaderTimeoutSettings, string(data)); err != nil {
 		return err
 	}
+	s.openAIResponseHeaderTimeoutGen++
 	s.storeOpenAIResponseHeaderTimeoutCache(*settings, openAIResponseHeaderTimeoutCacheTTL)
 	return nil
 }
@@ -112,8 +117,12 @@ func (s *SettingService) SetOpenAIResponseHeaderTimeoutSettings(ctx context.Cont
 // transport hot path. It never blocks on a DB read when the cache is fresh and
 // preserves the last known value on DB errors.
 func (s *SettingService) GetOpenAIResponseHeaderTimeoutCached(ctx context.Context) (int, bool) {
-	if s == nil || s.settingRepo == nil {
+	if s == nil {
 		fallback := DefaultOpenAIResponseHeaderTimeoutSettings(nil)
+		return fallback.Seconds, fallback.Enabled
+	}
+	if s.settingRepo == nil {
+		fallback := DefaultOpenAIResponseHeaderTimeoutSettings(s.cfg)
 		return fallback.Seconds, fallback.Enabled
 	}
 	if cached, ok := s.openAIResponseHeaderTimeoutCache.Load().(*cachedOpenAIResponseHeaderTimeoutSettings); ok && cached != nil {
@@ -123,11 +132,15 @@ func (s *SettingService) GetOpenAIResponseHeaderTimeoutCached(ctx context.Contex
 	}
 
 	result, _, _ := s.openAIResponseHeaderTimeoutSF.Do("openai_response_header_timeout_settings", func() (any, error) {
+		s.openAIResponseHeaderTimeoutMu.Lock()
+		generation := s.openAIResponseHeaderTimeoutGen
 		if cached, ok := s.openAIResponseHeaderTimeoutCache.Load().(*cachedOpenAIResponseHeaderTimeoutSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
+				s.openAIResponseHeaderTimeoutMu.Unlock()
 				return cached.settings, nil
 			}
 		}
+		s.openAIResponseHeaderTimeoutMu.Unlock()
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -135,6 +148,13 @@ func (s *SettingService) GetOpenAIResponseHeaderTimeoutCached(ctx context.Contex
 		defer cancel()
 
 		settings, err := s.GetOpenAIResponseHeaderTimeoutSettings(dbCtx)
+		s.openAIResponseHeaderTimeoutMu.Lock()
+		defer s.openAIResponseHeaderTimeoutMu.Unlock()
+		if generation != s.openAIResponseHeaderTimeoutGen {
+			if current, ok := s.openAIResponseHeaderTimeoutCache.Load().(*cachedOpenAIResponseHeaderTimeoutSettings); ok && current != nil {
+				return current.settings, nil
+			}
+		}
 		if err != nil {
 			slog.Warn("failed to get OpenAI response header timeout settings", "error", err)
 			fallback := *DefaultOpenAIResponseHeaderTimeoutSettings(s.cfg)

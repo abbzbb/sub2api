@@ -8,8 +8,8 @@ import (
 )
 
 type updateOpenAIResponseHeaderTimeoutSettingsRequest struct {
-	Enabled bool `json:"enabled"`
-	Seconds int  `json:"seconds"`
+	Enabled *bool `json:"enabled"`
+	Seconds *int  `json:"seconds"`
 }
 
 // GetOpenAIResponseHeaderTimeoutSettings returns the admin-configurable
@@ -33,9 +33,13 @@ func (h *SettingHandler) UpdateOpenAIResponseHeaderTimeoutSettings(c *gin.Contex
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if req.Enabled == nil || req.Seconds == nil {
+		response.BadRequest(c, "enabled and seconds are required")
+		return
+	}
 	if err := h.settingService.SetOpenAIResponseHeaderTimeoutSettings(c.Request.Context(), &service.OpenAIResponseHeaderTimeoutSettings{
-		Enabled: req.Enabled,
-		Seconds: req.Seconds,
+		Enabled: *req.Enabled,
+		Seconds: *req.Seconds,
 	}); err != nil {
 		response.BadRequest(c, err.Error())
 		return

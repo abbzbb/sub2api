@@ -200,6 +200,8 @@ type SettingService struct {
 	// request. SetOpenAIResponseHeaderTimeoutSettings refreshes it immediately.
 	openAIResponseHeaderTimeoutCache atomic.Value // *cachedOpenAIResponseHeaderTimeoutSettings
 	openAIResponseHeaderTimeoutSF    singleflight.Group
+	openAIResponseHeaderTimeoutMu    sync.Mutex
+	openAIResponseHeaderTimeoutGen   uint64 // guarded by Mu; successful saves supersede in-flight reads
 
 	channelMonitorRuntimeListenersMu sync.Mutex
 	channelMonitorRuntimeListeners   []func()
