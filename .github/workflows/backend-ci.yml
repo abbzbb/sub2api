@@ -162,7 +162,7 @@ jobs:
         working-directory: backend
         run: >-
           go test -race -tags=unit ./internal/service ./internal/repository ./internal/handler ./internal/handler/admin
-          -run '^(TestPR612|TestOpenAIResponseHeaderTimeout|TestApplyProfilePoolSettingsUsesRuntimeOpenAIResponseHeaderTimeout|TestDefaultOpenAIResponseHeaderTimeoutSettings)'
+          -run '^(TestPR612|TestOpenAIResponseHeaderTimeout|TestApplyProfilePoolSettingsUsesRuntimeOpenAIResponseHeaderTimeout|TestDefaultOpenAIResponseHeaderTimeoutSettings|TestRuntimeProxyChainEveryHopMustProveUnsent)'
           -count=1 -v -timeout=3m
 
   pr612-regressions-red:
