@@ -1057,6 +1057,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			return restoreCodexToolNamesFromContext(c, payload)
 		},
 	}
+	// Read/filter and the subsequent upstream write share one relay goroutine.
+	// Keep this turn unsubmitted until the physical write boundary below.
+	pendingLatencyCtx := ctx
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
 		inner: clientFrameConn,
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
@@ -1285,9 +1288,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
 					return out, nil, err
 				}
-				if denied := s.priorityLatencyBeforeSend(turnLatencyCtx, account); denied != nil {
-					return out, nil, denied
-				}
+				pendingLatencyCtx = turnLatencyCtx
 				activePolicyModel.Store(&model)
 				usageMeta.updateFromResponseCreate(out, model, requestModelForThisFrame)
 				_, actualModel := usageMeta.turnModels(requestModelForThisFrame)
@@ -1402,6 +1403,21 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					at := requesttiming.Now(ctx)
 					acceptedTurnForwardAt.Store(&at)
 				}
+			},
+			BeforeWriteUpstream: func(kind coderws.MessageType, payload []byte) error {
+				if (kind != coderws.MessageText && kind != coderws.MessageBinary) || gjson.GetBytes(payload, "type").String() != "response.create" {
+					return nil
+				}
+				model := gjson.GetBytes(payload, "model").String()
+				latest, err := s.admitOpenAITurn(ctx, c, account, model, payload)
+				if err == nil {
+					err = s.checkOpenAIWSBinding(latest, model, handshakeBinding)
+				}
+				if err != nil {
+					s.invalidateOpenAIWSTurnStateAfterAdmissionFailureForRequest(ctx, c, payload, account.ID, err)
+					return err
+				}
+				return s.priorityLatencyBeforeSend(pendingLatencyCtx, account)
 			},
 			FirstTurnStartedAt: firstTurnStartedAt,
 			TakeNextTurnStartedAt: func() time.Time {
