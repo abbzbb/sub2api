@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -552,7 +553,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		c.Set("openai_ws_http_bridge", true)
 	}
 
-	turnStart := time.Now()
+	turnStart := requesttiming.Now(ctx)
+	var forwardStart time.Time
 	rejectedFieldRetryState := newOpenAIResponsesRejectedFieldRetryState(body)
 	var resp *http.Response
 	for {
@@ -577,6 +579,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				admissionErr,
 			)
 			return nil, admissionErr
+		}
+		// Freeze the first-send boundary. Rejected-field network attempts remain
+		// in forwarding and in the compatible helper-entry legacy timer.
+		if forwardStart.IsZero() {
+			forwardStart = requesttiming.Now(ctx)
 		}
 		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 		if err != nil {
@@ -709,9 +716,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
-			Duration:                      time.Since(turnStart),
+			Duration:                      requesttiming.Now(ctx).Sub(turnStart),
 			FirstTokenMs:                  firstTokenMs,
 		}
+		applyOpenAIQueueTiming(result, openAIWSQueueArrival(ctx), forwardStart, turnStart, "ws_frame_http_bridge", "first_forward_including_internal_retries")
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 			result.wsReplayInput = replayInput
 			result.wsReplayInputExists = true
@@ -813,7 +821,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if isOpenAIWSTokenEvent(eventType) {
 			tokenEventCount++
 			if firstTokenMs == nil {
-				ms := int(time.Since(turnStart).Milliseconds())
+				ms := int(requesttiming.Now(ctx).Sub(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
 		}
@@ -1011,7 +1019,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				turn,
 				truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
 				payloadBytes,
-				time.Since(turnStart).Milliseconds(),
+				requesttiming.Now(ctx).Sub(turnStart).Milliseconds(),
 				eventCount,
 				tokenEventCount,
 				terminalEventCount,
