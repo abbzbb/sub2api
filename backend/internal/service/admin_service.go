@@ -752,6 +752,7 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
+	lottery              *LotteryService
 	mihomoProxyMu        sync.Mutex
 	excelOAuthReauth     *OpenAIOAuthReauthService
 	cfg                  *config.Config
@@ -866,6 +867,7 @@ func NewAdminService(
 // ProvideAdminService wires AdminService with optional ProxyGroupResolver for
 // multi-instance proxy-group member cache invalidation, and optional
 // ProxyHealthCache to clear isolation marks on manual status changes.
+// Lottery accounting shares the caller's balance mutation transaction.
 func ProvideAdminService(
 	cfg *config.Config,
 	userRepo UserRepository,
@@ -893,6 +895,7 @@ func ProvideAdminService(
 	proxyHealthCache ProxyHealthCache,
 	proxyGroupRepo ProxyGroupRepository,
 	channelCacheInvalidator ChannelCacheInvalidator,
+	lottery *LotteryService,
 ) AdminService {
 	svc := NewAdminService(
 		cfg, userRepo, groupRepo, accountRepo, proxyRepo, apiKeyRepo, redeemCodeRepo,
@@ -906,6 +909,7 @@ func ProvideAdminService(
 		impl.proxyGroupResolver = proxyGroupResolver
 		impl.proxyHealth = proxyHealthCache
 		impl.proxyGroupRepo = proxyGroupRepo
+		impl.lottery = lottery
 	}
 	return svc
 }

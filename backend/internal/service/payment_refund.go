@@ -762,6 +762,11 @@ func (s *PaymentService) markRefundOkTx(ctx context.Context, client *dbent.Clien
 	if err != nil {
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
+	if p.Order.OrderType == payment.OrderTypeBalance {
+		if err := s.lottery.RefundPaymentTx(ctx, p.Order.UserID, p.OrderID, p.RefundAmount); err != nil {
+			return nil, err
+		}
+	}
 	detail, err := json.Marshal(map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
 	if err != nil {
 		return nil, fmt.Errorf("marshal refund audit: %w", err)
