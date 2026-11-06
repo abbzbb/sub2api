@@ -1,4 +1,4 @@
-.PHONY: build build-linux build-windows build-darwin generate lint test test-unit test-integration test-e2e
+.PHONY: build build-linux build-windows build-darwin generate lint test test-unit test-collection test-integration test-e2e
 
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
@@ -28,12 +28,16 @@ generate:
 	go generate ./ent
 	go generate ./cmd/server
 
-test:
+test: test-collection
 	go test ./...
 	$(GOLANGCI_LINT) run --timeout=30m ./...
 
-test-unit:
+test-unit: test-collection
 	go test -tags=unit ./...
+
+# The embedded collection engine is a nested module, outside ./... .
+test-collection:
+	go test github.com/v03413/bepusdt/app/conf github.com/v03413/bepusdt/app/task github.com/v03413/bepusdt/app/task/notify
 
 test-integration:
 	go test -tags=integration ./...
