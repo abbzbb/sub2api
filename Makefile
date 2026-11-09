@@ -28,6 +28,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/utils/__tests__/openaiTwoFAAdmission.spec.ts \
 	src/components/admin/account/__tests__/BulkExport2FADialog.spec.ts \
 	src/components/admin/account/__tests__/AccountBulkActionsBar.spec.ts \
+	src/components/admin/account/__tests__/AccountTableFilters.spec.ts \
 	src/features/security-penalties/__tests__/SecurityRecords.spec.ts \
 	src/views/user/__tests__/ProfileView.spec.ts \
 	src/components/account/__tests__/SIWCAccountSettings.spec.ts \
@@ -103,6 +104,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/api/__tests__/tokenRefresh.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \
 	src/composables/__tests__/useModelWhitelist.spec.ts \
+	src/components/account/__tests__/ModelWhitelistSelector.spec.ts \
 	src/components/account/__tests__/UpstreamBillingRateCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
@@ -122,6 +124,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/admin/moderation/__tests__/ModerationUserQuickEnable.spec.ts \
 	src/api/__tests__/admin.users.spec.ts \
 	src/views/user/__tests__/KeysView.spec.ts \
+	src/api/__tests__/usage.apiKeysRange.spec.ts \
 	src/api/__tests__/channelMonitorV2.spec.ts \
 	src/utils/__tests__/embedded-url.spec.ts \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \

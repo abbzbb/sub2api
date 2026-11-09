@@ -33,6 +33,7 @@ func RegisterGatewayRoutes(
 	cfg *config.Config,
 	connectionSignalEmitter *service.ConnectionSignalEmitter,
 ) {
+	apiKeyAuth = middleware.ModelListingClientPolicy(settingService, apiKeyAuth)
 	h.Gateway.ConfigureAPIKeyGroupRouting(apiKeyService)
 	// BPS fetches these capability URLs without the client's API key. There is
 	// no public upload route; only authenticated BPS requests can create them.

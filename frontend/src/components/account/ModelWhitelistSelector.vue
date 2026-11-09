@@ -154,7 +154,7 @@ import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { allModels, getModelsByPlatform, reconcileUpstreamModelMapping } from '@/composables/useModelWhitelist'
 import { supportsUpstreamModelSync } from '@/constants/platformCatalog'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
@@ -168,10 +168,12 @@ const props = withDefaults(defineProps<{
   accountId?: number
   syncCredentials?: SyncUpstreamPreviewParams
   showSyncButton?: boolean
-}>(), { showSyncButton: true })
+  syncMode?: 'replace' | 'append'
+}>(), { showSyncButton: true, syncMode: 'replace' })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string[]]
+  'update:modelMappings': [value: { from: string; to: string }[]]
   'upstream-synced': []
   'upstream-sync-finished': []
 }>()
@@ -187,11 +189,19 @@ const isSyncingUpstream = ref(false)
 let upstreamSyncVersion = 0
 
 watch(
-  () => props.accountId,
+  [
+    () => props.accountId,
+    () => props.syncCredentials?.platform,
+    () => props.syncCredentials?.type,
+    () => props.syncCredentials?.base_url,
+    () => props.syncCredentials?.api_key,
+    () => props.syncCredentials?.proxy_id
+  ],
   () => {
     upstreamSyncVersion += 1
     isSyncingUpstream.value = false
-  }
+  },
+  { flush: 'sync' }
 )
 
 onUnmounted(() => {
@@ -325,8 +335,12 @@ const syncUpstreamModels = async () => {
       appStore.showWarning(t('admin.accounts.grokModelDiagnostics.configuredFallback'))
       return
     }
+    if (result.discovery_source !== 'upstream') {
+      appStore.showWarning(t('admin.accounts.syncUpstreamModelsUnverified'))
+      return
+    }
 
-    const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
+    const upstreamModels = [...new Set(result.models.map(model => model.trim()).filter(model => model && !model.includes('*')))]
     if (upstreamModels.length === 0) {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
       return
@@ -336,16 +350,23 @@ const syncUpstreamModels = async () => {
       emit('upstream-synced')
     }
 
-    const newModels = [...props.modelValue]
-    let addedCount = 0
-    for (const model of upstreamModels) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-        addedCount += 1
-      }
-    }
+    // Grok diagnostics add discovered models while preserving the saved allowlist.
+    const next = props.syncMode === 'append'
+      ? {
+          allowedModels: [...new Set([...props.modelValue, ...upstreamModels])],
+          modelMappings: props.modelMappings ?? []
+        }
+      : reconcileUpstreamModelMapping(upstreamModels, props.modelMappings ?? [])
+    const previous = new Map(props.modelValue.map(model => [model, model]))
+    for (const { from, to } of props.modelMappings ?? []) previous.set(from, to)
+    const updated = new Map(next.allowedModels.map(model => [model, model]))
+    for (const { from, to } of next.modelMappings) updated.set(from, to)
+    const addedCount = [...updated.keys()].filter(model => !previous.has(model)).length
+    const removedCount = [...previous.keys()].filter(model => !updated.has(model)).length
+    const changed = previous.size !== updated.size || [...updated].some(([model, target]) => previous.get(model) !== target)
 
-    emit('update:modelValue', newModels)
+    emit('update:modelValue', next.allowedModels)
+    emit('update:modelMappings', next.modelMappings)
     const warnings = result.warnings ?? []
     const hasPartialMetadata = warnings.some(
       warning => warning.code === 'upstream_model_metadata_partial'
@@ -357,8 +378,8 @@ const syncUpstreamModels = async () => {
       appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
       return
     }
-    if (addedCount > 0) {
-      appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
+    if (changed) {
+      appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, removed: removedCount, total: upstreamModels.length }))
     } else {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
     }
