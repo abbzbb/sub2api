@@ -406,6 +406,7 @@ export default {
     resetPending: '待刷新',
     accountMultiplier: '账号倍率',
     avgDuration: '服务端平均耗时',
+    rateCardHint: '所选时间范围内每分钟的平均值：RPM = 总请求数 ÷ 分钟数，TPM = 总 Token ÷ 分钟数；范围包含当前时刻时只算到现在',
     inSelectedRange: '所选范围内',
     perRequest: '每次请求',
     apiKeyFilter: 'API 密钥',
@@ -762,6 +763,7 @@ export default {
       cacheWritePrice: '缓存写入',
       cacheWrite5mPrice: '缓存写入（5m）',
       cacheWrite1hPrice: '缓存写入（1h）',
+      cacheWrite12hPrice: '缓存写入（12h）',
       cacheReadPrice: '缓存读取',
       imageInputPrice: '图片输入',
       imageOutputPrice: '图片输出',
@@ -825,7 +827,9 @@ export default {
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',
+      perUnitSecond: '/ 秒',
       perRequest: '按次计费',
+      perSecond: '按秒计费',
       perImage: '按图片计费'
     },
     nav: {

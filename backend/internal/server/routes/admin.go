@@ -481,6 +481,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 	{
 		accounts.GET("/openai-request-timezones", h.Admin.Account.GetOpenAIRequestTimezones)
 		accounts.GET("", h.Admin.Account.List)
+		accounts.GET("/concurrency-summary", h.Admin.Account.GetConcurrencySummary)
 		accounts.GET("/management-capabilities", h.Admin.Setting.GetAccountManagementCapabilities)
 		accounts.GET("/upstream-billing-rates", h.Admin.Account.GetUpstreamBillingRates)
 		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
@@ -553,6 +554,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/opencode-go-usage/refresh", h.Admin.Account.RefreshOpenCodeGoUsage)
 		accounts.DELETE("/:id", h.Admin.Account.Delete)
 		accounts.POST("/:id/test", h.Admin.Account.Test)
+		accounts.GET("/pelican-question", h.Admin.Account.PreparePelicanQuestion)
 		accounts.POST("/:id/pelican-test", h.Admin.Account.PelicanTest)
 		accounts.POST("/:id/modeltrace-test", h.Admin.Account.ModelTraceTest)
 		accounts.POST("/:id/state-probe", h.Admin.Account.StateProbe)

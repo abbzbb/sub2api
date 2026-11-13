@@ -95,7 +95,7 @@ func isOpenAIAccount(account *Account) bool {
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) (shouldDisable bool) {
 	if s != nil {
 		var disabledOn429 bool
-		ctx, disabledOn429 = s.rateLimitService.maybeDisableOpenAISchedulingOn429(ctx, account, statusCode)
+		ctx, disabledOn429 = s.rateLimitService.maybeDisableOpenAISchedulingOn429(ctx, account, statusCode, headers)
 		if disabledOn429 {
 			defer func() { shouldDisable = true }()
 		}
@@ -106,6 +106,28 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// Apply the same exemption before access-state and custom cooldown fast
 	// paths, which can otherwise block the credential before the shared handler.
 	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+		return false
+	}
+	// Capacity shedding describes this request, not account health. Keep the
+	// account schedulable while the request-local retry budget handles recovery.
+	if account != nil && account.Platform == PlatformOpenAI && isOpenAIRequestScopedCapacityResponse(statusCode, headers, responseBody) {
+		// This upstream response still breaks an IP-401 streak even though its
+		// request-scoped failure must not disable the selected credential.
+		if s != nil && s.rateLimitService != nil {
+			s.rateLimitService.resetOpenAIIPUnauthorizedStreak(account)
+		}
+		// An explicit model-scoped rule overrides the default retry policy without
+		// turning a request-level overload into an account-wide health failure.
+		model := firstRequestedModel(canonicalModel)
+		if s != nil && s.rateLimitService != nil && model != "" && account.IsTempUnschedulableEnabled() {
+			ruleBody := openAICapacityShedRuleBody(responseBody)
+			matches := matchTempUnschedulableRules(account, statusCode, ruleBody)
+			if len(matches) > 0 && matches[0].rule.Scope == TempUnschedScopeModel {
+				stateCtx, cancel := openAIAccountStateContext(ctx)
+				defer cancel()
+				return s.rateLimitService.HandleTempUnschedulable(stateCtx, account, statusCode, ruleBody, model)
+			}
+		}
 		return false
 	}
 	if account != nil && account.AuthConnectionID != "" && !isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) && statusCode != http.StatusTooManyRequests {
@@ -135,11 +157,6 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s != nil {
 		scheduleOllamaCloudUsageActivity(s.deferredService, account)
 		scheduleOpenCodeGoUsageActivity(s.deferredService, account)
-	}
-	// Capacity shedding describes this request, not account health. Keep the
-	// account schedulable while the request-local retry budget handles recovery.
-	if account != nil && account.Platform == PlatformOpenAI && isOpenAIRequestScopedCapacityResponse(statusCode, headers, responseBody) {
-		return false
 	}
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()

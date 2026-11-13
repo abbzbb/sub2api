@@ -22,7 +22,7 @@ describe('security audit navigation', () => {
   it('keeps exactly the current page highlighted across all four routes including query/hash deep links', async () => {
     const router = routerFixture()
     await router.push(paths[0]); await router.isReady()
-    const wrapper = mount({ components: { SecurityAuditNav }, template: '<SecurityAuditNav :active="$route.path" />' }, { global: { plugins: [router] } })
+    const wrapper = mount({ components: { SecurityAuditNav }, template: '<SecurityAuditNav :active="$route.path" />' }, { global: { plugins: [createPinia(), router] } })
     for (const path of paths) {
       await router.push(`${path}?tab=config#settings`); await flushPromises()
       expect(wrapper.findAll('a')).toHaveLength(4)

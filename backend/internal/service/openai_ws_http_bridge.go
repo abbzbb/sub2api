@@ -354,7 +354,7 @@ func (c *openAIWSToolCallReplayCollector) addItem(item gjson.Result) {
 	c.items = append(c.items, json.RawMessage(raw))
 }
 
-func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
+func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string, source ...[]byte) []byte {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		message = http.StatusText(statusCode)
@@ -362,14 +362,22 @@ func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	if message == "" {
 		message = "upstream request failed"
 	}
+	errorBody := map[string]any{"type": "upstream_error", "message": message}
+	if len(source) > 0 {
+		// Preserve only the standard error identity fields, not an arbitrary
+		// upstream envelope. The caller already sanitized the message.
+		for _, field := range []string{"code", "type", "param"} {
+			value := gjson.GetBytes(source[0], "error."+field)
+			if value.Type == gjson.String && value.String() != "" {
+				errorBody[field] = value.String()
+			}
+		}
+	}
 	event := map[string]any{
 		"type":            "error",
 		"sequence_number": 0,
 		"status":          statusCode,
-		"error": map[string]any{
-			"type":    "upstream_error",
-			"message": message,
-		},
+		"error":           errorBody,
 	}
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -456,6 +464,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	strictSession := smartProtocolStrict(ctx)
 	statefulSession := smartProtocolStateful(ctx)
+	preserveAgentHistory := s.preserveOpenAIAgentHistory(payload)
 	if statefulSession && gjson.GetBytes(payload, "store").Type != gjson.True {
 		return nil, denyOpenAITurn("http_session_requires_storage")
 	}
@@ -679,13 +688,16 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			if shouldFailover && (turn == 1 || resp.StatusCode == http.StatusTooManyRequests) {
 				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, false).WithGrokForbiddenPolicy(account)
 			}
-		} else if !strictSession && shouldFailover && (turn == 1 || resp.StatusCode == http.StatusTooManyRequests) {
+		} else if !strictSession && !preserveAgentHistory && shouldFailover && (turn == 1 || resp.StatusCode == http.StatusTooManyRequests) {
 			return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body, respBody)
 		}
 		if account.Platform != PlatformGrok && (shouldFailover || shouldCooldownOpenAITransientUpstreamError(resp.StatusCode, respBody)) {
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, actualModel)
 		}
 		clientError := buildOpenAIWSHTTPBridgeErrorEvent(resp.StatusCode, upstreamMsg)
+		if preserveAgentHistory {
+			clientError = buildOpenAIWSHTTPBridgeErrorEvent(resp.StatusCode, upstreamMsg, respBody)
+		}
 		if writeErr := writeClientMessage(clientError); writeErr != nil {
 			if isOpenAIWSClientDisconnectError(writeErr) {
 				return &OpenAIForwardResult{
@@ -698,6 +710,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}, nil
 			}
 			return nil, fmt.Errorf("write upstream http bridge error to client: %w", writeErr)
+		} else {
+			markOpenAIWSClientVisibleFailure(c, "error", clientError)
 		}
 		if scopedErr := grokRequestScopedResponseError(account, resp.StatusCode, respBody, upstreamMsg); scopedErr != nil {
 			return nil, scopedErr
@@ -889,10 +903,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		if openai.ResponseStartsSemanticOutput(upstreamMessage, eventType) {
 			tokenEventCount++
-			if firstTokenMs == nil {
-				ms := int(requesttiming.Now(ctx).Sub(turnStart).Milliseconds())
-				firstTokenMs = &ms
-			}
+		}
+		if firstTokenMs == nil && openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx))(eventType, upstreamMessage) {
+			ms := int(requesttiming.Now(ctx).Sub(turnStart).Milliseconds())
+			firstTokenMs = &ms
 		}
 		if openAIWSMessageShouldParseUsage(eventType, upstreamMessage) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
@@ -969,7 +983,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			// Grok response.failed must be written and the account reconciled before
 			// returning an error. Turn-1 early failover applies only to error events
 			// that have not been written yet. Upstream 429 may retry the same account.
-			if !strictSession && !clientDisconnected && !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
+			if !strictSession && !preserveAgentHistory && !clientDisconnected && !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
 				if account.Platform == PlatformGrok && eventType == "error" {
 					// HTTP 200 SSE errors must not feed stream handshake headers into
 					// quota parsing (nil headers), but Free/OAuth bare 429 still needs

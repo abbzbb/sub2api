@@ -163,22 +163,31 @@ func deleteScheduledTestPlan(ctx context.Context, tx *sql.Tx, id int64) (bool, e
 	} else if err != nil {
 		return false, err
 	}
-	state, err := readQualityState(ctx, tx, id)
-	if err != nil {
+	if err := deleteScheduledTestPlanTx(ctx, tx, id); err != nil {
 		return false, err
 	}
+	return true, nil
+}
+
+// The caller holds the plan lock. Manual, template and automated deletion share
+// the same ownership checks and never restore or modify the account.
+func deleteScheduledTestPlanTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	state, err := readQualityState(ctx, tx, id)
+	if err != nil {
+		return err
+	}
 	if state.Action == service.QualityActionIsolateModels || state.Models != nil || state.Groups != nil {
-		return false, service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
+		return service.QualityScopeConflict("restore this rule's isolated models and groups before deleting it")
 	}
 	if hasQualityCooldownOwnership(&state) {
-		return false, service.QualityScopeConflict("restore this rule's cooled models and concurrency before deleting it")
+		return service.QualityScopeConflict("restore this rule's cooled models and concurrency before deleting it")
 	}
 	// Revalidate live ownership as well as durable snapshots. A stale/cleared
 	// snapshot must not let deletion leave a marker pointing at a missing rule.
 	var liveIsolation, liveCooldowns []byte
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(extra->'quality_model_isolation','{}'::jsonb),COALESCE(extra->'model_rate_limits','{}'::jsonb) FROM accounts WHERE id=(SELECT account_id FROM scheduled_test_plans WHERE id=$1) FOR UPDATE`, id).Scan(&liveIsolation, &liveCooldowns)
 	if err != nil && err != sql.ErrNoRows {
-		return false, err
+		return err
 	}
 	for _, live := range [][]byte{liveIsolation, liveCooldowns} {
 		if len(live) == 0 {
@@ -186,20 +195,20 @@ func deleteScheduledTestPlan(ctx context.Context, tx *sql.Tx, id int64) (bool, e
 		}
 		var entries map[string]json.RawMessage
 		if json.Unmarshal(live, &entries) != nil {
-			return false, service.QualityScopeConflict("review unreadable model ownership before deleting this rule")
+			return service.QualityScopeConflict("review unreadable model ownership before deleting this rule")
 		}
 		for _, raw := range entries {
 			owner, _ := qualityEntryOwner(raw, id)
 			if owner == "this_rule" {
-				return false, service.QualityScopeConflict("review remaining model ownership before deleting this rule")
+				return service.QualityScopeConflict("review remaining model ownership before deleting this rule")
 			}
 		}
 	}
 
 	if _, err = tx.ExecContext(ctx, `DELETE FROM scheduled_test_plans WHERE id=$1`, id); err != nil {
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {
@@ -329,6 +338,13 @@ func scanPlan(row scannable, withAccountName ...bool) (*service.ScheduledTestPla
 		if err := json.Unmarshal(config, &p.PelicanConfig); err != nil {
 			return nil, err
 		}
+		var internal struct {
+			ManualQualityRun bool `json:"_manual_quality_run"`
+		}
+		if err := json.Unmarshal(config, &internal); err != nil {
+			return nil, err
+		}
+		p.ManualQualityRun = internal.ManualQualityRun
 	}
 	return p, nil
 }
@@ -368,7 +384,7 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 		return false, nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE scheduled_test_plans
- SET running_until = $3, next_run_at = $4
+ SET running_until = $3, next_run_at = $4, pelican_config = pelican_config - '_manual_quality_run'
  WHERE id = $1 AND enabled = true
  AND (next_run_at <= $2 OR ($7 AND pelican_config->'quality'->>'trigger_on_upstream_5xx'='true'))
  AND (NOT $7 OR (pelican_config->'quality'->>'trigger_on_upstream_5xx'='true'
@@ -398,6 +414,11 @@ func (r *scheduledTestPlanRepository) ClaimPelican(ctx context.Context, plan *se
 	}
 	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.Action == service.QualityActionRemoveModel {
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT (state->>'quality_5xx_episode')::bigint FROM account_quality_states WHERE plan_id=$1),0)`, plan.ID).Scan(&plan.Quality5xxEpisode); err != nil {
+			return false, err
+		}
+	}
+	if n == 1 && plan.PelicanConfig != nil && plan.PelicanConfig.Quality != nil && plan.PelicanConfig.Quality.OAuth401MaxRounds > 0 {
+		if err := claimQualityOAuth401Tx(ctx, tx, plan, until); err != nil {
 			return false, err
 		}
 	}

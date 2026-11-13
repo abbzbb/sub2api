@@ -91,6 +91,7 @@ type Account struct {
 	modelMappingCacheRawLen         int
 	modelMappingCacheRawSig         uint64
 	modelMappingCacheRuntimeVersion uint64
+	modelMappingCacheMode           string
 	// modelMappingCacheShared 为 true 时缓存来自只读共享母本（见 PrepareSharedSnapshot），
 	// 指针、长度与运行时版本匹配即直接复用预解析结果，不计算签名。
 	modelMappingCacheShared bool
@@ -838,6 +839,7 @@ func (a *Account) GetModelMapping() map[string]string {
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
 	rawPtr := mapPtr(rawMapping)
 	rawLen := len(rawMapping)
+	mode := a.GetCredential(OpenAIModelMappingModeKey)
 	rawSig := uint64(0)
 	rawSigReady := false
 
@@ -845,6 +847,7 @@ func (a *Account) GetModelMapping() map[string]string {
 		a.modelMappingCacheCredentialsPtr == credentialsPtr &&
 		a.modelMappingCacheRawPtr == rawPtr &&
 		a.modelMappingCacheRawLen == rawLen &&
+		a.modelMappingCacheMode == mode &&
 		a.modelMappingCacheRuntimeVersion == runtimeVersion {
 		if a.modelMappingCacheShared {
 			return a.modelMappingCache
@@ -877,6 +880,7 @@ func (a *Account) GetModelMapping() map[string]string {
 	a.modelMappingCacheRawLen = rawLen
 	a.modelMappingCacheRawSig = rawSig
 	a.modelMappingCacheRuntimeVersion = runtimeVersion
+	a.modelMappingCacheMode = mode
 	a.modelMappingCacheShared = false
 	return mapping
 }
@@ -928,6 +932,11 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		}
 	}
 	if len(result) > 0 {
+		// An explicit OAuth whitelist is the native model boundary. Provider
+		// defaults must not silently reintroduce models removed by an edit.
+		if a.Type == AccountTypeOAuth && a.GetCredential(OpenAIModelMappingModeKey) == "whitelist" {
+			return result
+		}
 		if a.Platform == domain.PlatformAntigravity {
 			// Preserve explicit whitelists while updating recognized default snapshots.
 			mergeAntigravityDefaultMapping(result)
@@ -1202,12 +1211,16 @@ func mappingHasWildcardForModel(mapping map[string]string, model string) bool {
 // operator-controlled switch for Grok image/edit/video generation, so an
 // eligible Grok account may inherit only the built-in, known media aliases
 // without widening its chat allowlist or accepting arbitrary model names.
+// Explicit OAuth whitelist mode also limits media to its declared mappings.
 //
 // billing_unobserved remains a candidate here because the scheduler must be
 // able to select the account and let the request path perform its authoritative
 // media eligibility probe before forwarding.
 func (a *Account) resolveGrokMediaFallbackModel(requestedModel string) (string, bool) {
 	if a == nil || !a.IsGrok() {
+		return "", false
+	}
+	if a.Type == AccountTypeOAuth && a.GetCredential(OpenAIModelMappingModeKey) == "whitelist" && len(asAnyModelMapping(a.Credentials["model_mapping"])) > 0 {
 		return "", false
 	}
 
@@ -1914,6 +1927,9 @@ func (a *Account) IsCodingPlan() bool {
 func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsMultiProtocolAPIKey() {
 		return APIProtocolChatCompletions
+	}
+	if a.QwenSessionCacheEnabled() {
+		return APIProtocolResponses
 	}
 	switch strings.TrimSpace(a.GetCredential("api_protocol")) {
 	case APIProtocolAdaptive:

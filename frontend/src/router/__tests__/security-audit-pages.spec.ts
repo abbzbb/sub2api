@@ -52,6 +52,8 @@ function riskSnapshot(): IPRiskSnapshot {
 }
 let wrapper: ReturnType<typeof mount> | undefined
 async function open(url: string, locale: 'en' | 'zh' = 'en') {
+  wrapper?.unmount()
+  wrapper = undefined
   i18n.global.setLocaleMessage(locale, locale === 'en' ? en : zh)
   i18n.global.locale.value = locale
   await router.push(url)

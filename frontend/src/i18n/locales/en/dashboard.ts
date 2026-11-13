@@ -401,6 +401,7 @@ export default {
     resetPending: 'Pending refresh',
     accountMultiplier: 'Account rate',
     avgDuration: 'Avg server duration',
+    rateCardHint: 'Per-minute averages over the selected range: RPM = total requests ÷ minutes, TPM = total tokens ÷ minutes; a range that includes now counts only up to now',
     inSelectedRange: 'in selected range',
     perRequest: 'per request',
     apiKeyFilter: 'API Key',
@@ -757,6 +758,7 @@ export default {
       cacheWritePrice: 'Cache Write',
       cacheWrite5mPrice: 'Cache Write (5m)',
       cacheWrite1hPrice: 'Cache Write (1h)',
+      cacheWrite12hPrice: 'Cache Write (12h)',
       cacheReadPrice: 'Cache Read',
       imageInputPrice: 'Image Input',
       imageOutputPrice: 'Image Output',
@@ -821,7 +823,9 @@ export default {
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',
+      perUnitSecond: '/ second',
       perRequest: 'Per request',
+      perSecond: 'Per second',
       perImage: 'Per image'
     },
     nav: {
