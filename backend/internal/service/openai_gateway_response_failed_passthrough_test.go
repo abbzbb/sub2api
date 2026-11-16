@@ -610,18 +610,39 @@ func TestHandleChatStreamingGrok429UsesBoundModel(t *testing.T) {
 }
 
 func TestStreamRawChatGrok429UsesBoundModel(t *testing.T) {
-	c, _ := newGrokStream429Context(t)
-	account := &Account{ID: 771, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
-	repo := &grokQuotaAccountRepo{}
-	svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
-	bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader("data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}}\n\n")),
+	for _, tc := range []struct {
+		name     string
+		body     string
+		cooldown bool
+	}{
+		{"complete", "data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}}\n\n", true},
+		{"multiline", "event: error\ndata: {\"error\":{\"code\":\"rate_limit_exceeded\",\ndata: \"message\":\"rate limited\"}}\n\n", true},
+		{"invalid JSON", "data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}\n\n", false},
+		{"unterminated frame", "data: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"rate limited\"}}\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newGrokStream429Context(t)
+			account := &Account{ID: 771, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
+			repo := &grokQuotaAccountRepo{}
+			svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			bindGrokMappedModel(c, c.Request.Context(), "grok-4.5-latest")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+			_, err := svc.streamRawChatCompletions(c, resp, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", nil, nil, time.Now(), 16)
+			if tc.cooldown {
+				assertGrokStream429ModelCooldown(t, repo, account, svc)
+				var failover *UpstreamFailoverError
+				require.ErrorAs(t, err, &failover)
+				require.Empty(t, rec.Body.String(), "early model-scoped failures must remain retryable")
+			} else {
+				require.Empty(t, repo.modelRateLimitCalls, "incomplete error frames are not account failure evidence")
+				require.Zero(t, repo.rateLimitedCalls)
+			}
+		})
 	}
-	_, _ = svc.streamRawChatCompletions(c, resp, account, "grok-4.5-latest", "grok-4.5-latest", "grok-4.5-latest", nil, nil, time.Now(), 16)
-	assertGrokStream429ModelCooldown(t, repo, account, svc)
 }
 
 func TestHandleAnthropicStreamingGrok429UsesBoundModel(t *testing.T) {

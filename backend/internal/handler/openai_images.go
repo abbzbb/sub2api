@@ -304,6 +304,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardImages(rpmAdmission.forwardContext(requestCtx, account), c, account, body, parsed, channelMapping.MappedModel)
 		}()
+		if service.IsUpstreamModerationDenied(err) {
+			return
+		}
 		if h.handleOpenAIRPMForwardError(c, err, streamStarted, false) {
 			return
 		}
@@ -437,9 +440,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), err == nil, result.FirstTokenMs, err)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), err == nil, nil, err)
 		}
 
 		userAgent := c.GetHeader("User-Agent")

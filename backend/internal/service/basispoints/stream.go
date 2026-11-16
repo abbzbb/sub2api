@@ -279,7 +279,7 @@ func (b *Bridge) transformWithRepairs(ctx context.Context, reader io.Reader, wri
 			}
 		}
 		terminal = kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed" || kind == "response.cancelled" || kind == "error"
-		return emit(kind, normalizeFailureEvent(kind, payload))
+		return emit(kind, b.normalizeFailureEvent(kind, payload))
 	}
 	err := readEvents(reader, func(event string, data []byte) error {
 		if terminal {
@@ -303,6 +303,10 @@ func (b *Bridge) transformWithRepairs(ctx context.Context, reader io.Reader, wri
 		}
 		failure := &BridgeFailure{Message: err.Error(), FailureStage: failureStage,
 			RejectedTool: rejectedTool, RepairSkippedReason: repairSkippedReason}
+		var argumentError toolArgumentsSchemaError
+		if errors.As(err, &argumentError) {
+			failure.ToolArguments = argumentError.Diagnostic
+		}
 		if text(terminalResponse["status"]) == "completed" {
 			failure.UpstreamTerminalEvent = "response.completed"
 		}

@@ -427,7 +427,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		return nil, decision, recovery.lookupErr
 	}
 	if recovery != nil && recovery.conflict {
-		return nil, decision, openAIAgentRecoveryError("owner_conflict")
+		return nil, decision, openAIRecoveryDiagnosticError("owner_conflict", recovery.diagnostics.subreason, recovery)
 	}
 	if recovery != nil && recovery.owner != nil {
 		if req.Platform != PlatformOpenAI || req.SessionHash != recovery.session ||
@@ -2348,6 +2348,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	if s != nil && s.service != nil && !s.service.openAI409AccountRouteSupported(ctx, account, req.RequestedModel) {
+		return false, "readable_rebuild_route_unsupported"
+	}
 	if account.IsExcelOAuth() && s != nil && s.service != nil && !s.service.excelBPSGloballyEnabled(ctx) {
 		return false, "excel_bps_disabled"
 	}
@@ -3168,7 +3171,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
-	if !success && len(observedErr) > 0 && isGrokRequestScopedFailure(observedErr[0]) {
+	if !success && len(observedErr) > 0 && (isGrokRequestScopedFailure(observedErr[0]) || IsUpstreamModerationDenied(observedErr[0])) {
 		return false
 	}
 	// A failed managed proxy acquisition says nothing about account health.
@@ -3204,7 +3207,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 // ObserveOpenAIAccountHealthFailure records failures that cannot reach the
 // scheduler-result path, for example after semantic response bytes were sent.
 func (s *OpenAIGatewayService) ObserveOpenAIAccountHealthFailure(ctx context.Context, account *Account, observedErr error) bool {
-	if s == nil || s.rateLimitService == nil || account == nil || observedErr == nil || isGrokRequestScopedFailure(observedErr) {
+	if s == nil || s.rateLimitService == nil || account == nil || observedErr == nil || isGrokRequestScopedFailure(observedErr) || IsUpstreamModerationDenied(observedErr) {
 		return false
 	}
 	return s.rateLimitService.ObserveOpenAIAPIKeyHealthFailure(ctx, account, observedErr)

@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/qqbot"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
@@ -47,14 +48,19 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	secretEncryptor, err := repository.NewAESEncryptor(configConfig)
+	if err != nil {
+		return nil, err
+	}
+	apiKeyRepository := repository.NewAPIKeyRepository(client, db)
 	userRepository := repository.NewUserRepository(client, db)
 	groupRepository := repository.NewGroupRepository(client, db)
 	userSubscriptionRepository := repository.NewUserSubscriptionRepository(client)
-	redisClient := repository.ProvideRedis(configConfig)
-	billingCache := repository.NewBillingCache(redisClient)
-	apiKeyRepository := repository.NewAPIKeyRepository(client, db)
-	userRPMCache := repository.NewUserRPMCache(redisClient)
 	userGroupRateRepository := repository.NewUserGroupRateRepository(db)
+	redisClient := repository.ProvideRedis(configConfig)
+	apiKeyCache := repository.NewAPIKeyCache(redisClient)
+	billingCache := repository.NewBillingCache(redisClient)
+	userRPMCache := repository.NewUserRPMCache(redisClient)
 	userPlatformQuotaRepository := repository.NewUserPlatformQuotaRepository(client)
 	serviceUserPlatformQuotaRepository := repository.NewUserPlatformQuotaServiceAdapter(userPlatformQuotaRepository)
 	settingRepository := repository.NewSettingRepository(client)
@@ -67,10 +73,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	defaultProxyGroupResolver := service.ProvideProxyGroupResolver(proxyGroupRepository, proxyRepository, proxyGroupCacheVersionStore)
 	accountRepository := repository.NewAccountRepository(client, db, schedulerCache, defaultProxyGroupResolver)
 	notificationEmailService := service.NewNotificationEmailService(settingRepository, emailService)
-	balanceNotifyService := service.ProvideBalanceNotifyService(emailService, settingRepository, accountRepository, notificationEmailService, db, configConfig, userRepository)
+	balanceNotifyService := service.ProvideBalanceNotifyService(emailService, settingRepository, accountRepository, notificationEmailService)
 	billingCacheService := service.ProvideBillingCacheService(billingCache, userRepository, userSubscriptionRepository, apiKeyRepository, userRPMCache, userGroupRateRepository, configConfig, serviceUserPlatformQuotaRepository, balanceNotifyService)
-	subscriptionService := service.NewSubscriptionService(groupRepository, userSubscriptionRepository, billingCacheService, client, configConfig)
-	apiKeyCache := repository.NewAPIKeyCache(redisClient)
 	concurrencyCache, err := repository.ProvideConcurrencyCache(redisClient, configConfig, db)
 	if err != nil {
 		return nil, err
@@ -93,46 +97,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	apiKeyAuthCacheInvalidator := service.ProvideAPIKeyAuthCacheInvalidator(apiKeyService)
 	scopedAdminKeyRepository := repository.NewScopedAdminKeyRepository(db)
 	settingService := service.ProvideSettingService(scopedAdminKeyRepository, settingRepository, groupRepository, proxyRepository, configConfig)
-	lotteryService := service.NewLotteryService(client, userRepository, subscriptionService, billingCacheService, apiKeyAuthCacheInvalidator, settingService)
-	geoJSResolver := serverless.NewGeoJSResolver(redisClient)
-	lotteryHandler := handler.NewLotteryHandler(lotteryService, geoJSResolver)
-	redeemCodeRepository := repository.NewRedeemCodeRepository(client)
-	refreshTokenCache := repository.NewRefreshTokenCache(redisClient)
-	turnstileVerifier := repository.NewTurnstileVerifier()
-	turnstileService := service.NewTurnstileService(settingService, turnstileVerifier)
-	tencentCaptchaVerifier := repository.NewTencentCaptchaVerifier()
-	tencentCaptchaService := service.NewTencentCaptchaService(settingService, tencentCaptchaVerifier)
-	aliyunCaptchaVerifier := repository.NewAliyunCaptchaVerifier()
-	aliyunCaptchaService := service.NewAliyunCaptchaService(settingService, aliyunCaptchaVerifier)
-	emailQueueService := service.ProvideEmailQueueService(emailService)
-	promoCodeRepository := repository.NewPromoCodeRepository(client)
-	promoService := service.NewPromoService(promoCodeRepository, userRepository, billingCacheService, client, apiKeyAuthCacheInvalidator)
-	affiliateRepository := repository.NewAffiliateRepository(client, db)
-	affiliateService := service.NewAffiliateService(affiliateRepository, settingService, apiKeyAuthCacheInvalidator, billingCacheService)
-	authService := service.ProvideAuthService(client, userRepository, redeemCodeRepository, refreshTokenCache, configConfig, settingService, emailService, turnstileService, tencentCaptchaService, aliyunCaptchaService, emailQueueService, promoService, subscriptionService, affiliateService, serviceUserPlatformQuotaRepository, lotteryService)
-	userService := service.NewUserService(userRepository, settingRepository, apiKeyAuthCacheInvalidator, billingCache)
-	redeemCache := repository.NewRedeemCache(redisClient)
-	redeemService := service.ProvideRedeemService(redeemCodeRepository, userRepository, subscriptionService, redeemCache, billingCacheService, client, apiKeyAuthCacheInvalidator, affiliateService, lotteryService)
-	secretEncryptor, err := repository.NewAESEncryptor(configConfig)
-	if err != nil {
-		return nil, err
-	}
-	totpCache := repository.NewTotpCache(redisClient)
-	totpService := service.NewTotpService(userRepository, secretEncryptor, totpCache, settingService, emailService, emailQueueService)
-	userAttributeDefinitionRepository := repository.NewUserAttributeDefinitionRepository(client)
-	userAttributeValueRepository := repository.NewUserAttributeValueRepository(client)
-	userAttributeService := service.NewUserAttributeService(userAttributeDefinitionRepository, userAttributeValueRepository)
-	authHandler := handler.NewAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, userAttributeService)
-	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService, serviceUserPlatformQuotaRepository)
-	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
+	channelMonitorV2Repository := repository.NewChannelMonitorV2Repository(db)
+	pelicanGroupTestRepository := repository.NewPelicanGroupTestRepository(db)
 	usageLogRepository := repository.NewUsageLogRepository(client, db)
-	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)
-	accountOpsRepository := repository.NewAccountOpsRepository(db)
-	usageCache := service.NewUsageCache()
-	geminiQuotaService := service.NewGeminiQuotaService(configConfig, settingRepository)
-	newAPIAuthorizationRepository := repository.NewNewAPIAuthorizationRepository(db)
-	accountOpsService := service.ProvideAccountOpsService(settingRepository, accountOpsRepository, emailService, accountRepository, groupRepository, configConfig, secretEncryptor, usageCache, usageLogRepository, geminiQuotaService, newAPIAuthorizationRepository)
-	opsRepository := repository.NewOpsRepository(db)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)
 	gatewayCache := repository.NewGatewayCache(redisClient)
 	pricingRemoteClient := repository.ProvidePricingRemoteClient(configConfig)
@@ -141,6 +108,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		return nil, err
 	}
 	billingService := service.NewBillingService(configConfig, pricingService)
+	geminiQuotaService := service.NewGeminiQuotaService(configConfig, settingRepository)
 	tempUnschedCache := repository.NewTempUnschedCache(redisClient)
 	timeoutCounterCache := repository.NewTimeoutCounterCache(redisClient)
 	openAI403CounterCache := repository.NewOpenAI403CounterCache(redisClient)
@@ -149,7 +117,12 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	httpUpstream := repository.ProvideHTTPUpstream(configConfig, settingService)
 	leaderLockCache := repository.NewLeaderLockCache(redisClient)
 	ollamaCloudUsageService := service.ProvideOllamaCloudUsageService(accountRepository, httpUpstream, settingService, secretEncryptor, configConfig, leaderLockCache, db)
-	rateLimitService := service.ProvideRateLimitService(accountRepository, usageLogRepository, configConfig, geminiQuotaService, tempUnschedCache, timeoutCounterCache, openAI403CounterCache, settingService, compositeTokenCacheInvalidator, ollamaCloudUsageService, accountOpsService, redisClient)
+	accountOpsRepository := repository.NewAccountOpsRepository(db)
+	usageCache := service.NewUsageCache()
+	newAPIAuthorizationRepository := repository.NewNewAPIAuthorizationRepository(db)
+	accountOpsService := service.ProvideAccountOpsService(settingRepository, accountOpsRepository, emailService, accountRepository, groupRepository, configConfig, secretEncryptor, usageCache, usageLogRepository, geminiQuotaService, newAPIAuthorizationRepository)
+	tempUnschedTriggerCounter := repository.NewTempUnschedTriggerCounter(redisClient)
+	rateLimitService := service.ProvideRateLimitService(accountRepository, usageLogRepository, configConfig, geminiQuotaService, tempUnschedCache, timeoutCounterCache, openAI403CounterCache, settingService, compositeTokenCacheInvalidator, ollamaCloudUsageService, accountOpsService, tempUnschedTriggerCounter, redisClient)
 	identityCache := repository.NewIdentityCache(redisClient)
 	identityService := service.NewIdentityService(identityCache)
 	timingWheelService, err := service.ProvideTimingWheelService()
@@ -231,6 +204,48 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	antigravityTokenProvider := service.ProvideAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	internal500CounterCache := repository.NewInternal500CounterCache(redisClient)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, schedulerSnapshotService, antigravityTokenProvider, rateLimitService, httpUpstream, settingService, internal500CounterCache)
+	pluginRepository := repository.NewPluginRepository(db)
+	pluginHostInfo := providePluginHostInfo(buildInfo)
+	pluginKVStore := repository.NewPluginKVStore(redisClient)
+	pluginManager := service.ProvidePluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo, pluginKVStore, openAIGatewayService, accountRepository, proxyRepository)
+	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager)
+	pelicanShowcaseRepository := repository.NewPelicanShowcaseRepository(db)
+	pelicanShowcaseService := service.NewPelicanShowcaseService(pelicanShowcaseRepository, settingService)
+	pelicanGroupTestService := service.NewPelicanGroupTestService(pelicanGroupTestRepository, groupRepository, gatewayService, openAIGatewayService, concurrencyService, accountTestService, pelicanShowcaseService, billingService)
+	channelMonitorV2Service := service.ProvideChannelMonitorV2Service(channelMonitorV2Repository, settingService, pelicanGroupTestService)
+	qqbotService := service.ProvideQQBotService(db, secretEncryptor, configConfig, apiKeyAuthCacheInvalidator, billingCacheService, emailService, settingService, userRepository, channelMonitorV2Service, groupRepository, channelRepository, channelService, modelPricingResolver, billingService, userGroupRateRepository, apiKeyService, accountRepository)
+	qqBotHandler := handler.NewQQBotHandler(qqbotService)
+	subscriptionService := service.NewSubscriptionService(groupRepository, userSubscriptionRepository, billingCacheService, client, configConfig)
+	lotteryService := service.NewLotteryService(client, userRepository, subscriptionService, billingCacheService, apiKeyAuthCacheInvalidator, settingService)
+	geoJSResolver := serverless.NewGeoJSResolver(redisClient)
+	lotteryHandler := handler.NewLotteryHandler(lotteryService, geoJSResolver)
+	redeemCodeRepository := repository.NewRedeemCodeRepository(client)
+	refreshTokenCache := repository.NewRefreshTokenCache(redisClient)
+	turnstileVerifier := repository.NewTurnstileVerifier()
+	turnstileService := service.NewTurnstileService(settingService, turnstileVerifier)
+	tencentCaptchaVerifier := repository.NewTencentCaptchaVerifier()
+	tencentCaptchaService := service.NewTencentCaptchaService(settingService, tencentCaptchaVerifier)
+	aliyunCaptchaVerifier := repository.NewAliyunCaptchaVerifier()
+	aliyunCaptchaService := service.NewAliyunCaptchaService(settingService, aliyunCaptchaVerifier)
+	emailQueueService := service.ProvideEmailQueueService(emailService)
+	promoCodeRepository := repository.NewPromoCodeRepository(client)
+	promoService := service.NewPromoService(promoCodeRepository, userRepository, billingCacheService, client, apiKeyAuthCacheInvalidator)
+	affiliateRepository := repository.NewAffiliateRepository(client, db)
+	affiliateService := service.NewAffiliateService(affiliateRepository, settingService, apiKeyAuthCacheInvalidator, billingCacheService)
+	authService := service.ProvideAuthService(client, userRepository, redeemCodeRepository, refreshTokenCache, configConfig, settingService, emailService, turnstileService, tencentCaptchaService, aliyunCaptchaService, emailQueueService, promoService, subscriptionService, affiliateService, serviceUserPlatformQuotaRepository, lotteryService)
+	userService := service.NewUserService(userRepository, settingRepository, apiKeyAuthCacheInvalidator, billingCache)
+	redeemCache := repository.NewRedeemCache(redisClient)
+	redeemService := service.ProvideRedeemService(redeemCodeRepository, userRepository, subscriptionService, redeemCache, billingCacheService, client, apiKeyAuthCacheInvalidator, affiliateService, lotteryService)
+	totpCache := repository.NewTotpCache(redisClient)
+	totpService := service.NewTotpService(userRepository, secretEncryptor, totpCache, settingService, emailService, emailQueueService)
+	userAttributeDefinitionRepository := repository.NewUserAttributeDefinitionRepository(client)
+	userAttributeValueRepository := repository.NewUserAttributeValueRepository(client)
+	userAttributeService := service.NewUserAttributeService(userAttributeDefinitionRepository, userAttributeValueRepository)
+	authHandler := handler.NewAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, userAttributeService)
+	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService, serviceUserPlatformQuotaRepository)
+	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
+	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)
+	opsRepository := repository.NewOpsRepository(db)
 	geminiMessagesCompatService := service.NewGeminiMessagesCompatService(accountRepository, groupRepository, gatewayCache, schedulerSnapshotService, geminiTokenProvider, rateLimitService, httpUpstream, antigravityGatewayService, configConfig)
 	opsSystemLogSink := service.ProvideOpsSystemLogSink(opsRepository)
 	authCacheInvalidationOutboxRepository := repository.NewAuthCacheInvalidationOutboxRepository(db)
@@ -246,17 +261,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	channelMonitorRepository := repository.NewChannelMonitorRepository(client, db)
 	channelMonitorService := service.ProvideChannelMonitorService(channelMonitorRepository, secretEncryptor, settingService)
 	channelMonitorUserHandler := handler.NewChannelMonitorUserHandler(channelMonitorService, settingService)
-	channelMonitorV2Repository := repository.NewChannelMonitorV2Repository(db)
-	pelicanGroupTestRepository := repository.NewPelicanGroupTestRepository(db)
-	pluginRepository := repository.NewPluginRepository(db)
-	pluginHostInfo := providePluginHostInfo(buildInfo)
-	pluginKVStore := repository.NewPluginKVStore(redisClient)
-	pluginManager := service.ProvidePluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo, pluginKVStore, openAIGatewayService, accountRepository, proxyRepository)
-	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager)
-	pelicanShowcaseRepository := repository.NewPelicanShowcaseRepository(db)
-	pelicanShowcaseService := service.NewPelicanShowcaseService(pelicanShowcaseRepository, settingService)
-	pelicanGroupTestService := service.NewPelicanGroupTestService(pelicanGroupTestRepository, groupRepository, gatewayService, openAIGatewayService, concurrencyService, accountTestService, pelicanShowcaseService, billingService)
-	channelMonitorV2Service := service.ProvideChannelMonitorV2Service(channelMonitorV2Repository, settingService, pelicanGroupTestService)
 	channelMonitorV2Handler := handler.NewChannelMonitorV2Handler(channelMonitorV2Service, apiKeyService)
 	channelMonitorV3Repository := repository.NewChannelMonitorV3Repository(db)
 	channelMonitorV3Service := service.ProvideChannelMonitorV3Service(channelMonitorV3Repository, groupRepository)
@@ -366,14 +370,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	accountTokenGuardV2Repository := repository.NewAccountTokenGuardV2Repository(db)
 	accountTokenGuardV2Service := service.ProvideAccountTokenGuardV2Service(accountTokenGuardV2Repository, settingRepository, adminService, openAIGatewayService, openAIOAuthReauthService, configConfig)
 	accountTokenGuardV2Handler := admin.NewAccountTokenGuardV2Handler(accountTokenGuardV2Service)
-	channelHandler := admin.NewChannelHandler(channelService, billingService, pricingService)
+	channelHandler := admin.ProvideMatureChannelHandler(channelService, billingService, pricingService, secretEncryptor, configConfig)
 	channelMonitorHandler := admin.NewChannelMonitorHandler(channelMonitorService)
 	channelMonitorRequestTemplateRepository := repository.NewChannelMonitorRequestTemplateRepository(client, db)
 	channelMonitorRequestTemplateService := service.NewChannelMonitorRequestTemplateService(channelMonitorRequestTemplateRepository)
 	channelMonitorRequestTemplateHandler := admin.NewChannelMonitorRequestTemplateHandler(channelMonitorRequestTemplateService)
 	contentModerationRepository := repository.NewContentModerationRepository(db)
 	contentModerationHashCache := repository.NewContentModerationHashCache(redisClient)
-	contentModerationService := service.ProvideContentModerationService(settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService, db, secretEncryptor, configConfig)
+	contentModerationService := service.ProvideContentModerationService(accountRepository, settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService, db, secretEncryptor, configConfig)
 	contentModerationHandler := admin.NewContentModerationHandlerWithSafetyPrompt(contentModerationService, safetyPromptStore, settingService)
 	configManager := securityaudit.NewConfigManager(db, settingRepository, redisClient, secretEncryptor, configConfig)
 	postgreSQLRepository := securityaudit.NewPostgreSQLRepository(db)
@@ -446,7 +450,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
 	openAIQuotaAutoResetService := service.ProvideOpenAIQuotaAutoResetService(accountRepository, openAIQuotaService, rateLimitService, idempotencyCoordinator, auditLogService, settingService, leaderLockCache, configConfig)
-	handlers := handler.ProvideHandlers(lotteryHandler, authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, channelMonitorV2Handler, channelMonitorV3Handler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, passkeyHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, pelicanShowcaseHandler, supportTicketHandler, modelPlazaHandler, asyncImageHandler, batchImageHandler, idempotencyCoordinator, idempotencyCleanupService, openAIQuotaAutoResetService)
+	handlers := handler.ProvideHandlers(qqBotHandler, lotteryHandler, authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, channelMonitorV2Handler, channelMonitorV3Handler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, passkeyHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, pelicanShowcaseHandler, supportTicketHandler, modelPlazaHandler, asyncImageHandler, batchImageHandler, idempotencyCoordinator, idempotencyCleanupService, openAIQuotaAutoResetService)
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService, settingService, auditLogService, connectionSignalEmitter)
 	optionalJWTAuthMiddleware := middleware.NewOptionalJWTAuthMiddleware(authService, userService, settingService, auditLogService)
 	adminAuthMiddleware := middleware.NewAdminAuthMiddleware(authService, userService, settingService, auditLogService, connectionSignalEmitter)
@@ -486,7 +490,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	connectionRiskWorker := service.ProvideConnectionRiskWorker(configConfig, settingService, connectionSignalCache, connectionRiskEventRepository, leaderLockCache, concurrencyCache, userRepository, apiKeyService, connectionRiskMetrics, riskActionPolicy)
 	warpSyncWorker := service.ProvideWarpSyncWorker(configConfig, warpSyncService, leaderLockCache, db)
 	proxyHealthWorker := service.ProvideProxyHealthWorker(configConfig, proxyHealthService, leaderLockCache, db)
-	v := provideCleanup(balanceNotifyService, autoCreditEmailWorker, configConfig, manager, client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, concurrencyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, controlledExperimentService, accountOpsService, accountPerformanceService, accountTokenGuardService, accountTokenGuardV2Service, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, channelMonitorV3Prober, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, grokFreeRecoveryService, connectionRiskWorker, warpSyncWorker, proxyHealthWorker, pluginManager, contentModerationService)
+	v := provideCleanup(channelHandler, qqbotService, autoCreditEmailWorker, configConfig, manager, client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, concurrencyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, controlledExperimentService, accountOpsService, accountPerformanceService, accountTokenGuardService, accountTokenGuardV2Service, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, channelMonitorV3Prober, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, grokFreeRecoveryService, connectionRiskWorker, warpSyncWorker, proxyHealthWorker, pluginManager, contentModerationService)
 	application := &Application{
 		Server:        httpServer,
 		PromptAudit:   promptService,
@@ -526,7 +530,8 @@ func providePluginHostInfo(buildInfo handler.BuildInfo) service.PluginHostInfo {
 }
 
 func provideCleanup(
-	balanceNotify *service.BalanceNotifyService,
+	providerChannels *admin.ChannelHandler,
+	qqBot *qqbot.Service,
 	autoCreditEmail *service.AutoCreditEmailWorker,
 	cfg *config.Config,
 	requestCaptures *requestcapture.Manager,
@@ -599,9 +604,6 @@ func provideCleanup(
 		}
 	}
 	return func() {
-		if balanceNotify != nil {
-			balanceNotify.Stop()
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -705,6 +707,18 @@ func provideCleanup(
 			{"OpsSystemLogSink", func() error {
 				if opsSystemLogSink != nil {
 					opsSystemLogSink.Stop()
+				}
+				return nil
+			}},
+			{"MatureProviderRefresh", func() error {
+				if providerChannels != nil {
+					providerChannels.StopMatureProviderRefresh()
+				}
+				return nil
+			}},
+			{"QQBotService", func() error {
+				if qqBot != nil {
+					qqBot.Stop()
 				}
 				return nil
 			}},

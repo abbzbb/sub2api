@@ -625,6 +625,7 @@ func (s *OpenAIGatewayService) ForwardImages(
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
+
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
@@ -637,6 +638,9 @@ func (s *OpenAIGatewayService) ForwardImages(
 		return nil, admissionErr
 	}
 	account = latest
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
 	if err := parsed.ValidateAccountModels(account, channelMappedModel); err != nil {
 		return nil, err
 	}
@@ -738,6 +742,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, "", err); handled {
+			return nil, resetErr
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -812,6 +819,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime, nil)
 		if err != nil {
+			if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, resp.Header.Get("x-request-id"), err); handled {
+				err = resetErr
+			}
 			if streamCount > 0 {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
@@ -855,6 +865,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	} else {
 		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(upstreamCtx, resp, c, account, parsed)
 		if err != nil {
+			if resetErr, handled := handleOpenAIHTTP2PeerReset(c, account, resp.Header.Get("x-request-id"), err); handled {
+				err = resetErr
+			}
 			return nil, err
 		}
 		usage = nonStreamUsage

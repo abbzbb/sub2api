@@ -1283,6 +1283,54 @@ func TestProxyOpenAIWSHTTPBridgeTurnMarksCyberPolicyForFailureShapes(t *testing.
 	}
 }
 
+func TestProxyOpenAIWSHTTPBridgeTurnDisconnectedSkipsFailureAccountSideEffects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, terminal := range []bool{false, true} {
+		for _, disconnected := range []bool{false, true} {
+			t.Run(fmt.Sprintf("terminal=%t/disconnected=%t", terminal, disconnected), func(t *testing.T) {
+				body := "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_disconnect\",\"delta\":\"partial\"}\n\n" +
+					"data: {\"type\":\"error\",\"error\":{\"status_code\":403,\"code\":\"workspace_suspended\",\"message\":\"workspace is suspended\"}}\n\n"
+				if terminal {
+					body += "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_disconnect\",\"status\":\"failed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":2},\"error\":{\"status_code\":403,\"code\":\"workspace_suspended\",\"message\":\"workspace is suspended\"}}}\n\n"
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}}
+				repo := &openAIStream403AccountRepo{}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: &RateLimitService{accountRepo: repo}}
+				account := &Account{ID: 113, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+				payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi"}`)
+				writes := 0
+				result, err := svc.proxyOpenAIWSHTTPBridgeTurn(context.Background(), c, account, "sk-test", payload, len(payload), "gpt-5", "", "", "", "", 2, func([]byte) error {
+					writes++
+					if disconnected {
+						return io.EOF
+					}
+					return nil
+				})
+				require.NotNil(t, result)
+				require.Equal(t, disconnected, result.ClientDisconnect)
+				require.Equal(t, "response.failed", result.UpstreamTerminalEvent)
+				if terminal {
+					require.NoError(t, err)
+					require.Equal(t, 9, result.Usage.InputTokens)
+					require.Equal(t, 2, result.Usage.OutputTokens)
+				} else {
+					require.EqualError(t, err, "workspace is suspended")
+				}
+				if disconnected {
+					require.Equal(t, 1, writes)
+					require.Zero(t, repo.setErrorCalls)
+					require.Equal(t, StatusActive, account.Status)
+				} else {
+					require.Equal(t, 2, writes)
+					require.Equal(t, 1, repo.setErrorCalls)
+				}
+			})
+		}
+	}
+}
+
 func TestProxyOpenAIWSHTTPBridgeTurnBareErrorEOFSynthesizesFailed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_eof\",\"status\":\"in_progress\"}}\n\n" +

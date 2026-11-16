@@ -39,6 +39,7 @@ func RegisterAdminRoutes(
 	admin.Use(middleware.AdminComplianceGuard(settingService))
 	// 受限密钥的账户操作走独立资源校验，普通管理员保持原处理器。
 	admin.Use(h.Admin.Account.ScopedAdminKeyAccounts)
+	registerQQBotAdminRoutes(admin, h)
 	if h.Lottery != nil {
 		lottery := admin.Group("/lottery")
 		lottery.GET("/settings", h.Lottery.Settings)
@@ -513,6 +514,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 			accounts.PATCH("/:id/auth-connections/:connection_id", h.Admin.OpenAIOAuthReauth.UpdateAuthConnection)
 			accounts.POST("/:id/auth-connections/:connection_id/authorize", h.Admin.OpenAIOAuthReauth.BeginConnectionAuthorization)
 			accounts.POST("/:id/auth-connections/:connection_id/callback", h.Admin.OpenAIOAuthReauth.CompleteConnectionAuthorization)
+			accounts.POST("/:id/auth-connections/:connection_id/authorization-status", h.Admin.OpenAIOAuthReauth.ConnectionAuthorizationStatus)
 			accounts.POST("/:id/auth-connections/:connection_id/revoke", h.Admin.OpenAIOAuthReauth.RevokeAuthConnection)
 			accounts.GET("/:id/openai-reauth", h.Admin.OpenAIOAuthReauth.GetStatus)
 			accounts.GET("/:id/siwc", h.Admin.OpenAIOAuthReauth.SIWCStatus)
@@ -522,6 +524,8 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 			accounts.POST("/:id/totp-rotation", h.Admin.OpenAIOAuthReauth.RotateTOTP)
 			accounts.POST("/:id/totp-rotation/verify", h.Admin.OpenAIOAuthReauth.RetryTOTP)
 			accounts.POST("/:id/totp-export", h.Admin.OpenAIOAuthReauth.ExportTOTP)
+			accounts.POST("/totp-recovery-export", h.Admin.OpenAIOAuthReauth.ExportTOTPRecovery)
+			accounts.POST("/:id/totp-recovery-import", h.Admin.OpenAIOAuthReauth.ImportTOTPRecovery)
 			accounts.PUT("/:id/openai-reauth/email", h.Admin.OpenAIOAuthReauth.SaveConfig)
 			accounts.POST("/:id/openai-reauth", h.Admin.OpenAIOAuthReauth.CreateTask)
 		}
@@ -1024,6 +1028,7 @@ func registerScheduledTestRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	admin.GET("/account-ops/auto-config", h.Admin.AccountOps.GetAutoConfig)
 	admin.PUT("/account-ops/auto-config", h.Admin.AccountOps.SaveAutoConfig)
 	admin.GET("/account-ops/auto-config/events", h.Admin.AccountOps.ListAutoConfigEvents)
+	admin.PUT("/account-ops/accounts/:id/lifecycle", h.Admin.AccountOps.SetOAuthLifecycle)
 	admin.GET("/account-ops/config", h.Admin.AccountOps.GetConfig)
 	admin.PUT("/account-ops/config", h.Admin.AccountOps.SaveConfig)
 	admin.PUT("/account-ops/notification-settings", h.Admin.AccountOps.SaveNotificationSettings)
@@ -1157,8 +1162,19 @@ func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAut
 }
 
 func registerChannelRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	admin.GET("/providers", h.Admin.Channel.ListMatureProviders)
+	admin.GET("/providers/options", h.Admin.Channel.MatureProviderOptions)
+	admin.POST("/providers", h.Admin.Channel.MutateMatureProvider)
+	admin.GET("/providers/:id", h.Admin.Channel.GetMatureProvider)
+	admin.PUT("/providers/:id", h.Admin.Channel.MutateMatureProvider)
+	admin.DELETE("/providers/:id", h.Admin.Channel.MutateMatureProvider)
+	admin.POST("/providers/:id/refresh", h.Admin.Channel.RefreshMatureProvider)
+	admin.GET("/providers/:id/keys", h.Admin.Channel.MatureProviderKeys)
+	admin.GET("/providers/:id/groups", h.Admin.Channel.MatureProviderGroups)
+	admin.POST("/providers/:id/keys", h.Admin.Channel.CreateMatureProviderKey)
 	if h.Admin.Account != nil && h.Admin.Channel != nil {
 		h.Admin.Account.SetUpstreamChannelService(h.Admin.Channel.UpstreamChannelService())
+		h.Admin.Account.SetMatureProviderCatalog(h.Admin.Channel)
 	}
 	admin.GET("/upstream-channels", h.Admin.Channel.ListUpstreamChannels)
 	admin.POST("/upstream-channels", h.Admin.Channel.MutateUpstreamChannel)

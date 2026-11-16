@@ -92,7 +92,7 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	// = relational graphs with back-references that would cycle under encoding/json.
 	// InitialQualityPlan = internal creation-only policy, not readable plugin metadata.
 	stripped := map[string]struct{}{
-		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {}, "InitialAdmissionPlan": {},
+		"Credentials": {}, "Groups": {}, "AccountGroups": {}, "InitialQualityPlan": {}, "InitialAdmissionPlan": {}, "InitialAPIKeyDisposition": {},
 	}
 	// Fields intentionally exposed as readable metadata. Proxy endpoint fields stay;
 	// username and password are cleared before marshal.
@@ -130,9 +130,10 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	// Extra and non-secret proxy endpoint fields stay readable.
 	acct := &Account{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
-		PerformancePaused:  true,
-		InitialQualityPlan: &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
-		Credentials:        map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
+		PerformancePaused:        true,
+		InitialAPIKeyDisposition: &OAuthAPIKeyDispositionConfig{AccountIDs: []int64{71}},
+		InitialQualityPlan:       &ScheduledTestPlan{PelicanConfig: &PelicanTestConfig{Prompt: "PRIVATE-INITIAL-QUALITY-PROMPT"}},
+		Credentials:              map[string]any{"access_token": "AT", "refresh_token": "LEAK-REFRESH"},
 		Extra: map[string]any{
 			"opaque":                        "extra-released",
 			"codex_turn_ticket:gpt-6-astra": map[string]any{"state": "private-ticket-state"},
@@ -147,6 +148,8 @@ func TestAccountReadableSnapshot_DenylistTripwire(t *testing.T) {
 	assert.Equal(t, true, m["PerformancePaused"])
 	assert.NotContains(t, string(snap), "LEAK-REFRESH", "raw Credentials must never appear in metadata")
 	assert.NotContains(t, string(snap), "private-ticket-state")
+	assert.NotContains(t, m, "InitialAPIKeyDisposition")
+	require.Equal(t, []int64{71}, acct.InitialAPIKeyDisposition.AccountIDs, "snapshot must not mutate creation-only policy")
 	assert.NotContains(t, m, "InitialQualityPlan")
 	assert.NotContains(t, string(snap), "PRIVATE-INITIAL-QUALITY-PROMPT")
 	require.NotNil(t, acct.InitialQualityPlan, "snapshot must not mutate creation-only policy")
