@@ -232,16 +232,19 @@ type OpenAIUsage struct {
 	// upstream. Missing counters must never become zero-cache protection samples.
 	CacheReadKnown bool `json:"-"`
 	// Preserve request modality when a terminal usage omits earlier media details.
-	cacheReadMediaObserved      bool
-	InputTokens                 int `json:"input_tokens"`
-	ImageInputTokens            int `json:"image_input_tokens,omitempty"`
-	ImageCacheReadTokens        int `json:"image_cache_read_tokens,omitempty"`
-	OutputTokens                int `json:"output_tokens"`
-	CacheCreation30mInputTokens int `json:"cache_creation_30m_input_tokens,omitempty"`
-	CacheCreation12hInputTokens int `json:"cache_creation_12h_input_tokens,omitempty"`
-	CacheCreationInputTokens    int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens        int `json:"cache_read_input_tokens,omitempty"`
-	ImageOutputTokens           int `json:"image_output_tokens,omitempty"`
+	cacheReadMediaObserved          bool
+	InputTokens                     int `json:"input_tokens"`
+	ImageInputTokens                int `json:"image_input_tokens,omitempty"`
+	ImageCacheReadTokens            int `json:"image_cache_read_tokens,omitempty"`
+	OutputTokens                    int `json:"output_tokens"`
+	CacheCreation30mInputTokens     int `json:"cache_creation_30m_input_tokens,omitempty"`
+	CacheCreation12hInputTokens     int `json:"cache_creation_12h_input_tokens,omitempty"`
+	CacheCreationInputTokens        int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens            int `json:"cache_read_input_tokens,omitempty"`
+	ImageOutputTokens               int `json:"image_output_tokens,omitempty"`
+	CacheCreation5mTokens           int `json:"cache_creation_5m_tokens,omitempty"`
+	CacheCreation1hTokens           int `json:"cache_creation_1h_tokens,omitempty"`
+	cacheCreationInputTokensPresent bool
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -332,6 +335,8 @@ type OpenAIForwardResult struct {
 	VideoDurationSeconds int
 	// MiniMaxH3BaseCost is a server-only create-time tariff snapshot in USD.
 	MiniMaxH3BaseCost *float64
+	WanBilledSeconds  float64
+	WanBaseCost       *float64
 	// WebSearchCalls 是 Codex alpha/search 网页搜索调用次数（每次成功请求为 1）。
 	// 上游不返回 usage 字段，>0 时走按次计费（分组单价 × 次数 × 倍率）。
 	WebSearchCalls int

@@ -46,6 +46,9 @@ const (
 	PlatformComposite = "composite"
 )
 
+// AccountPlatformGateway is an account-only identity, never a request or group platform.
+const AccountPlatformGateway = "gateway"
+
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
 // 存储于 credentials["account_mode"]，决定 base_url 预设与额度监控方式。
 const (
@@ -71,6 +74,7 @@ const (
 	AccountTypeSetupToken     = "setup-token"     // Setup Token类型账号（inference only scope）
 	AccountTypeAPIKey         = "apikey"          // API Key类型账号
 	AccountTypeUpstream       = "upstream"        // 上游透传类型账号（通过 Base URL + API Key 连接上游）
+	AccountTypeGateway        = "gateway"         // 跨平台 Sub2API / New API 网关账号（协议由请求目标决定）
 	AccountTypeBedrock        = "bedrock"         // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
 	AccountTypeServiceAccount = "service_account" // Google Service Account 类型账号（用于 Vertex AI）
 )
@@ -184,7 +188,9 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3.8-flash-low":    "gemini-3.8-flash-low",
 	"gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
 	"gemini-3.8-flash-tiered": "gemini-3.8-flash-tiered",
-	// Gemini 4 Argon tiered models
+	// Gemini 4 models
+	// Carbon uses the published model ID; do not infer Argon-style tier aliases.
+	"gemini-4-carbon":       "gemini-4-carbon",
 	"gemini-4-argon":        "gemini-4-argon-high",
 	"gemini-4-argon-high":   "gemini-4-argon-high",
 	"gemini-4-argon-low":    "gemini-4-argon-low",

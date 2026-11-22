@@ -407,7 +407,8 @@ describe('user KeysView column settings', () => {
     expect(target).toBe('_self')
     expect(url.protocol).toBe('magpie:')
     expect(url.host).toBe('import')
-    expect(url.searchParams.get('name')).toBe('第二把密钥 · 示例站')
+    expect(url.searchParams.get('name')).toBe('示例站')
+    expect(url.searchParams.get('catalog')).toBe('openai')
     expect(url.searchParams.getAll('key')).toEqual(['sk-test-second+a&b'])
     expect(url.searchParams.get('responses')).toBe('https://gateway.example/relay/v1')
     expect(showInfo).toHaveBeenCalledWith('keys.magpieImport.openHelp', 6500)
@@ -422,13 +423,19 @@ describe('user KeysView column settings', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     const wrapper = await mountView()
     const button = wrapper.get('[data-testid="magpie-import-button"]')
-    expect(button.attributes('disabled')).toBeDefined()
+    const actions = [
+      button,
+      wrapper.get('[data-testid="quick-config-button"]'),
+      wrapper.get('[data-testid="use-key-button"]'),
+      wrapper.get('[data-testid="ccswitch-import-button"]')
+    ]
+    for (const action of actions) expect(action.attributes('disabled')).toBeDefined()
     await button.trigger('click')
     expect(open).not.toHaveBeenCalled()
 
     settings.resolve({ api_base_url: 'https://gateway.example' })
     await flushPromises()
-    expect(button.attributes('disabled')).toBeUndefined()
+    for (const action of actions) expect(action.attributes('disabled')).toBeUndefined()
     await button.trigger('click')
     expect(new URL(String(open.mock.calls[0][0])).searchParams.get('chat')).toBe('https://gateway.example/v1')
   })
@@ -999,6 +1006,10 @@ describe('user KeysView column settings', () => {
     expect(getDashboardApiKeysUsage).toHaveBeenLastCalledWith([1], expect.objectContaining({
       start_date: formatDateLocalInput(start), end_date: formatDateLocalInput(end), timezone: getBrowserTimeZone(),
     }))
+    expect(listKeys).toHaveBeenLastCalledWith(1, 20, expect.objectContaining({
+      sort_by: 'usage', sort_order: 'desc',
+      start_date: formatDateLocalInput(start), end_date: formatDateLocalInput(end), timezone: getBrowserTimeZone(),
+    }), expect.any(Object))
     wrapper.findComponent(DateRangePicker).vm.$emit('change', {
       startDate: '2026-10-01', endDate: '2026-10-31', preset: null,
     })
@@ -1008,6 +1019,44 @@ describe('user KeysView column settings', () => {
     expect(getDashboardApiKeysUsage).toHaveBeenLastCalledWith([1], expect.objectContaining({
       start_date: '2026-10-01', end_date: '2026-10-31', timezone: getBrowserTimeZone(),
     }))
+    expect(listKeys).toHaveBeenLastCalledWith(2, 20, expect.objectContaining({
+      sort_by: 'usage', sort_order: 'desc',
+      start_date: '2026-10-01', end_date: '2026-10-31', timezone: getBrowserTimeZone(),
+    }), expect.any(Object))
+  })
+
+  it('marks usage descending by default and toggles the actual header in both directions', async () => {
+    const wrapper = await mountView(true)
+    const header = wrapper.findAll('th').find(th => th.text() === 'Usage')!
+    expect(header.attributes('aria-sort')).toBe('descending')
+    for (const order of ['asc', 'desc'] as const) {
+      await header.trigger('click')
+      await flushPromises()
+      expect(header.attributes('aria-sort')).toBe(order === 'asc' ? 'ascending' : 'descending')
+      expect(listKeys).toHaveBeenLastCalledWith(1, 20, expect.objectContaining({
+        sort_by: 'usage', sort_order: order, timezone: getBrowserTimeZone(),
+      }), expect.any(Object))
+    }
+  })
+
+  it('restarts at page one and clears selection on range changes while preserving sort direction', async () => {
+    const wrapper = await mountView()
+    const table = wrapper.findComponent({ name: 'DataTable' })
+    table.vm.$emit('sort', 'usage', 'asc')
+    await flushPromises()
+    await wrapper.get('[data-test="page-2"]').trigger('click')
+    await flushPromises()
+    table.vm.$emit('update:selectedKeys', [1])
+    await nextTick()
+    wrapper.findComponent(DateRangePicker).vm.$emit('change', {
+      startDate: '2026-10-05', endDate: '2026-10-06', preset: null,
+    })
+    await flushPromises()
+    expect(table.props('selectedKeys')).toEqual([])
+    expect(listKeys).toHaveBeenLastCalledWith(1, 20, expect.objectContaining({
+      sort_by: 'usage', sort_order: 'asc',
+      start_date: '2026-10-05', end_date: '2026-10-06', timezone: getBrowserTimeZone(),
+    }), expect.any(Object))
   })
 
   it('offers calendar ranges without a 24-hour shortcut in the actual usage picker', async () => {
@@ -1252,6 +1301,8 @@ describe('user KeysView column settings', () => {
     { key: 'current_concurrency', order: 'asc' },
     { key: 'group', order: 'asc' },
     { key: 'group', order: 'desc' },
+    { key: 'usage', order: 'asc' },
+    { key: 'usage', order: 'desc' },
   ] as const)('keeps filters and resets pagination and selection when sorting $key $order', async ({ key, order }) => {
     getAvailableGroups.mockResolvedValue([{ id: 42, name: 'OpenAI' }])
     const wrapper = await mountView()
@@ -1291,6 +1342,11 @@ describe('user KeysView column settings', () => {
         group_id: 42,
         sort_by: key,
         sort_order: order,
+        ...(key === 'usage' ? {
+          start_date: expect.any(String),
+          end_date: expect.any(String),
+          timezone: getBrowserTimeZone(),
+        } : {}),
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )

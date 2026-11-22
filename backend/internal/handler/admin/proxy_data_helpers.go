@@ -132,7 +132,7 @@ func expandBackupProxyChain(ctx context.Context, lookup dataProxyByIDsLookup, se
 	}
 }
 
-func importDataProxies(ctx context.Context, svc dataProxyWriter, existing []service.Proxy, items []DataProxy, result *DataImportResult) (map[string]int64, []int64) {
+func importDataProxies(ctx context.Context, svc dataProxyWriter, existing []service.Proxy, items []DataProxy, result *DataImportResult, register ...func(service.Proxy)) (map[string]int64, []int64) {
 	proxyByKey := make(map[string]service.Proxy, len(existing)+len(items))
 	proxyKeyToID := make(map[string]int64, len(existing)+len(items))
 	proxyNameToID := make(map[string]int64, len(existing)+len(items))
@@ -140,6 +140,9 @@ func importDataProxies(ctx context.Context, svc dataProxyWriter, existing []serv
 		p := existing[i]
 		key := buildProxyKey(p.Protocol, p.Host, p.Port, p.Username, p.Password)
 		proxyByKey[key] = p
+		for _, observe := range register {
+			observe(p)
+		}
 		proxyKeyToID[key] = p.ID
 		if p.Name != "" {
 			proxyNameToID[p.Name] = p.ID
@@ -220,6 +223,9 @@ func importDataProxies(ctx context.Context, svc dataProxyWriter, existing []serv
 		}
 		result.ProxyCreated++
 		proxyByKey[key] = *created
+		for _, observe := range register {
+			observe(*created)
+		}
 		proxyKeyToID[key] = created.ID
 		registerImportedProxyNames(proxyNameToID, item.Name, created.Name, created.ID)
 

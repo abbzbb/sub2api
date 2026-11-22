@@ -11,7 +11,9 @@ if grep -q 'requireCompletedOwners' "$tree/$contract"; then
 fi
 
 for target in \
+  backend/internal/service/openai_400_omit_history.go \
   backend/internal/service/openai_409_omit_history.go \
+  backend/internal/service/openai_lossy_history_restart.go \
   backend/internal/service/openai_tool_provenance.go \
   backend/internal/repository/gateway_cache_tool_provenance.go \
   backend/internal/service/openai_agent_message_delivery.go \
@@ -21,6 +23,7 @@ for target in \
   backend/internal/service/openai_agent_recovery_diagnostics.go \
   backend/internal/service/openai_agent_replay_metadata.go \
   backend/internal/service/openai_account_scheduler.go \
+  backend/internal/service/openai_gateway_request_body.go \
   backend/internal/service/openai_ws_agent_recovery.go \
   backend/internal/service/openai_ws_forwarder_ingress.go \
   backend/internal/service/openai_ws_http_bridge.go \
@@ -62,6 +65,15 @@ exclude_new_fixture() {
 # New service tests require new private proof/diagnostic types. Their own RED
 # uses handler tests; every candidate GREEN retains them and all negative cases.
 exclude_new_fixture backend/internal/service/openai_ws_owner_conflict_test.go
+# Issue892's later matrix also imports the OAuth dial seam and 400/842 test
+# helpers absent from these historical overlays. It is not a selected oracle
+# here; its own RED and every clean candidate GREEN retain both exact files.
+exclude_new_fixture backend/internal/handler/openai_issue892_timezone_test.go
+exclude_new_fixture backend/internal/service/openai_issue892_timezone_test.go
+# Issue914 uses the same newer HTTP/WS harness and replay entry points.
+# These tests are unrelated to the old selected defect and remain in GREEN.
+exclude_new_fixture backend/internal/handler/openai_issue914_legacy_test.go
+exclude_new_fixture backend/internal/service/openai_issue914_legacy_test.go
 # Very old Issue805 baselines intentionally exclude the later readable harness.
 # Only that dependency absence permits removing its new consumer as well.
 if ! test -f "$tree/backend/internal/handler/openai_409_ws_rebuild_test.go"; then

@@ -97,8 +97,8 @@ type AccountRepository interface {
 	ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error)
 	// ListModelAvailabilityCandidates returns accounts that are enabled by
 	// persistent configuration (active + schedulable) for model-support
-	// diagnosis. It deliberately does not filter transient runtime state such
-	// as rate-limit, overload, temporary-unschedulable, or expiry windows.
+	// diagnosis and scheduler snapshot membership. It deliberately does not
+	// filter rate-limit, overload, temporary-unschedulable, or expiry windows.
 	// When groupID is nil, includeGrouped controls whether the query scans all
 	// matching accounts or only accounts without a group binding.
 	ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, includeGrouped bool) ([]Account, error)
@@ -111,6 +111,9 @@ type AccountRepository interface {
 	ClearRateLimit(ctx context.Context, id int64) error
 	ClearAntigravityQuotaScopes(ctx context.Context, id int64) error
 	ClearModelRateLimits(ctx context.Context, id int64) error
+	// ClearModelRateLimit 只清除指定 scope 的模型级限流，用于单个模型窗口恢复后
+	// 定向解封，不影响其他模型与并发生效的限流。
+	ClearModelRateLimit(ctx context.Context, id int64, scope string) error
 	UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error
 	// UpdateSessionWindowEnd 仅更新 5h 窗口的结束时间，不动 start / status。
 	// 用于 active poll 拿到新 ResetsAt 后回写，避免覆盖请求路径上记录的 status。
@@ -152,6 +155,13 @@ type AccountDuplicateRepository interface {
 	// CreateWithAccountGroups atomically persists an account, its exact group priorities,
 	// and the scheduler outbox event for the new routing snapshot.
 	CreateWithAccountGroups(ctx context.Context, account *Account, groups []AccountGroup) error
+}
+
+// GatewayAccountTransactionRepository keeps the new gateway's settings, exact
+// memberships and outbox writes in one transaction. Legacy accounts retain
+// their existing write paths. The callback receives the repository's tx context.
+type GatewayAccountTransactionRepository interface {
+	WithinGatewayAccountTransaction(ctx context.Context, accountID int64, groupIDs []int64, run func(context.Context) error) error
 }
 
 // AccountBillingSettingsRepository applies an admin edit without overwriting a
@@ -270,6 +280,12 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 
 // Create 创建账号
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
+	if err := ValidateGatewayAccountIdentity(req.Platform, req.Type, req.Credentials); err != nil {
+		return nil, err
+	}
+	if err := validateGatewayAccountGroups(ctx, &Account{Platform: req.Platform, Type: req.Type}, s.groupRepo, req.GroupIDs); err != nil {
+		return nil, err
+	}
 	if err := ValidateModelMappingMode(req.Credentials); err != nil {
 		return nil, err
 	}
@@ -303,6 +319,18 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		account.AutoPauseOnExpired = true
 	}
 
+	if account.IsGateway() {
+		if creator, ok := s.accountRepo.(AccountDuplicateRepository); ok {
+			groups := make([]AccountGroup, 0, len(req.GroupIDs))
+			for i, id := range req.GroupIDs {
+				groups = append(groups, AccountGroup{GroupID: id, Priority: i + 1})
+			}
+			if err := creator.CreateWithAccountGroups(ctx, account, groups); err != nil {
+				return nil, err
+			}
+			return account, nil
+		}
+	}
 	if err := s.accountRepo.Create(ctx, account); err != nil {
 		return nil, fmt.Errorf("create account: %w", err)
 	}
@@ -369,12 +397,46 @@ func (s *AccountService) ListByGroup(ctx context.Context, groupID int64) ([]Acco
 // Update 更新账号
 func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccountRequest) (*Account, error) {
 	ctx = withAccountStatusPreservation(ctx, req.Status == nil)
+	var requestedExtra map[string]any
+	if req.Extra != nil {
+		requestedExtra = *req.Extra
+	}
+	ctx = withAccountExtraUpdateFields(ctx, requestedExtra)
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
 
 	// 更新字段
+	if account.IsGateway() || account.Platform == PlatformGateway {
+		credentials := account.Credentials
+		if req.Credentials != nil {
+			credentials = mergeGatewayCredentials(account.Credentials, *req.Credentials)
+			req.Credentials = &credentials
+		}
+		if err := ValidateGatewayAccountIdentity(account.Platform, account.Type, credentials); err != nil {
+			return nil, err
+		}
+		ids := account.GroupIDs
+		if req.GroupIDs != nil {
+			ids = *req.GroupIDs
+		}
+		if err := validateGatewayAccountGroups(ctx, account, s.groupRepo, ids); err != nil {
+			return nil, err
+		}
+		if !gatewayAccountTransactionActive(ctx) {
+			var updated *Account
+			err := withinGatewayAccountTransaction(ctx, s.accountRepo, id, ids, func(txctx context.Context) error {
+				var err error
+				updated, err = s.Update(txctx, id, req)
+				return err
+			})
+			if err != nil {
+				return nil, err
+			}
+			return updated, err
+		}
+	}
 	if req.Name != nil {
 		account.Name = *req.Name
 	}

@@ -50,6 +50,9 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 	account *Account,
 	body []byte,
 ) error {
+	if account.gatewayProtocolsPending() {
+		return ErrGatewayProtocolsPending
+	}
 	if account == nil {
 		writeOpenAIResponsesInputTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("responses input_tokens: missing account")
@@ -65,6 +68,12 @@ func (s *OpenAIGatewayService) ForwardResponsesInputTokens(
 		writeOpenAIResponsesInputTokensFallback(c, account, prepared, 0, "custom_relay")
 		return nil
 	}
+	proxyCtx, releaseProxy, proxyErr := s.beginOpenAIRequestProxy(ctx, c, account)
+	if proxyErr != nil {
+		return proxyErr
+	}
+	defer releaseProxy()
+	ctx = proxyCtx
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -258,6 +267,9 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	body []byte,
 	defaultMappedModel string,
 ) error {
+	if account.gatewayProtocolsPending() {
+		return ErrGatewayProtocolsPending
+	}
 	if account == nil {
 		writeAnthropicCountTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("count_tokens: missing account")
@@ -291,6 +303,12 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return err
 	}
+	proxyCtx, releaseProxy, proxyErr := s.beginOpenAIRequestProxy(ctx, c, account)
+	if proxyErr != nil {
+		return proxyErr
+	}
+	defer releaseProxy()
+	ctx = proxyCtx
 
 	upstreamBody, err := marshalOpenAIUpstreamJSON(prepared.Request)
 	if err != nil {

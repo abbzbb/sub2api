@@ -15,7 +15,6 @@ import warp from './warp'
 import proxyHealth from './proxyHealth'
 import safetyPromptAudit from './safetyPromptAudit'
 import plugins from './plugins'
-import harvestFlow from './harvestFlow'
 
 export default {
   ...moderationUsers,
@@ -35,5 +34,4 @@ export default {
   ...proxyHealth,
   ...safetyPromptAudit,
   ...plugins,
-  ...harvestFlow,
 }

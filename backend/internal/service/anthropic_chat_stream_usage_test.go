@@ -27,6 +27,9 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 				prompt, billableInput, totalInput, output, cached, created int
 			}{
 				{"cache", `,"usage":{"input_tokens":308,"cache_read_input_tokens":241,"cache_creation_input_tokens":17}`, `,"usage":{"output_tokens":49}`, "", true, 566, 308, 566, 49, 241, 17},
+				{"contradictory_cache_creation", `,"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_1h_input_tokens":200}}`, `,"usage":{"output_tokens":7,"cache_creation":{"ephemeral_1h_input_tokens":200}}`, `,"usage":{"output_tokens":7,"cache_creation":{"ephemeral_1h_input_tokens":200}}`, true, 110, 10, 110, 7, 0, 100},
+				{"zero_cache_creation", `,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_1h_input_tokens":200}}`, `,"usage":{"output_tokens":7,"cache_creation":{"ephemeral_1h_input_tokens":200}}`, "", true, 210, 10, 210, 7, 0, 200},
+				{"partial_cache_creation", `,"usage":{"input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20}}`, `,"usage":{"output_tokens":7,"cache_creation":{"ephemeral_1h_input_tokens":30}}`, `,"usage":{"output_tokens":7,"cache_creation":{"ephemeral_1h_input_tokens":30}}`, true, 60, 10, 60, 7, 0, 50},
 				{"deepseek_partial_cache", "", `,"usage":{"input_tokens":1200,"output_tokens":30,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":400}`, "", true, 1200, 400, 1200, 30, 800, 0},
 				{"openai_partial_cache", "", `,"usage":{"prompt_tokens":1200,"output_tokens":30,"prompt_tokens_details":{"cached_tokens":800}}`, "", true, 1200, 400, 1200, 30, 800, 0},
 				{"repeated_authoritative_cache_bucket", `,"usage":{"input_tokens":1200,"prompt_tokens":1200}`, `,"usage":{"output_tokens":30,"prompt_tokens":1200,"cache_read_input_tokens":800}`, `,"usage":{"output_tokens":30,"prompt_tokens":1200,"cache_read_input_tokens":800}`, true, 1200, 400, 1200, 30, 800, 0},
@@ -42,6 +45,7 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 				for _, terminal := range []string{"stop", "eof"} {
 					t.Run(adapter+"/"+options+"/"+tc.name+"/"+terminal, func(t *testing.T) {
 						sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"k3\",\"content\":[]%s}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}%s}\n\n", tc.start, tc.delta)
+						sse = strings.Replace(sse, "event: message_delta", "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"fixture\"}}\n\nevent: message_delta", 1)
 						if tc.repeatDelta != "" {
 							sse += fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}%s}\n\n", tc.repeatDelta)
 						}
@@ -61,6 +65,11 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 						if adapter == "native" {
 							svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							result, err := svc.forwardChatCompletionsViaNativeAnthropic(context.Background(), c, nativeAnthropicTestAccount(), body, "")
+							if terminal == "eof" || !tc.want {
+								require.Error(t, err)
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								return
+							}
 							require.NoError(t, err)
 							require.Equal(t, tc.totalInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)
@@ -70,6 +79,11 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 							svc := &GatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "sk-test"}}
 							result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, nil)
+							if terminal == "eof" || !tc.want {
+								require.Error(t, err)
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								return
+							}
 							require.NoError(t, err)
 							require.Equal(t, tc.billableInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)

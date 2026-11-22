@@ -83,6 +83,13 @@ type Account struct {
 	// ProxyGroupExhausted 是运行时标记（不落库）：账号绑定了 proxy_group_id，
 	// 但组内无健康成员/组不可用。调度必须 fail-closed，禁止静默直连。
 	ProxyGroupExhausted bool
+	// Request-local transport binding only; never persisted or exported. Final
+	// admission compares the neutral gateway identity before rebuilding a view.
+	gatewayProtocolSource  *Account
+	gatewayProtocolModel   string
+	gatewayBindingModel    string
+	gatewayMessagesView    *Account
+	gatewaySelectionTarget string
 
 	// model_mapping 热路径缓存（非持久化字段）
 	modelMappingCache               map[string]string
@@ -323,6 +330,11 @@ func accountLoadPreferenceRate(account *Account, loadRate int) int {
 }
 
 func (a *Account) IsSchedulable() bool {
+	// Fail closed until the four gateway protocols and their final admission
+	// checks are implemented together. Manual switches cannot bypass this gate.
+	if a.IsGateway() || a.Platform == PlatformGateway {
+		return false
+	}
 	if !a.IsActive() || !a.Schedulable || a.PerformancePaused {
 		return false
 	}
@@ -954,6 +966,11 @@ func (a *Account) PrepareSharedSnapshot() {
 	a.modelMappingCacheShared = true
 }
 
+// SharedSnapshotCurrent 报告账号是否为 PrepareSharedSnapshot 处理过的母本，且其预解析结果对应当前的运行时模型映射版本。
+func (a *Account) SharedSnapshotCurrent() bool {
+	return a != nil && a.modelMappingCacheShared && a.modelMappingCacheRuntimeVersion == xai.RuntimeModelMappingVersion()
+}
+
 func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]string {
 	if a.Credentials == nil {
 		// Antigravity 平台使用默认映射
@@ -1337,8 +1354,8 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）。
 //
-// 例外：OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
-// 家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
+// 例外：OpenAI OAuth 账号（Codex 上游）的空映射与透传模式都会排除明确属于
+// 其他厂商家族的模型（claude-*/deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
 // 会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
 // 请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
 // 未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
@@ -1387,7 +1404,19 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
 	// model_mapping 白名单错误排除出候选集，导致 no available accounts / 404（issue #4936）。
 	if a.IsOpenAIPassthroughEnabled() {
-		return true
+		// OAuth 与 Setup Token 透传的出口恒为 chatgpt.com/backend-api/codex（见
+		// buildUpstreamRequestOpenAIPassthrough），异族厂商模型在那里必然是不可重试的 400，
+		// 因此透传也要在调度阶段跳过它们；API Key 透传的上游由 base_url 决定，不受此限。
+		if a.IsOpenAIOAuthLike() && !isOpenAIOAuthServableModel(requestedModel) {
+			return false
+		}
+		if !a.IsOpenAIPassthroughModelFilterEnabled() {
+			return true
+		}
+		// Explicit opt-in filters candidates by source keys only. Forward still
+		// ignores mapping targets and preserves the passthrough request body.
+		mapping := a.GetModelMapping()
+		return len(mapping) == 0 || mappingSupportsRequestedModel(mapping, strings.TrimSpace(requestedModel))
 	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
@@ -2360,13 +2389,17 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if a == nil {
 		return false
 	}
+	if capability == OpenAIEndpointCapabilityVideos && a.Platform == PlatformQwen {
+		mode := a.GetCredential("qwen_video_protocol")
+		return a.Type == AccountTypeAPIKey && (mode == "dashscope" || mode == "openai" || mode == "fixed_duration") && a.GetCredential("base_url") != ""
+	}
 	if capability == OpenAIEndpointCapabilityMiniMaxH3 {
 		return a.Platform == PlatformMiniMax && a.Type == AccountTypeAPIKey && !a.IsCodingPlan() &&
 			strings.TrimSpace(a.GetCredential("base_url")) != ""
 	}
-	if capability == OpenAIEndpointCapabilitySeedance {
+	if capability == OpenAIEndpointCapabilitySeedance || capability == OpenAIEndpointCapabilityVideos {
 		configured, _ := a.openAIEndpointCapabilitySet()
-		return configured["seedance"] && a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey &&
+		return configured[string(capability)] && a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey &&
 			strings.TrimSpace(a.GetCredential("base_url")) != ""
 	}
 	if capability == "" {
@@ -2868,6 +2901,13 @@ func (a *Account) IsCopilotSDKEnabled() bool {
 	return enabled
 }
 
+// IsOpenAIPassthroughModelFilterEnabled reports the explicit opt-in to model
+// filtering during passthrough account selection. Missing or invalid values
+// preserve the default behavior of ignoring leftover model_mapping entries.
+func (a *Account) IsOpenAIPassthroughModelFilterEnabled() bool {
+	return a.IsOpenAIPassthroughEnabled() && a.Extra["openai_passthrough_model_filter"] == true
+}
+
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
 //
 // 分类型新字段：
@@ -3090,6 +3130,20 @@ func (a *Account) IsAnthropicAPIKeyPassthroughEnabled() bool {
 	return ok && enabled
 }
 
+const cacheTTLBillingFromRequestExtraKey = "cache_ttl_billing_from_request"
+
+// IsCacheTTLBillingFromRequestEnabled 返回 Anthropic API Key 账号是否按客户端请求的缓存 TTL 计费。
+// 字段：accounts.extra.cache_ttl_billing_from_request。
+// 用于二级中转：上游强制改写缓存 TTL 并按其它档位结算时，缓存写入改按客户端请求里的
+// cache_control.ttl 归类；客户端未显式请求 1h 时一律按 5m 计费。
+func (a *Account) IsCacheTTLBillingFromRequestEnabled() bool {
+	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeAPIKey || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[cacheTTLBillingFromRequestExtraKey].(bool)
+	return ok && enabled
+}
+
 const anthropicStripClaudeCodeIdentityExtraKey = "anthropic_strip_claude_code_identity"
 
 // IsAnthropicStripClaudeCodeIdentityEnabled 返回 Anthropic API Key 账号是否启用
@@ -3143,10 +3197,8 @@ const (
 // 三态：default（跟随渠道）/ enabled（强制开启）/ disabled（强制关闭）。
 // 兼容旧 bool 值：true→enabled, false→default（并记录 debug 日志）。
 func (a *Account) GetWebSearchEmulationMode() string {
-	// OpenAI API Key accounts reach this via /v1/messages; their upstreams
-	// (DeepSeek etc. over Chat Completions) have no web_search tool.
 	if a == nil || a.Type != AccountTypeAPIKey || a.Extra == nil ||
-		(a.Platform != PlatformAnthropic && a.Platform != PlatformOpenAI) {
+		!webSearchEmulationPlatformEnabled(a.Platform) {
 		return WebSearchModeDefault
 	}
 	raw := a.Extra[featureKeyWebSearchEmulation]
@@ -3168,6 +3220,17 @@ func (a *Account) GetWebSearchEmulationMode() string {
 	default:
 		return WebSearchModeDefault
 	}
+}
+
+// webSearchEmulationPlatformEnabled reports whether API key accounts of the
+// platform can set the account-level web search emulation mode. Keep it in sync
+// with WEB_SEARCH_EMULATION_PLATFORMS in frontend/src/views/admin/ChannelsView.vue.
+func webSearchEmulationPlatformEnabled(platform string) bool {
+	switch platform {
+	case PlatformAnthropic, PlatformOpenAI, PlatformZhipu, PlatformCommandCode, PlatformOpenCodeGo, PlatformMiniMax:
+		return true
+	}
+	return false
 }
 
 // IsCodexCLIOnlyEnabled 返回 OpenAI OAuth 账号是否启用"仅允许 Codex 官方客户端"。

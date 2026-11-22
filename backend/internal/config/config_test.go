@@ -117,6 +117,57 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+func TestLoadUpstreamRequestCompression(t *testing.T) {
+	for _, tc := range []struct {
+		name, rules, wantError string
+	}{
+		{name: "disabled by default", rules: "[]"},
+		{name: "exact origins", rules: `[{origin: "https://zstd.example.com", encoding: zstd}, {origin: "http://gzip.example.com:8080", encoding: gzip}]`},
+		{name: "unsupported coding", rules: `[{origin: "https://example.com", encoding: ws}]`, wantError: "encodings must be zstd, gzip, or off"},
+		{name: "not an origin", rules: `[{origin: "https://example.com/v1", encoding: zstd}]`, wantError: "must be exact HTTP origins"},
+		{name: "duplicate origin", rules: `[{origin: "https://example.com", encoding: gzip}, {origin: "https://Example.com", encoding: zstd}]`, wantError: "duplicate origin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			file := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(file, []byte("gateway:\n  upstream_request_compression: "+tc.rules+"\n"), 0o600))
+			t.Setenv("CONFIG_FILE", file)
+			cfg, err := Load()
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+			if tc.name == "exact origins" {
+				require.Equal(t, []UpstreamRequestCompressionRule{
+					{Origin: "https://zstd.example.com", Encoding: "zstd"},
+					{Origin: "http://gzip.example.com:8080", Encoding: "gzip"},
+				}, cfg.Gateway.UpstreamRequestCompression)
+			} else {
+				require.Empty(t, cfg.Gateway.UpstreamRequestCompression)
+			}
+		})
+	}
+}
+
+func TestLoadOpenAICodexRequestCompression(t *testing.T) {
+	for _, tc := range []struct{ env, want string }{
+		{"", "zstd"}, {"gzip", "gzip"}, {"off", "off"}, {"ws", ""},
+	} {
+		t.Run("mode="+tc.env, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("GATEWAY_OPENAI_CODEX_REQUEST_COMPRESSION", tc.env)
+			cfg, err := Load()
+			if tc.want == "" {
+				require.ErrorContains(t, err, "gateway.openai_codex_request_compression must be zstd, gzip, or off")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Gateway.OpenAICodexRequestCompression)
+		})
+	}
+}
+
 func TestLoadDefaultMinOutputTokens(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -1619,18 +1670,20 @@ func TestValidateOpsCleanupScheduleRequired(t *testing.T) {
 
 func TestValidateConcurrencyPingInterval(t *testing.T) {
 	resetViperWithJWTSecret(t)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-	cfg.Concurrency.PingInterval = 3
-	err = cfg.Validate()
-	if err == nil {
-		t.Fatalf("Validate() expected error for concurrency.ping_interval")
-	}
-	if !strings.Contains(err.Error(), "concurrency.ping_interval") {
-		t.Fatalf("Validate() expected concurrency.ping_interval error, got: %v", err)
+	for _, interval := range []int{-1, 0, 1, 3, 4, 5, 10, 30, 31} {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		cfg.Concurrency.PingInterval = interval
+		err = cfg.Validate()
+		valid := interval == 0 || (interval >= 5 && interval <= 30)
+		if valid && err != nil {
+			t.Errorf("Validate() interval %d: %v", interval, err)
+		}
+		if !valid && (err == nil || !strings.Contains(err.Error(), "concurrency.ping_interval")) {
+			t.Errorf("Validate() interval %d: expected concurrency.ping_interval error, got %v", interval, err)
+		}
 	}
 }
 

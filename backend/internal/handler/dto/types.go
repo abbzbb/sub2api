@@ -182,7 +182,8 @@ type Group struct {
 type AdminGroup struct {
 	Group
 	// ForceOpenAIFast 是管理端请求策略，用户侧分组 DTO 无需暴露。
-	ForceOpenAIFast bool `json:"force_openai_fast"`
+	ForceOpenAIUltrafast bool `json:"force_openai_ultrafast"`
+	ForceOpenAIFast      bool `json:"force_openai_fast"`
 	// FreeOpenAIFast/FreeOpenAIUltrafast 是独立的管理端计费策略，用户侧分组 DTO 无需暴露。
 	FreeOpenAIFast      bool `json:"free_openai_fast"`
 	FreeOpenAIUltrafast bool `json:"free_openai_ultrafast"`
@@ -796,6 +797,8 @@ type AdminUsageLog struct {
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`
 	// AccountStatsCost 自定义定价规则计算的账号统计费用（nil 表示使用默认公式）
 	AccountStatsCost *float64 `json:"account_stats_cost,omitempty"`
+	// ProcurementCostSnapshot follows existing admin/authorized observer cost scope.
+	ProcurementCostSnapshot *service.ProcurementCostSnapshot `json:"procurement_cost_snapshot,omitempty"`
 
 	// IPAddress 用户请求 IP
 	IPAddress *string `json:"ip_address,omitempty"`

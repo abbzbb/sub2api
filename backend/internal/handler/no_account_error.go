@@ -72,6 +72,8 @@ func openAICodexTicketUnavailableClassification() noAccountErrorClassification {
 	}
 }
 
+var selectionImagePoolPattern = regexp.MustCompile(`\bpool=(\d+), filtered:.*\bimage_model_(not_supported|not_authorized|rate_limited)=(\d+)(?:\s|\)|$)`)
+
 // classifySelectionFailureError preserves the scheduler's compact reason when
 // every model-capable account is temporarily rate limited or ticket-gated.
 func classifySelectionFailureError(err error, fallback noAccountErrorClassification) noAccountErrorClassification {
@@ -114,6 +116,22 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 	}
 	if isOpenAICodexTicketSelectionFailure(err) {
 		return openAICodexTicketUnavailableClassification()
+	}
+	// Native image tools require a second capability beyond the outer text
+	// model. A text-only availability query must not hide that exclusion, or
+	// mark the text model as absent. Only classify a unanimous pool verdict.
+	if match := selectionImagePoolPattern.FindStringSubmatch(err.Error()); len(match) == 4 {
+		pool, poolErr := strconv.Atoi(match[1])
+		blocked, blockedErr := strconv.Atoi(match[3])
+		if poolErr == nil && blockedErr == nil && pool > 0 && pool == blocked {
+			fallback.Code = "image_capability_unavailable"
+			fallback.Message = "No eligible account can serve the requested image-generation tool. For a text-only turn, remove the image tool declaration; otherwise use a group with image-capable accounts."
+			if match[2] == "rate_limited" {
+				fallback.Code = "image_capacity_exhausted"
+				fallback.Message = "All eligible accounts are temporarily rate-limited for the requested image-generation tool. Please retry after image capacity recovers."
+			}
+			return fallback
+		}
 	}
 	match := selectionModelRateLimitedPattern.FindStringSubmatch(strings.ToLower(err.Error()))
 	if len(match) != 2 {

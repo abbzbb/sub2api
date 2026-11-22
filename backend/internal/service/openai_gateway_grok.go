@@ -165,7 +165,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-		upstreamMsg := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))
+		upstreamMsg := sanitizeUpstreamErrorMessage(grokUpstreamErrorMessage(respBody))
 		if upstreamMsg == "" {
 			upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 		}
@@ -1427,7 +1427,7 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
-		upstreamMsg := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))
+		upstreamMsg := sanitizeUpstreamErrorMessage(grokUpstreamErrorMessage(respBody))
 		if upstreamMsg == "" {
 			upstreamMsg = fmt.Sprintf("xAI image bridge upstream returned status %d", resp.StatusCode)
 		}
@@ -1598,7 +1598,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(withOAuth429WireBody(ctx, body), http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -2079,7 +2079,7 @@ func grokRateLimitResetAtForAccount(account *Account, snapshot *xai.QuotaSnapsho
 	if previousResetAt.After(now) || now.Sub(previousResetAt) > grokRateLimitBackoffQuietPeriod {
 		return resetAt, true
 	}
-	previousCooldown := previousResetAt.Sub(*account.RateLimitedAt)
+	previousCooldown := grokHistoricalCooldown(account)
 	if previousCooldown <= 0 {
 		return resetAt, true
 	}
@@ -2576,7 +2576,7 @@ func (s *OpenAIGatewayService) persistGrokModelCooldown(
 		resetAt = now.Add(grokRateLimitFallbackCooldown)
 	}
 	reason := fmt.Sprintf("grok upstream status %d scoped to model", statusCode)
-	if message := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(responseBody))); message != "" {
+	if message := sanitizeUpstreamErrorMessage(strings.TrimSpace(grokUpstreamErrorMessage(responseBody))); message != "" {
 		reason += ": " + message
 	}
 	stateCtx, cancel := openAIAccountStateContext(ctx)
@@ -2691,7 +2691,7 @@ func markGrokAccountErrorState(
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
-	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(grokUpstreamErrorMessage(responseBody)))
 	reason := fmt.Sprintf("grok upstream returned status %d", statusCode)
 	if message != "" {
 		reason += ": " + message

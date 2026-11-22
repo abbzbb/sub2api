@@ -140,6 +140,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 user-traffic-pending/
 docs/*
+!docs/account-platform-edit.md
 !docs/openai-totp-factor-recovery.md
 !docs/ai-ops-codex.md
 !docs/reauth-identity-validation.md
@@ -255,3 +256,5 @@ tools/local-worker/
 
 !docs/free-ultrafast-billing.md
 !/.github/scripts/free-ultrafast-browser.mjs
+
+!docs/smart-ops-retirement.md

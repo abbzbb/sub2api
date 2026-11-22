@@ -59,6 +59,12 @@
                 />
                 <NewFeatureBadge
                   v-if="tab.key === 'gateway'"
+                  :notice-id="NEW_FEATURE_NOTICES.exaSearch"
+                  :user-id="authStore.user?.id"
+                  class="settings-tab-badge"
+                />
+                <NewFeatureBadge
+                  v-if="tab.key === 'gateway'"
                   :notice-id="NEW_FEATURE_NOTICES.serverlessIPRouting"
                   :user-id="authStore.user?.id"
                   class="settings-tab-badge"
@@ -4652,9 +4658,8 @@
             <div class="p-6 space-y-4">
                 <RequestTimezoneSettings v-model="form.openai_request_timezone_enabled" v-model:auto="form.openai_request_timezone_auto" />
                 <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600" data-testid="codex-management-links">
-                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ localText('自动打票、模型与票据策略在「打票全流程」管理；采票出口、订阅与节点在「IP 管理」管理。', 'Manage automatic harvesting, models and ticket policies in Harvest Flow; manage exits, subscriptions and nodes in IP Management.') }}</p>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ localText('采票出口、订阅与节点在「IP 管理」管理。', 'Manage exits, subscriptions and nodes in IP Management.') }}</p>
                   <div class="mt-3 flex flex-wrap gap-2">
-                    <router-link to="/admin/harvest-flow" class="btn btn-secondary btn-sm">{{ t('nav.harvestFlow') }}</router-link>
                     <router-link to="/admin/proxies#harvest" class="btn btn-secondary btn-sm">{{ localText('IP 管理', 'IP Management') }}</router-link>
                   </div>
                 </div>
@@ -6126,6 +6131,7 @@
                   {{ t("admin.settings.webSearchEmulation.title") }}
                 </h2>
                 <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.deepSeekSearch" :user-id="authStore.user?.id" />
+                <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.exaSearch" :user-id="authStore.user?.id" />
               </div>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 {{ t("admin.settings.webSearchEmulation.description") }}
@@ -6202,6 +6208,7 @@
                           { value: 'brave', label: 'Brave Search' },
                           { value: 'tavily', label: 'Tavily' },
                           { value: 'deepseek', label: 'DeepSeek' },
+                          { value: 'exa', label: 'Exa' },
                         ]"
                         class="w-36"
                         @click.stop
@@ -6209,6 +6216,12 @@
                       <NewFeatureBadge
                         v-if="provider.type === 'deepseek'"
                         :notice-id="NEW_FEATURE_NOTICES.deepSeekSearch"
+                        :user-id="authStore.user?.id"
+                        @click.stop
+                      />
+                      <NewFeatureBadge
+                        v-if="provider.type === 'exa'"
+                        :notice-id="NEW_FEATURE_NOTICES.exaSearch"
                         :user-id="authStore.user?.id"
                         @click.stop
                       />
@@ -7847,6 +7860,17 @@
                 </p>
               </div>
               <Toggle v-model="form.model_plaza_require_auth" />
+            </div>
+
+            <ModelPlazaCurrencySettings v-if="form.model_plaza_enabled" v-model="form.model_plaza_currency" />
+            <div v-if="form.model_plaza_enabled">
+              <label for="plaza-exchange-rate" class="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.features.modelPlaza.displayExchangeRate') }}
+                <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.modelPlazaCurrency" :user-id="authStore.user?.id" />
+              </label>
+              <p id="plaza-exchange-rate-help" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.modelPlaza.displayExchangeRateHint') }}</p>
+              <input id="plaza-exchange-rate" v-model.number="form.model_plaza_usd_to_cny_rate" type="number" min="0.000001" step="any" required
+                aria-describedby="plaza-exchange-rate-help" class="input mt-2 max-w-xs" />
             </div>
 
             <div v-if="form.model_plaza_enabled">
@@ -9606,6 +9630,8 @@
 </template>
 
 <script setup lang="ts">
+import ModelPlazaCurrencySettings from '@/components/settings/ModelPlazaCurrencySettings.vue'
+import { defaultPlazaCurrencySettings } from '@/utils/plazaCurrency'
 import EncryptedHistory409Settings from "@/components/settings/EncryptedHistory409Settings.vue";
 import EncryptedHistory400Settings from "@/components/settings/EncryptedHistory400Settings.vue";
 import { excelBPSImageLimits } from "@/utils/excelBPSImageLimits";
@@ -10775,6 +10801,8 @@ const form = reactive<SettingsForm>({
   model_plaza_enabled: false,
   model_plaza_require_auth: false,
   model_plaza_description: '',
+  model_plaza_usd_to_cny_rate: 7,
+  model_plaza_currency: defaultPlazaCurrencySettings(),
   // Plugin management menu visibility; plugin runtime is unaffected.
   plugin_management_enabled: false,
   // Support tickets (网站工单) switch + form config
@@ -12607,6 +12635,8 @@ async function saveSettings() {
       model_plaza_enabled: form.model_plaza_enabled,
       model_plaza_require_auth: form.model_plaza_require_auth,
       model_plaza_description: form.model_plaza_description,
+      model_plaza_usd_to_cny_rate: form.model_plaza_usd_to_cny_rate,
+      model_plaza_currency: form.model_plaza_currency,
       plugin_management_enabled: form.plugin_management_enabled,
       // Support tickets: blank category rows are dropped; the server trims and deduplicates.
       support_ticket_enabled: form.support_ticket_enabled,

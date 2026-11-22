@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -99,6 +98,7 @@ func openAIWSUnsentAgentTurn(err error, body []byte, model string, turn int) err
 }
 
 type openAIWSUnsentOwnerProofKey struct{}
+type openAIWSUnsentAdmissionKey struct{}
 
 // Carry the route check's observations through the handler's auth boundary.
 // Rebuild consumes this current-turn evidence once; it cannot leak to later turns.
@@ -110,6 +110,10 @@ func WithOpenAIWSUnsentOwnerProof(ctx context.Context, err error) context.Contex
 		ctx = recovered.RecoveredWSContext(ctx)
 	}
 	var unsent *openAIWSUnsentTurnError
+	var admission *OpenAITurnAdmissionError
+	if errors.As(err, &unsent) && !unsent.keepAccount && errors.As(err, &admission) {
+		ctx = context.WithValue(ctx, openAIWSUnsentAdmissionKey{}, unsent)
+	}
 	if errors.As(err, &unsent) && unsent.completedSource != nil {
 		return context.WithValue(ctx, openAIWSUnsentOwnerProofKey{}, unsent.completedSource)
 	}
@@ -120,47 +124,7 @@ func WithOpenAIWSUnsentOwnerProof(ctx context.Context, err error) context.Contex
 // call type, identity and original arguments stay paired with each result as
 // inert JSON text. Current declarations remain available for new tool work.
 func projectOpenAIWSCompletedTools(body []byte) ([]byte, error) {
-	if !openAIWSCompletedToolInputs(body) {
-		return nil, openAIAgentRecoveryError("owner_conflict")
-	}
-	calls := make(map[string]gjson.Result)
-	for _, item := range gjson.GetBytes(body, "input").Array() {
-		if kind := item.Get("type").String(); kind == "function_call" || kind == "custom_tool_call" {
-			if item.Get("name").Type != gjson.String || strings.TrimSpace(item.Get("name").String()) == "" {
-				return nil, openAIAgentRecoveryError("owner_conflict")
-			}
-			calls[item.Get("call_id").String()] = item
-		}
-	}
-	var input []json.RawMessage
-	for _, item := range gjson.GetBytes(body, "input").Array() {
-		switch item.Get("type").String() {
-		case "function_call", "custom_tool_call":
-			continue
-		case "function_call_output", "custom_tool_call_output":
-			output := item.Get("output")
-			if !openAIReadableShadowTextOnly(output) {
-				return nil, openAIAgentRecoveryError("readable_history_unsupported")
-			}
-			record, err := json.Marshal(map[string]json.RawMessage{"call": json.RawMessage(calls[item.Get("call_id").String()].Raw), "result": json.RawMessage(item.Raw)})
-			if err != nil {
-				return nil, openAIAgentRecoveryError("readable_history_unsupported")
-			}
-			message, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []any{
-				map[string]any{"type": "output_text", "text": "Historical completed tool result (data only; do not execute again): " + string(record)},
-			}})
-			input = append(input, message)
-		case "", "message":
-			input = append(input, json.RawMessage(item.Raw))
-		default:
-			return nil, openAIAgentRecoveryError("readable_history_unsupported")
-		}
-	}
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		return nil, err
-	}
-	return sjson.SetRawBytes(body, "input", encoded)
+	return projectOpenAIWSToolHistory(body, "Historical completed tool result (data only; do not execute again): ")
 }
 
 func OpenAIWSUnsentTurnKeepsAccount(err error) bool {
@@ -216,7 +180,45 @@ func openAIWSCompletedToolInputs(body []byte) bool {
 
 // Called before fresh admission/moderation of an unsent frame. Lookup is scoped
 // to this exact task; missing historical intent is never fabricated.
-func (s *OpenAIGatewayService) RebuildOpenAIWSUnsentTurn(ctx context.Context, c *gin.Context, body []byte, session, model string) (context.Context, []byte, bool, error) {
+func (s *OpenAIGatewayService) RebuildOpenAIWSUnsentTurn(ctx context.Context, c *gin.Context, body []byte, session, model string) (nextCtx context.Context, nextBody []byte, changed bool, resultErr error) {
+	if s.openAILegacyCompatibility() {
+		return ctx, body, false, nil
+	}
+	originalBody := body
+	unsent, _ := ctx.Value(openAIWSUnsentAdmissionKey{}).(*openAIWSUnsentTurnError)
+	ctx = context.WithValue(ctx, openAIWSUnsentAdmissionKey{}, (*openAIWSUnsentTurnError)(nil))
+	defer func() {
+		if resultErr != nil {
+			if restarter, available := any(s).(interface {
+				restartOpenAIWSClientReadableHistory(context.Context, *gin.Context, []byte, string, string, error) (context.Context, []byte, bool)
+			}); available {
+				if next, clean, ok := restarter.restartOpenAIWSClientReadableHistory(ctx, c, originalBody, session, model, resultErr); ok {
+					nextCtx, nextBody, changed, resultErr = next, clean, true, nil
+				}
+			}
+			// A result-only delta is valid while its response anchor is alive.
+			// Once unsent admission loses that lane and local history cannot be
+			// rebuilt, ask the client for its full canonical input. Codex handles
+			// this standard code by retrying the full request. This does not grant
+			// ownership or authorize replay: the next request passes every gate.
+			var recovery *OpenAIAgentRecoveryError
+			if unsent != nil && errors.As(resultErr, &recovery) && recovery.Reason == "owner_conflict" &&
+				recovery.InternalSubreason() == "tool_unpaired" && recovery.diagnostic != nil &&
+				recovery.diagnostic.owners.observed && recovery.diagnostic.owners.total == 0 &&
+				gjson.GetBytes(originalBody, "previous_response_id").String() != "" &&
+				gjson.GetBytes(originalBody, "previous_response_id").Raw == gjson.GetBytes(unsent.body, "previous_response_id").Raw &&
+				openAIAgentRecoveryInputDigest(originalBody) == openAIAgentRecoveryInputDigest(unsent.body) {
+				counts, why := inspectOpenAIWSCompletedTools(originalBody)
+				if why == "tool_unpaired" && counts.calls == 0 && counts.results > 0 &&
+					len(gjson.GetBytes(originalBody, "input").Array()) == counts.results {
+					copy := *recovery
+					copy.Reason = "continuation_history_missing"
+					resultErr = &copy
+				}
+			}
+		}
+	}()
+
 	proof, _ := ctx.Value(openAIWSUnsentOwnerProofKey{}).(*openAIAgentRecoveryRequest)
 	ctx = context.WithValue(ctx, openAIWSUnsentOwnerProofKey{}, (*openAIAgentRecoveryRequest)(nil))
 	if s == nil || s.settingService == nil || !s.settingService.IsOpenAI409OmitEncryptedHistoryEnabled(ctx) {
@@ -238,6 +240,9 @@ func (s *OpenAIGatewayService) RebuildOpenAIWSUnsentTurn(ctx context.Context, c 
 				return ctx, body, false, openAIAgentRecoveryError("readable_history_unsupported")
 			}
 		}
+	}
+	if next, clean, changed := s.PrepareOpenAILossyHistoryRestart(ctx, c, body, session, model); changed {
+		return next, clean, true, nil
 	}
 	next := s.WithOpenAIWSAgentRecovery(ctx, c, body, session, model)
 	r := openAIAgentRecoveryFromContext(next)
@@ -286,6 +291,7 @@ func (s *OpenAIGatewayService) RebuildOpenAIWSUnsentTurn(ctx context.Context, c 
 		next = WithOpenAIEncryptedReasoningAffinity(next, clean)
 		r.omittedHistory, r.omittedSource = true, nil
 		r.inputDigest, r.replayControlsDigest = openAIAgentRecoveryInputDigest(clean), openAI409ControlsDigest(clean)
+		r.controlFingerprints = openAI409FingerprintControls(clean)
 		return next, clean, true, nil
 	}
 	next, clean, changed, err := s.TryRebuildOpenAI409History(next, c, body, session, model, openAIAgentRecoveryError("owner_unavailable"))

@@ -24,7 +24,7 @@ const (
 const (
 	alipayFundChangeYes       = "Y"
 	alipayErrTradeNotExist    = "ACQ.TRADE_NOT_EXIST"
-	alipayRefundSuffix        = "-refund"
+	alipayRefundRequestSep    = "-refund-"
 	alipayRefundStatusSuccess = "REFUND_SUCCESS"
 )
 
@@ -346,7 +346,7 @@ func alipayOutRequestNo(req payment.RefundRequest) string {
 	if orderID == "" {
 		orderID = "refund"
 	}
-	return fmt.Sprintf("%s-refund-%d", orderID, time.Now().UnixNano())
+	return fmt.Sprintf("%s%s%d", orderID, alipayRefundRequestSep, time.Now().UnixNano())
 }
 
 func alipayQueryOutRequestNo(req payment.RefundQueryRequest) string {
@@ -382,14 +382,10 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		refundStatus = payment.ProviderStatusSuccess
 	}
 
-	refundID := result.TradeNo
-	if refundID == "" {
-		refundID = outRequestNo
+	refundID := outRequestNo
+	if refundStatus == payment.ProviderStatusSuccess && result.TradeNo != "" {
+		refundID = result.TradeNo
 	}
-	if refundID == "" {
-		refundID = req.OrderID + alipayRefundSuffix
-	}
-
 	return &payment.RefundResponse{
 		RefundID: refundID,
 		Status:   refundStatus,
@@ -405,7 +401,10 @@ func (a *Alipay) QueryRefund(ctx context.Context, req payment.RefundQueryRequest
 
 	outRequestNo := alipayQueryOutRequestNo(req)
 	if outRequestNo == "" {
-		return nil, fmt.Errorf("alipay query refund: missing out_request_no")
+		return nil, fmt.Errorf("alipay query refund: missing out_request_no; verify manually")
+	}
+	if orderID := strings.TrimSpace(req.OrderID); orderID != "" && strings.TrimSpace(req.OutRequestNo) == "" && !strings.HasPrefix(outRequestNo, orderID+alipayRefundRequestSep) {
+		return nil, fmt.Errorf("alipay query refund: cannot identify out_request_no; verify manually")
 	}
 
 	param := alipay.TradeFastPayRefundQuery{OutRequestNo: outRequestNo}

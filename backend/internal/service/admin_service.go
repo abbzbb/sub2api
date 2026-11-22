@@ -321,6 +321,7 @@ type CreateGroupInput struct {
 	AllowMessagesDispatch       bool
 	AllowLive                   bool
 	ForceOpenAIFast             bool
+	ForceOpenAIUltrafast        bool
 	FreeOpenAIFast              bool
 	FreeOpenAIUltrafast         bool
 	DefaultMappedModel          string
@@ -408,6 +409,7 @@ type UpdateGroupInput struct {
 	AllowMessagesDispatch       *bool
 	AllowLive                   *bool
 	ForceOpenAIFast             *bool
+	ForceOpenAIUltrafast        *bool
 	FreeOpenAIFast              *bool
 	FreeOpenAIUltrafast         *bool
 	DefaultMappedModel          *string
@@ -474,6 +476,7 @@ type ShadowOptions struct {
 
 type UpdateAccountInput struct {
 	ProxyMode           string // 受限写入在验权后选择代理。
+	Platform            string // Empty preserves the existing platform.
 	Name                string
 	Notes               *string
 	Type                string // Account type: oauth, setup-token, apikey
@@ -792,6 +795,8 @@ type adminServiceImpl struct {
 	proxyHealth ProxyHealthCache
 	// proxyGroupRepo optional; used to return 404 for unknown proxy_group_id instead of FK 500.
 	proxyGroupRepo ProxyGroupRepository
+
+	userPlatformQuotaRepo UserPlatformQuotaRepository
 	// 分组平台变更后用来失效渠道缓存；可为 nil（缓存会在 TTL 到期后自然重建）
 	channelCacheInvalidator ChannelCacheInvalidator
 }
@@ -835,7 +840,12 @@ func NewAdminService(
 	compositeRouteRepo CompositeModelRouteRepository,
 	compositeResolver *CompositeRouteResolver,
 	channelCacheInvalidator ChannelCacheInvalidator,
+	quotaRepos ...UserPlatformQuotaRepository,
 ) AdminService {
+	var userPlatformQuotaRepo UserPlatformQuotaRepository
+	if len(quotaRepos) > 0 {
+		userPlatformQuotaRepo = quotaRepos[0]
+	}
 	return &adminServiceImpl{
 		cfg:                  cfg,
 		userRepo:             userRepo,
@@ -865,6 +875,7 @@ func NewAdminService(
 		compositeResolver:    compositeResolver,
 
 		channelCacheInvalidator: channelCacheInvalidator,
+		userPlatformQuotaRepo:   userPlatformQuotaRepo,
 	}
 }
 
@@ -900,6 +911,7 @@ func ProvideAdminService(
 	proxyGroupRepo ProxyGroupRepository,
 	channelCacheInvalidator ChannelCacheInvalidator,
 	lottery *LotteryService,
+	quotas UserPlatformQuotaRepository,
 ) AdminService {
 	svc := NewAdminService(
 		cfg, userRepo, groupRepo, accountRepo, proxyRepo, apiKeyRepo, redeemCodeRepo,
@@ -907,7 +919,7 @@ func ProvideAdminService(
 		proxyLatencyCache, authCacheInvalidator, entClient, settingService,
 		defaultSubAssigner, userSubRepo, privacyClientFactory, runtimeBlocker,
 		affiliateService, compositeRouteRepo, compositeResolver,
-		channelCacheInvalidator,
+		channelCacheInvalidator, quotas,
 	)
 	if impl, ok := svc.(*adminServiceImpl); ok && impl != nil {
 		impl.proxyGroupResolver = proxyGroupResolver

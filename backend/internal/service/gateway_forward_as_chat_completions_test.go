@@ -37,6 +37,9 @@ func TestHandleCCBufferedFromAnthropic_ToolArgumentsAreValidJSON(t *testing.T) {
 		`event: message_delta`,
 		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`,
 		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
 	}, "\n")))}
 
 	_, err := (&GatewayService{}).handleCCBufferedFromAnthropic(resp, c, "gpt-5", "claude-sonnet-4.5", nil, time.Now())
@@ -114,13 +117,16 @@ func TestHandleCCBufferedFromAnthropic_PreservesMessageStartCacheUsageAndReasoni
 		Header: http.Header{"x-request-id": []string{"rid_cc_buffered"}},
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`event: message_start`,
-			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4.5","stop_reason":"","usage":{"input_tokens":12,"cache_read_input_tokens":9,"cache_creation_input_tokens":3}}}`,
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4.5","stop_reason":"","usage":{"input_tokens":12,"cache_read_input_tokens":9,"cache_creation_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":3}}}}`,
 			``,
 			`event: content_block_start`,
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}`,
 			``,
 			`event: message_delta`,
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
 			``,
 		}, "\n"))),
 	}
@@ -132,7 +138,9 @@ func TestHandleCCBufferedFromAnthropic_PreservesMessageStartCacheUsageAndReasoni
 	require.Equal(t, 12, result.Usage.InputTokens)
 	require.Equal(t, 7, result.Usage.OutputTokens)
 	require.Equal(t, 9, result.Usage.CacheReadInputTokens)
-	require.Equal(t, 3, result.Usage.CacheCreationInputTokens)
+	require.Equal(t, 5, result.Usage.CacheCreationInputTokens)
+	require.Equal(t, 2, result.Usage.CacheCreation5mTokens)
+	require.Equal(t, 3, result.Usage.CacheCreation1hTokens)
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "high", *result.ReasoningEffort)
 }
@@ -158,6 +166,9 @@ func TestHandleCCBufferedFromAnthropic_CompactSSEFormat(t *testing.T) {
 			``,
 			`event:message_delta`,
 			`data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
 			``,
 		}, "\n"))),
 	}

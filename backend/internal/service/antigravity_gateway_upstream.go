@@ -19,6 +19,9 @@ import (
 
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
 func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	if account.gatewayProtocolsPending() {
+		return s.forwardGatewayMessages(ctx, c, account, body)
+	}
 	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	}
 
 	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(withOAuth429WireBody(ctx, body), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create upstream request: %w", err)
 	}
@@ -156,12 +159,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		FirstTokenMs:                  firstTokenMs,
 		ClientDisconnect:              clientDisconnect,
 		UpstreamHeaders:               resp.Header,
-		Usage: ClaudeUsage{
-			InputTokens:              usage.InputTokens,
-			OutputTokens:             usage.OutputTokens,
-			CacheReadInputTokens:     usage.CacheReadInputTokens,
-			CacheCreationInputTokens: usage.CacheCreationInputTokens,
-		},
+		Usage:                         *usage,
 	}, nil
 }
 
@@ -340,8 +338,9 @@ func (s *AntigravityGatewayService) extractSSEUsage(line string, usage *ClaudeUs
 	if v, ok := u["cache_read_input_tokens"].(float64); ok && int(v) > 0 {
 		usage.CacheReadInputTokens = int(v)
 	}
-	if v, ok := u["cache_creation_input_tokens"].(float64); ok && int(v) > 0 {
+	if v, ok := u["cache_creation_input_tokens"].(float64); ok && (int(v) > 0 || usage.CacheCreationInputTokens <= 0) {
 		usage.CacheCreationInputTokens = int(v)
+		usage.cacheCreationInputTokensPresent = true
 	}
 	// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
 	if cc, ok := u["cache_creation"].(map[string]any); ok {
@@ -373,6 +372,7 @@ func (s *AntigravityGatewayService) extractClaudeUsage(body []byte) *ClaudeUsage
 		}
 		if v, ok := u["cache_creation_input_tokens"].(float64); ok {
 			usage.CacheCreationInputTokens = int(v)
+			usage.cacheCreationInputTokensPresent = true
 		}
 		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
 		if cc, ok := u["cache_creation"].(map[string]any); ok {

@@ -575,7 +575,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	// store=false cannot carry a provider-side response pointer over HTTP.
 	// The ingress has reconstructed this same bridge's history; retain an immutable
 	// proof before request construction, rather than trusting final wire bytes.
-	if account.IsOpenAIApiKey() && s.settingService != nil && s.settingService.IsOpenAI409OmitEncryptedHistoryEnabled(ctx) {
+	if !s.openAILegacyCompatibility() && openAIWSPlaintextBridgeAccount(account) && s.settingService != nil && s.settingService.IsOpenAI409OmitEncryptedHistoryEnabled(ctx) {
 		source, _ := ctx.Value(openAIWSAgentSourceKey{}).([]byte)
 		previous := gjson.GetBytes(source, "previous_response_id").String()
 		// The ingress has already stripped invalid item IDs. Derive that one
@@ -781,7 +781,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			continue
 		}
 
-		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+		upstreamMessage := extractUpstreamErrorMessage(respBody)
+		if account.Platform == PlatformGrok {
+			upstreamMessage = grokUpstreamErrorMessage(respBody)
+		}
+		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(upstreamMessage))
 		if upstreamMsg == "" {
 			upstreamMsg = http.StatusText(resp.StatusCode)
 		}
@@ -885,7 +889,6 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
 			ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTierFromBody(body)),
 			ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(body, mappedModel, originalModel), body, mappedModel),
-			RequestedReasoningEffort:      CanonicalRequestedReasoningEffort(body, originalModel, mappedModel),
 			Stream:                        reqStream,
 			OpenAIWSMode:                  true,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
@@ -900,7 +903,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		applyOpenAIQueueTiming(result, openAIWSQueueArrival(ctx), forwardStart, turnStart, "ws_frame_http_bridge", "first_forward_including_internal_retries")
 		replayInput := replayCollector.Items()
-		if account.IsOpenAIApiKey() && s.settingService != nil && s.settingService.IsOpenAI409OmitEncryptedHistoryEnabled(ctx) {
+		if !s.openAILegacyCompatibility() && account.IsOpenAIApiKey() && s.settingService != nil && s.settingService.IsOpenAI409OmitEncryptedHistoryEnabled(ctx) {
 			// Same-response reconstruction needs assistant messages as well as
 			// calls. RawMessage storage preserves numbers and tool schemas.
 			replayInput = replayCollector.AllItems()

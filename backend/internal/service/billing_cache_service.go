@@ -955,9 +955,9 @@ func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *G
 
 	// ── 第一层：分组级检查（override 或 group.rpm_limit） ──
 	if group != nil {
-		// 解析 override：优先从 auth cache snapshot，nil 时回退 DB。
+		// 解析 override：优先从 auth cache snapshot；snapshot 未确认该分组时回退 DB。
 		var override *int
-		if user.UserGroupRPMOverride != nil {
+		if user.UserGroupRPMOverrideGroupID == group.ID {
 			override = user.UserGroupRPMOverride
 		} else if s.userGroupRateRepo != nil {
 			dbOverride, err := s.userGroupRateRepo.GetRPMOverrideByUserAndGroup(ctx, user.ID, group.ID)
@@ -1004,20 +1004,15 @@ func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *G
 		}
 	}
 
-	// ── 第二层：用户级全局硬上限（始终生效） ──
-	if user.RPMLimit > 0 {
-		count, err := s.userRPMCache.IncrementUserRPM(ctx, user.ID)
-		if err != nil {
-			logger.LegacyPrintf(
-				"service.billing_cache",
-				"Warning: rpm increment (user) failed for user=%d: %v",
-				user.ID, err,
-			)
-			return nil // fail-open
-		}
-		if count > user.RPMLimit {
-			return ErrUserRPMExceeded
-		}
+	// Count every request reaching the user-level check, including unlimited
+	// users. Only a positive limit participates in admission.
+	count, err := s.userRPMCache.IncrementUserRPM(ctx, user.ID)
+	if err != nil {
+		logger.LegacyPrintf("service.billing_cache", "Warning: rpm increment (user) failed for user=%d: %v", user.ID, err)
+		return nil // fail-open
+	}
+	if user.RPMLimit > 0 && count > user.RPMLimit {
+		return ErrUserRPMExceeded
 	}
 
 	return nil

@@ -1430,37 +1430,35 @@ func TestHandleGeminiStreamingResponse_EventSeparatorIsExactlyOneBlankLine(t *te
 	}
 }
 
-// 空 data / [DONE] 事件不经过 JSON 重写，但上游分隔空行同样被丢弃，
-// 因此必须自带事件终止符，否则会与后一事件粘连或在 EOF 处丢失。
-func TestHandleGeminiStreamingResponse_DoneAndEmptyDataKeepEventTerminator(t *testing.T) {
+func TestHandleGeminiStreamingResponse_ForwardedCommentFrames(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newAntigravityTestService(&config.Config{
 		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
 	})
+	const first = `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"first"}]}}]}` + "\n\n"
+	const second = `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"second"}]}}]}` + "\n\n"
+	const comment = ": upstream"
+	const stream = first + comment + "\r\n\r\n" + second
 
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	for _, tc := range []struct {
+		name             string
+		userAgent        string
+		forwardedComment string
+	}{
+		{"js-genai", "google-genai-sdk/3.6.0 gl-node/v26.13.1", comment + "\n\n"},
+		{"go-genai", "google-genai-sdk/1.71.0 gl-go/go1.27.4", ""},
+		{"python-genai", "google-genai-sdk/1.20.0 gl-python/3.12.4", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newAntigravityCompatContext(http.MethodPost, "/v1beta/models/gemini-2.5-flash:streamGenerateContent", nil)
+			c.Request.Header.Set("User-Agent", tc.userAgent)
+			resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(stream)), Header: http.Header{}}
 
-	pr, pw := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
-
-	first := `{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3}}`
-
-	go func() {
-		defer func() { _ = pw.Close() }()
-		fmt.Fprintf(pw, "data:\n\n")
-		fmt.Fprintf(pw, "data: %s\n\n", first)
-		fmt.Fprintf(pw, "data: [DONE]\r\n\r\n")
-	}()
-
-	_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
-	_ = pr.Close()
-	require.NoError(t, err)
-
-	body := rec.Body.String()
-	require.Equal(t, "data:\n\ndata: "+first+"\n\ndata: [DONE]\n\n", body)
-	require.NotContains(t, body, "\n\n\n")
+			_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+			require.NoError(t, err)
+			require.Equal(t, first+tc.forwardedComment+second, rec.Body.String())
+		})
+	}
 }
 
 func TestHandleGeminiStreamingResponse_ThoughtsTokenCount(t *testing.T) {
@@ -1814,14 +1812,14 @@ func TestExtractSSEUsage(t *testing.T) {
 		{
 			name:     "top-level usage with all fields",
 			line:     `data: {"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}`,
-			expected: ClaudeUsage{InputTokens: 10, OutputTokens: 20, CacheReadInputTokens: 5, CacheCreationInputTokens: 3},
+			expected: ClaudeUsage{InputTokens: 10, OutputTokens: 20, CacheReadInputTokens: 5, CacheCreationInputTokens: 3, cacheCreationInputTokensPresent: true},
 		},
 		{
 			// Anthropic message_start 把 usage 嵌套在 message.usage 下，
 			// 必须从这里提取输入侧字段（含 cache_read/cache_creation_input_tokens）。
 			name:     "message_start nested usage with input/cache tokens",
 			line:     `data: {"type":"message_start","message":{"id":"msg_01","usage":{"input_tokens":35576,"cache_creation_input_tokens":0,"cache_read_input_tokens":12000,"output_tokens":1}}}`,
-			expected: ClaudeUsage{InputTokens: 35576, OutputTokens: 1, CacheReadInputTokens: 12000},
+			expected: ClaudeUsage{InputTokens: 35576, OutputTokens: 1, CacheReadInputTokens: 12000, cacheCreationInputTokensPresent: true},
 		},
 		{
 			// message_start.message.usage.cache_creation 内的 5m/1h 明细也要解析。
@@ -2216,4 +2214,37 @@ func TestAntigravityGatewayService_ForwardGemini_StreamAndFunctionResponseFollow
 	firstPart, ok := parts[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "It is sunny in Tokyo.", firstPart["text"])
+}
+
+// 空 data / [DONE] 事件不经过 JSON 重写，但上游分隔空行同样被丢弃，
+// 因此必须自带事件终止符，否则会与后一事件粘连或在 EOF 处丢失。
+func TestHandleGeminiStreamingResponse_DoneAndEmptyDataKeepEventTerminator(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityTestService(&config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+
+	first := `{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3}}`
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		fmt.Fprintf(pw, "data:\n\n")
+		fmt.Fprintf(pw, "data: %s\n\n", first)
+		fmt.Fprintf(pw, "data: [DONE]\r\n\r\n")
+	}()
+
+	_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+	_ = pr.Close()
+	require.NoError(t, err)
+
+	body := rec.Body.String()
+	require.Equal(t, "data:\n\ndata: "+first+"\n\ndata: [DONE]\n\n", body)
+	require.NotContains(t, body, "\n\n\n")
 }

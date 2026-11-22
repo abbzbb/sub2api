@@ -187,6 +187,28 @@ type OpsRecoveryFailure struct {
 	Protocol       string
 	Phase          string
 	RequestWritten *bool // nil means no proof of whether the generation was sent
+	Controls       *OpsRecoveryControls
+}
+
+// OpsRecoveryControls contains value-free comparison outcomes for the final
+// encrypted-history wire check. It must never contain field values or hashes.
+type OpsRecoveryControls struct {
+	Observation               string `json:"observation"`
+	Snapshot                  string `json:"snapshot"`
+	Tools                     string `json:"tools"`
+	ToolChoice                string `json:"tool_choice"`
+	ParallelToolCalls         string `json:"parallel_tool_calls"`
+	Instructions              string `json:"instructions"`
+	DigestChanged             bool   `json:"digest_changed"`
+	PreviousResponseIDPresent bool   `json:"previous_response_id_present"`
+	ConversationPresent       bool   `json:"conversation_present"`
+}
+
+// OpsUpstreamWSFailure is set at the native upstream socket boundary, never
+// inferred from an error code. HTTP 101 is not an upstream business status.
+type OpsUpstreamWSFailure struct {
+	Phase     string
+	CloseCode int
 }
 
 // OpsStreamError 描述承载在 2xx 响应上的带内错误：网关在响应状态已固化为 200 之后
@@ -195,8 +217,9 @@ type OpsRecoveryFailure struct {
 // 由于 HTTP 状态码停留在 2xx，ops_error_logger 中间件在 status<400 分支消费该标记并
 // 补记错误日志；标记方是 handler.handleStreamingAwareError 或各 service 的带内检测。
 type OpsStreamError struct {
-	RecoveryFailure  *OpsRecoveryFailure
-	TransportFailure *OpsTransportFailure
+	UpstreamWSFailure *OpsUpstreamWSFailure
+	RecoveryFailure   *OpsRecoveryFailure
+	TransportFailure  *OpsTransportFailure
 	// BridgeFailure is set only by the local BPS conversion boundary. It keeps
 	// real upstream HTTP evidence while assigning failure ownership to gateway.
 	BridgeFailure *basispoints.BridgeFailure
@@ -569,6 +592,17 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
+	// Request-selected exits are independent of the legacy single-proxy binding.
+	// Copy only durable, credential-free lease metadata for this exact account.
+	if value, ok := c.Get(openAIRequestProxyOpsKey); ok {
+		if route, ok := value.(*openAIRequestProxyRoute); ok && route != nil && route.accountID == ev.AccountID {
+			setUnknownOpsUpstreamProxy(&ev)
+			if route.lease.ProxyID > 0 {
+				id := route.lease.ProxyID
+				ev.ProxyID, ev.ProxyName = &id, route.lease.ProxyName
+			}
+		}
+	}
 	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(redactOpenAIEncryptedDiagnostic(ev.UpstreamResponseBody))

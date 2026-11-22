@@ -41,6 +41,7 @@
         <div v-if="usageInfo.error" class="text-xs text-amber-600 dark:text-amber-400 truncate max-w-[200px]" :title="usageInfo.error">
           {{ usageInfo.error }}
         </div>
+        <NewFeatureBadge v-if="noticeUserId != null && (estimateWindowTotalCost(usageInfo.five_hour) != null || estimateWindowTotalCost(usageInfo.seven_day) != null)" :notice-id="NEW_FEATURE_NOTICES.claudeWindowCost" :user-id="noticeUserId" />
         <!-- 5h Window -->
         <UsageProgressBar
           v-if="usageInfo.five_hour"
@@ -48,15 +49,18 @@
           :utilization="usageInfo.five_hour.utilization"
           :resets-at="usageInfo.five_hour.resets_at"
           :window-stats="usageInfo.five_hour.window_stats"
+          :estimated-total-cost="estimateWindowTotalCost(usageInfo.five_hour)"
           color="indigo"
         />
 
-        <!-- 7d Window (OAuth only) -->
+        <!-- 7d Window (OAuth or Setup Token with passive samples) -->
         <UsageProgressBar
           v-if="usageInfo.seven_day"
           label="7d"
           :utilization="usageInfo.seven_day.utilization"
           :resets-at="usageInfo.seven_day.resets_at"
+          :window-stats="usageInfo.seven_day.window_stats"
+          :estimated-total-cost="estimateWindowTotalCost(usageInfo.seven_day)"
           color="emerald"
         />
 
@@ -138,11 +142,21 @@
           <span v-if="ticket.probe" class="text-gray-400" :title="`${t('admin.accounts.openai.ticketProbe.' + ticket.probe.result)} · HTTP ${ticket.probe.http_status || '—'} · ${new Date(ticket.probe.checked_at).toLocaleString()}${ticket.probe.next_probe_at ? ' · ' + t('admin.accounts.openai.ticketProbeNext') + new Date(ticket.probe.next_probe_at).toLocaleString() : ''}${ticket.standby_expires_at ? ' · ' + t('admin.accounts.openai.ticketStandbyExpires') + new Date(ticket.standby_expires_at).toLocaleString() : ''}`">ⓘ</span>
         </div>
       </div>
+      <div
+        v-if="error || usageInfo?.error || usageInfo?.error_code"
+        role="alert"
+        class="mb-1 text-[10px] text-amber-700 dark:text-amber-300"
+      >
+        {{ t(hasOpenAIQuotaObservation
+          ? 'admin.accounts.usageWindow.quotaRefreshFailedCached'
+          : 'admin.accounts.usageWindow.quotaRefreshFailedUnknown') }}
+      </div>
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
           label="5h"
           :utilization="usageInfo.five_hour.utilization"
+          :utilization-unknown="usageInfo.five_hour.utilization_unknown"
           :resets-at="usageInfo.five_hour.resets_at"
           :window-stats="usageInfo.five_hour.window_stats"
           :show-now-when-idle="true"
@@ -152,12 +166,20 @@
           v-if="usageInfo?.seven_day"
           label="7d"
           :utilization="usageInfo.seven_day.utilization"
+          :utilization-unknown="usageInfo.seven_day.utilization_unknown"
           :resets-at="usageInfo.seven_day.resets_at"
           :window-stats="usageInfo.seven_day.window_stats"
           :estimated-total-cost="openAISevenDayEstimatedTotalCost"
           :show-now-when-idle="true"
           color="emerald"
         />
+        <div v-if="hasOpenAIQuotaObservation" class="text-[10px] text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.usageWindow.quotaObservedAt') }}
+          <time v-if="usageInfo?.updated_at" :datetime="usageInfo.updated_at">
+            {{ formatDateTime(usageInfo.updated_at) }}
+          </time>
+          <span v-else>{{ t('admin.accounts.usageWindow.quotaObservationUnknown') }}</span>
+        </div>
         <!--
           Upstream codex /wham/usage quota query + reset. The local active-sampling
           refresh button is rendered via the pre-actions slot so the user sees a
@@ -645,7 +667,7 @@
             color="purple"
           />
         </template>
-        <div v-if="loading" class="space-y-1">
+        <div v-if="loading && !usageInfo" class="space-y-1">
           <div class="flex items-center gap-1">
             <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
             <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
@@ -776,9 +798,9 @@ import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { GrokQuotaProbeResult } from '@/api/admin/grok'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
-import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { buildAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
-import { formatCompactNumber } from '@/utils/format'
+import { formatCompactNumber, formatDateTime } from '@/utils/format'
 import { sanitizeUrl } from '@/utils/url'
 import { isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import { supportsAccountQuota } from '@/utils/accountQuota'
@@ -798,7 +820,7 @@ import {
 import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
-const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
+const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number; refreshKey: string }>()
 const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 const GROK_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 const GROK_FREE_TOKEN_LIMIT_FALLBACK = 500_000
@@ -964,12 +986,16 @@ function formatCodexTicketRemaining(seconds: number) {
   const s = total % 60
   return `${m}m${String(s).padStart(2, '0')}s`
 }
+const hasOpenAIQuotaObservation = computed(() => {
+  const windows = [usageInfo.value?.five_hour, usageInfo.value?.seven_day]
+  return windows.some(window => window && !window.utilization_unknown)
+})
 
-const openAISevenDayEstimatedTotalCost = computed(() => {
-  const sevenDay = usageInfo.value?.seven_day
-  const utilization = sevenDay?.utilization
-  const currentCost = sevenDay?.window_stats?.cost
+function estimateWindowTotalCost(window?: AccountUsageInfo['seven_day']) {
+  const utilization = window?.utilization
+  const currentCost = window?.window_stats?.cost
   if (
+    window?.utilization_unknown ||
     typeof utilization !== 'number' ||
     typeof currentCost !== 'number' ||
     !Number.isFinite(utilization) ||
@@ -982,9 +1008,13 @@ const openAISevenDayEstimatedTotalCost = computed(() => {
 
   const estimate = (currentCost * 100) / utilization
   return Number.isFinite(estimate) && estimate > 0 ? estimate : null
-})
+}
 
-const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
+const openAISevenDayEstimatedTotalCost = computed(() =>
+  estimateWindowTotalCost(usageInfo.value?.seven_day)
+)
+
+const usageRefreshKey = computed(() => buildAccountUsageRefreshKey(props.account))
 
 const shouldAutoLoadUsageOnMount = computed(() => {
   return shouldFetchUsage.value
@@ -1635,7 +1665,7 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   // Check cache
   if (!options?.bypassCache) {
     const cached = _usageCache.get(props.account.id)
-    if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
+    if (cached && cached.refreshKey === usageRefreshKey.value && Date.now() - cached.ts < USAGE_CACHE_TTL) {
       usageInfo.value = cached.data
       loading.value = false
       return
@@ -1644,6 +1674,7 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
 
   loading.value = true
   error.value = null
+  const refreshKey = usageRefreshKey.value
 
   try {
 		const fetchFn = () => options?.source
@@ -1652,7 +1683,7 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
     const result = await enqueueUsageRequest(props.account, fetchFn)
     if (!unmounted.value) {
       usageInfo.value = result
-      _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+      _usageCache.set(props.account.id, { data: result, ts: Date.now(), refreshKey })
     }
   } catch (e: any) {
     if (!unmounted.value) {
@@ -1683,11 +1714,13 @@ const refreshGrokUsage = async () => {
 const refreshGrokLocalUsage = async () => {
   if (!isGrokOAuthAccount.value || unmounted.value) return
 
+  const accountID = props.account.id
+  const refreshKey = usageRefreshKey.value
   const refreshed = await enqueueUsageRequest(
     props.account,
-    () => adminAPI.accounts.getUsage(props.account.id)
+    () => adminAPI.accounts.getUsage(accountID)
   )
-  if (unmounted.value || !usageInfo.value) return
+  if (unmounted.value || props.account.id !== accountID || usageRefreshKey.value !== refreshKey || !usageInfo.value) return
 
   const current = usageInfo.value
   const merged: AccountUsageInfo = {
@@ -1698,7 +1731,7 @@ const refreshGrokLocalUsage = async () => {
     grok_local_usage_monthly: refreshed.grok_local_usage_monthly ?? current.grok_local_usage_monthly
   }
   usageInfo.value = merged
-  _usageCache.set(props.account.id, { data: merged, ts: Date.now() })
+  _usageCache.set(accountID, { data: merged, ts: Date.now(), refreshKey })
 }
 
 const handleGrokVisibilityChange = () => {
@@ -1788,13 +1821,23 @@ const attachVisibilityObserver = () => {
 }
 
 const loadActiveUsage = async () => {
+  const accountID = props.account.id
+  const refreshKey = usageRefreshKey.value
   activeQueryLoading.value = true
+  error.value = null
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    const result = await adminAPI.accounts.getUsage(accountID, 'active', true)
+    if (!unmounted.value && props.account.id === accountID) {
+      usageInfo.value = result
+      _usageCache.set(accountID, { data: result, ts: Date.now(), refreshKey })
+    }
   } catch (e: any) {
-    console.error('Failed to load active usage:', e)
+    if (!unmounted.value && props.account.id === accountID) {
+      error.value = t('common.error')
+      console.error('Failed to load active usage:', e)
+    }
   } finally {
-    activeQueryLoading.value = false
+    if (!unmounted.value) activeQueryLoading.value = false
   }
 }
 
@@ -1882,7 +1925,7 @@ const handleGrokProbed = (result: GrokQuotaProbeResult) => {
     })
     return
   }
-  _usageCache.set(props.account.id, { data: merged, ts: Date.now() })
+  _usageCache.set(props.account.id, { data: merged, ts: Date.now(), refreshKey: usageRefreshKey.value })
 }
 
 // ===== API Key quota progress bars =====
@@ -2048,21 +2091,21 @@ watch(
   { flush: 'post' }
 )
 
-watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
+watch(usageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
-  if (Date.now() < suppressOpenAIUsageRefreshUntil.value) {
+  if (!shouldFetchUsage.value) return
+  if (props.account.platform === 'openai' && Date.now() < suppressOpenAIUsageRefreshUntil.value) {
     suppressOpenAIUsageRefreshUntil.value = 0
     return
   }
 
   if (isBatchManaged.value) {
-    requestParentBatchUsage({ force: true })
+    requestParentBatchUsage(props.account.platform === 'openai' ? { force: true } : undefined)
     return
   }
 
   _usageCache.delete(props.account.id)
-  requestAutoLoad()
+  requestAutoLoad(isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined)
 })
 
 watch(

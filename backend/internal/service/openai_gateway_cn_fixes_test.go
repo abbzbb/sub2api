@@ -80,6 +80,45 @@ func TestCalculateOpenAIRecordUsageCost_EmptyCandidatesIsPricingUnavailable(t *t
 		"空候选必须按无价可循处理（上层零成本落账），而不是丢弃整条 usage 记录: %v", err)
 }
 
+// 硅基流动 Qwen3-Embedding-8B 走 /v1/embeddings：修前无兜底价 → 生产
+// WARN openai_usage.pricing_missing_record_zero_cost 按 0 成本记账。
+// 补兜底价后必须能算出 token 成本（$0.04/MTok），且不再是 pricing unavailable。
+func TestCalculateOpenAIRecordUsageCost_Qwen3EmbeddingFallback(t *testing.T) {
+	svc := &OpenAIGatewayService{billingService: newTestBillingService()}
+	apiKey := &APIKey{Group: &Group{ID: 1, Platform: PlatformOpenAI}}
+	result := &OpenAIForwardResult{Model: "Qwen/Qwen3-Embedding-8B"}
+
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(), result, apiKey, []string{"Qwen/Qwen3-Embedding-8B"},
+		1.0, 1.0, 1.0, 1.0, UsageTokens{InputTokens: 1000}, "", nil, false, time.Time{},
+	)
+	require.NoError(t, err)
+	require.False(t, isUsagePricingUnavailableError(err),
+		"补兜底价后不得再按无价可循处理: %v", err)
+	require.NotNil(t, cost)
+	require.InDelta(t, 1000*0.04e-6, cost.TotalCost, 1e-12)
+}
+
+// 硅基流动 Qwen3-Reranker-8B 走 /v1/rerank（OpenAI 兼容 reranker，用量仅输入
+// token）：修前无兜底价 → 生产 WARN openai_usage.pricing_missing_record_zero_cost
+// 按 0 成本记账。补兜底价后必须能算出 token 成本（$0.04/MTok），且不再是
+// pricing unavailable。
+func TestCalculateOpenAIRecordUsageCost_Qwen3RerankerFallback(t *testing.T) {
+	svc := &OpenAIGatewayService{billingService: newTestBillingService()}
+	apiKey := &APIKey{Group: &Group{ID: 1, Platform: PlatformOpenAI}}
+	result := &OpenAIForwardResult{Model: "Qwen/Qwen3-Reranker-8B"}
+
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(), result, apiKey, []string{"Qwen/Qwen3-Reranker-8B"},
+		1.0, 1.0, 1.0, 1.0, UsageTokens{InputTokens: 1000}, "", nil, false, time.Time{},
+	)
+	require.NoError(t, err)
+	require.False(t, isUsagePricingUnavailableError(err),
+		"补兜底价后不得再按无价可循处理: %v", err)
+	require.NotNil(t, cost)
+	require.InDelta(t, 1000*0.04e-6, cost.TotalCost, 1e-12)
+}
+
 func TestResponsesStreamingFromNativeAnthropic_ClientDisconnectDrainsUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newNativeAnthropicHangTestService(5)
@@ -103,7 +142,7 @@ func TestResponsesStreamingFromNativeAnthropic_ClientDisconnectDrainsUsage(t *te
 	res, err := svc.handleResponsesStreamingFromNativeAnthropic(
 		resp, c, "glm-4.7", "glm-4.7", "glm-4.7", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 
-	require.NoError(t, err, "断开排水至上游自然结束应返回 nil error（usage 走成功路径落账）")
+	require.Error(t, err, "disconnect remains failed while drained usage is preserved")
 	require.NotNil(t, res)
 	require.True(t, res.ClientDisconnect)
 	require.Equal(t, 10, res.Usage.InputTokens, "input_tokens 应来自 message_start")
@@ -151,16 +190,24 @@ func TestResponsesStreamingFromNativeAnthropic_NormalizesTerminalUsage(t *testin
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)
 				c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(strings.Join(lines, "\n")))}
+				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(withAnthropicFixtureContent(strings.Join(lines, "\n"))))}
 
 				result, err := (&OpenAIGatewayService{}).handleResponsesStreamingFromNativeAnthropic(
 					resp, c, "k3", "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
-				require.NoError(t, err)
+				if terminal == "eof" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
 				require.Equal(t, tt.wantInput+tt.wantCached+tt.wantCacheCreation, result.Usage.InputTokens)
 				require.Equal(t, tt.wantOutput, result.Usage.OutputTokens)
 				require.Equal(t, tt.wantCached, result.Usage.CacheReadInputTokens)
 				require.Equal(t, tt.wantCacheCreation, result.Usage.CacheCreationInputTokens)
 
+				if terminal == "eof" {
+					require.NotContains(t, rec.Body.String(), "response.completed")
+					return
+				}
 				var completed apicompat.ResponsesStreamEvent
 				for _, line := range strings.Split(rec.Body.String(), "\n") {
 					if !strings.HasPrefix(line, "data: ") {

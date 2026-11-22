@@ -116,9 +116,10 @@ func TestTrafficCalendarBucketsCrossSkippedDaysAndMidnights(t *testing.T) {
 func TestTrafficCalendarUsesFirstMidnightWhenRepeated(t *testing.T) {
 	loc, err := time.LoadLocation("America/Havana")
 	require.NoError(t, err)
-	f, err := newTrafficFilter("day", "2026-11-01", time.Now(), loc)
+	// Use a historical transition so newer time zone rules cannot change the fixture.
+	f, err := newTrafficFilter("day", "2024-11-03", time.Now(), loc)
 	require.NoError(t, err)
-	require.Equal(t, "2026-11-01T00:00:00-04:00", f.Start.Format(time.RFC3339))
+	require.Equal(t, "2024-11-03T00:00:00-04:00", f.Start.Format(time.RFC3339))
 	require.Equal(t, 25*time.Hour, f.End.Sub(f.Start))
 	require.Len(t, TrafficBuckets(f), 25)
 }

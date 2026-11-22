@@ -67,8 +67,6 @@ const (
 	// 上游域名被解析到 443 不可达的 IP 时（DNS 污染/路由异常），单个账号就要卡满
 	// 内核超时；而多账号故障转移是串行的，一次请求会阻塞数分钟且不写中间错误。
 	defaultUpstreamDialTimeout = 10 * time.Second
-	// defaultUpstreamDialKeepAlive: TCP keepalive 探测间隔，与 Go 默认值保持一致
-	defaultUpstreamDialKeepAlive = 30 * time.Second
 	// defaultUpstreamTLSHandshakeTimeout: TLS 握手超时（10秒）
 	// 与建连超时同量级，避免 TCP 已连通但对端不推进握手时无限等待
 	defaultUpstreamTLSHandshakeTimeout = 10 * time.Second
@@ -184,6 +182,7 @@ type httpUpstreamService struct {
 	clients                             map[string]*upstreamClientEntry     // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	compressionCooldowns sync.Map // configured origin and coding -> last rejected path and expiry
 	// BPS fallback state is isolated from Codex and contains only hashed proxy keys.
 	bpsHTTP2Fallbacks map[[32]byte]bpsHTTP2Fallback
 }
@@ -246,6 +245,14 @@ func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutPro
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	if req != nil {
+		if err := service.ValidateOAuth429Upstream(req, accountID); err != nil {
+			return nil, err
+		}
+		if _, err := service.ValidateOpenAIRequestProxyEgress(req.Context(), accountID, proxyURL); err != nil {
+			return nil, err
+		}
+	}
+	if req != nil {
 		requestcapture.FromContext(req.Context()).BindAccount(accountID)
 		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
 	}
@@ -277,7 +284,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
-	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = httpClientWithUpstreamPolicies(client, s.wrapUpstreamRequestCompression)
 	var bpsTrace *transportdiag.Trace
 	if profile == service.HTTPUpstreamProfileExcelBPS {
 		bpsTrace = transportdiag.FromContext(req.Context())
@@ -317,6 +324,14 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 // profile 为 nil 时不启用 TLS 指纹，行为与 Do 方法相同。
 // profile 非 nil 时使用指定的 Profile 进行 TLS 指纹伪装。
 func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	if req != nil {
+		if err := service.ValidateOAuth429Upstream(req, accountID); err != nil {
+			return nil, err
+		}
+		if _, err := service.ValidateOpenAIRequestProxyEgress(req.Context(), accountID, proxyURL); err != nil {
+			return nil, err
+		}
+	}
 	if profile == nil {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
@@ -367,7 +382,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
-	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = httpClientWithUpstreamPolicies(client, s.wrapUpstreamRequestCompression)
 	resp, err := doWithOpenAIPreRequestRetry(client, req, proxyURL, upstreamProfile)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -481,7 +496,7 @@ type grokAccessDeniedFallbackTransport struct {
 	base http.RoundTripper
 }
 
-func httpClientWithGrokAccessDeniedFallback(client *http.Client) *http.Client {
+func httpClientWithUpstreamPolicies(client *http.Client, wrap func(http.RoundTripper) http.RoundTripper) *http.Client {
 	if client == nil {
 		return nil
 	}
@@ -489,6 +504,9 @@ func httpClientWithGrokAccessDeniedFallback(client *http.Client) *http.Client {
 	base := clone.Transport
 	if base == nil {
 		base = http.DefaultTransport
+	}
+	if wrap != nil {
+		base = wrap(base)
 	}
 	// Observe each physical RoundTrip before the compatibility fallback so
 	// a rejected send followed by a successful retry remains two samples.
@@ -1503,8 +1521,14 @@ func defaultPoolSettings(cfg *config.Config) poolSettings {
 // 建连没有任何超时上限，只能等内核 TCP 重传耗尽（Linux 约 130 秒）。
 func newUpstreamDialer() *net.Dialer {
 	return &net.Dialer{
-		Timeout:   defaultUpstreamDialTimeout,
-		KeepAlive: defaultUpstreamDialKeepAlive,
+		Timeout: defaultUpstreamDialTimeout,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     upstreamKeepAliveIdle,
+			Interval: upstreamKeepAliveInterval,
+			Count:    upstreamKeepAliveCount,
+		},
+		Control: upstreamDialControl,
 	}
 }
 

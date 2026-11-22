@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
@@ -393,6 +392,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		return
 	}
 
+	c.Request = c.Request.WithContext(service.WithGatewayGeminiSelection(c.Request.Context(), modelName))
 	stream := action == gemini.ActionStreamGenerateContent
 	reqLog = reqLog.With(zap.String("model", modelName), zap.String("action", action), zap.Bool("stream", stream))
 
@@ -495,16 +495,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		sessionHash = extractGeminiCLISessionHash(c, body)
 	}
 	if sessionHash == "" && cachedContentBinding == nil {
-		// Fallback: 使用通用的会话哈希生成逻辑（适用于其他客户端）
-		parsedReq, _ := service.ParseGatewayRequest(service.NewRequestBodyRef(body), domain.PlatformGemini)
-		if parsedReq != nil {
-			parsedReq.SessionContext = &service.SessionContext{
-				ClientIP:  ip.GetClientIP(c),
-				UserAgent: c.GetHeader("User-Agent"),
-				APIKeyID:  apiKey.ID,
-			}
-		}
-		sessionHash = h.gatewayService.GenerateSessionHash(parsedReq)
+		// 其他客户端：按 API Key + 模型 + tools + systemInstruction + 第一条 user contents 的 parts 生成内容哈希
+		sessionHash = service.GenerateGeminiContentSessionHash(apiKey.ID, reqModel, body)
 	}
 	sessionKey := sessionHash
 	if sessionHash != "" {
@@ -826,8 +818,15 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 					return
 				}
 			}
-			// 转发层已写出错误响应；客户端断开时转发层不写，响应未提交则标记 499。
-			failoverClientGone(c)
+			// Fresh admission can fail before the forwarder writes a response.
+			// Preserve committed responses and client cancellation; never replay an ordinary error.
+			if !failoverClientGone(c) && !c.Writer.Written() && !service.IsResponseCommitted(c) {
+				// A stream read failure may leave headers staged before its first byte.
+				for _, header := range []string{"Content-Type", "Content-Length", "Content-Encoding", "Cache-Control", "Connection", "X-Accel-Buffering"} {
+					c.Writer.Header().Del(header)
+				}
+				googleError(c, http.StatusBadGateway, "Unable to forward request to upstream")
+			}
 			reqLog.Error("gemini.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
 		}
@@ -860,6 +859,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
 		// 长上下文阶梯由目录数据驱动，统一在计费路径内生效，入口无需声明。
+		channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel)
 		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
@@ -877,7 +877,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				ForceCacheBilling:  forceCacheBilling,
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				ChannelUsageFields: channelUsageFields,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.gemini_v1beta.models"),
@@ -1000,7 +1000,7 @@ func googleErrorWithType(c *gin.Context, status int, errType, code, message stri
 // googleClientErrorType 返回客户端请求类 4xx 状态码对应的 ops 错误类型；其余状态码返回空串。
 func googleClientErrorType(status int) string {
 	switch status {
-	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
+	case http.StatusBadRequest, http.StatusRequestTimeout, http.StatusRequestEntityTooLarge:
 		return "invalid_request_error"
 	case http.StatusUnauthorized:
 		return "authentication_error"

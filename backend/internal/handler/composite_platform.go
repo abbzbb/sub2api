@@ -111,7 +111,7 @@ func anthropicCompatibleReasoningEffortPolicy(maxEffort string, mappings []servi
 }
 
 func bindRequestedReasoningEffort(c *gin.Context, body []byte, model string) {
-	if c == nil || c.Request == nil {
+	if c == nil || c.Request == nil || service.RequestedReasoningEffortFromContext(c.Request.Context()) != nil {
 		return
 	}
 	effort := service.CanonicalRequestedReasoningEffort(body, model)

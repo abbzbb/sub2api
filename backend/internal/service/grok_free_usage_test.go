@@ -178,6 +178,6 @@ func TestExtractUpstreamErrorCodeSupportsTopLevelCode(t *testing.T) {
 	require.Equal(
 		t,
 		grokFreeUsageExhaustedErrorCode,
-		extractUpstreamErrorCode([]byte(`{"code":"subscription:free-usage-exhausted","error":"exhausted"}`)),
+		grokUpstreamErrorCode([]byte(`{"code":"subscription:free-usage-exhausted","error":"exhausted"}`)),
 	)
 }
